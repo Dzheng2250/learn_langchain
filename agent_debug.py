@@ -1,12 +1,14 @@
-import os
+from agent_config import DEBUG_AGENT
 
 
-DEBUG_AGENT = os.getenv("DEBUG_AGENT", "1") == "1"
+def is_debug_enabled() -> bool:
+    """Return whether agent debug printing is enabled."""
+    return DEBUG_AGENT
 
 
 def debug_print(title: str, value) -> None:
     """打印 Agent 调试信息；设置 DEBUG_AGENT=0 可以关闭。"""
-    if not DEBUG_AGENT:
+    if not is_debug_enabled():
         return
     print(f"\n\n========== {title} ==========")
     print(value)

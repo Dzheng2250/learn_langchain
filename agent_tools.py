@@ -4,10 +4,10 @@ import subprocess
 
 from langchain_core.tools import tool
 
+from agent_config import BASH_PATH
 from agent_debug import debug_print
 
 
-BASH_PATH = os.getenv("BASH_PATH", "bash")
 WORKSPACE_DIR = os.path.abspath(os.getcwd())
 
 

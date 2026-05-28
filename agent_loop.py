@@ -6,14 +6,13 @@ from langgraph.prebuilt import ToolNode, tools_condition
 from langchain_openai import ChatOpenAI
 from langchain_core.messages import SystemMessage, HumanMessage
 
+from agent_config import MAX_GRAPH_STEPS, MODEL
 from agent_debug import debug_print, format_message, format_messages
 from agent_tools import tools
 
 load_dotenv()
-MODEL = os.getenv('MODEL', 'deepseek-v4-flash')
 API_KEY = os.getenv('ALIYUN_API_KEY')
 BASE_URL = os.getenv('ALIYUN_BASE_URL')
-MAX_GRAPH_STEPS = int(os.getenv('MAX_GRAPH_STEPS', '9'))
 
 # 初始化大模型客户端；streaming=True 表示允许流式返回模型生成内容。
 llm = ChatOpenAI(
@@ -37,9 +36,6 @@ def agent_node(state: MessagesState) -> dict:
         SystemMessage(
             content=(
                 "You are a helpful assistant. "
-                "If the user asks about weather, call get_weather. "
-                "If the user asks to run a safe local read-only Bash command, "
-                "call run_bash_command."
             )
         ),
         *state["messages"],
