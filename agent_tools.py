@@ -3,6 +3,7 @@ import shlex
 import shutil
 import subprocess
 import tempfile
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from dotenv import load_dotenv
 from langchain_core.messages import HumanMessage, SystemMessage
@@ -19,6 +20,7 @@ from agent_config import (
     FILE_READ_CHUNK_LINES,
     FILE_READ_OUTPUT_LIMIT,
     LARGE_FILE_CHUNK_LINES,
+    LARGE_FILE_MAP_WORKERS,
     LARGE_FILE_MAX_CHUNKS,
     LARGE_FILE_SUMMARY_LIMIT,
     MODEL,
@@ -113,6 +115,11 @@ def _chunk_numbered_lines(lines: list[str], chunk_size: int) -> list[tuple[int, 
     return chunks
 
 
+def _format_chunk_ranges(chunks: list[tuple[int, int, str]]) -> str:
+    """Format chunk line ranges without including file content."""
+    return ", ".join(f"{start}-{end}" for start, end, _text in chunks)
+
+
 def _create_summary_llm() -> ChatOpenAI:
     """Create an internal non-streaming LLM for map-reduce file summaries."""
     return ChatOpenAI(
@@ -122,6 +129,46 @@ def _create_summary_llm() -> ChatOpenAI:
         temperature=0,
         streaming=False,
     )
+
+
+def _summarize_large_file_chunk(path: str, question: str, chunk: tuple[int, int, str]) -> tuple[int, str]:
+    """Summarize one file chunk for the map step."""
+    start_line, end_line, chunk_text = chunk
+    debug_print(
+        "TOOL summarize_large_file MAP READ",
+        f"path={path!r}, lines={start_line}-{end_line}",
+    )
+
+    llm = _create_summary_llm()
+    response = llm.invoke([
+        SystemMessage(
+            content=(
+                "You are a map step in a map-reduce file summarizer. "
+                "Extract facts from this chunk that answer the user's question. "
+                "Keep important line references. If this chunk is irrelevant, reply exactly: IRRELEVANT."
+            )
+        ),
+        HumanMessage(
+            content=(
+                f"File: {path}\n"
+                f"Question: {question}\n"
+                f"Chunk lines: {start_line}-{end_line}\n\n"
+                f"{chunk_text}"
+            )
+        ),
+    ])
+
+    content = response.content.strip()
+    if not content or content == "IRRELEVANT":
+        debug_print(
+            "TOOL summarize_large_file MAP SUMMARY",
+            f"lines={start_line}-{end_line}\nIRRELEVANT",
+        )
+        return start_line, ""
+
+    note = f"Lines {start_line}-{end_line}:\n{content}"
+    debug_print("TOOL summarize_large_file MAP SUMMARY", note)
+    return start_line, note
 
 
 @tool
@@ -288,33 +335,45 @@ def summarize_large_file(path: str, question: str) -> str:
         debug_print("TOOL summarize_large_file OUTPUT", result)
         return result
 
-    llm = _create_summary_llm()
+    map_results = []
+    max_workers = max(1, min(LARGE_FILE_MAP_WORKERS, len(chunks_to_read)))
+    debug_print(
+        "TOOL summarize_large_file READ PLAN",
+        "\n".join([
+            f"path={path!r}",
+            f"total_lines={len(lines)}",
+            f"chunk_lines={LARGE_FILE_CHUNK_LINES}",
+            f"chunks_read={len(chunks_to_read)} of {total_chunks}",
+            f"max_workers={max_workers}",
+            f"line_ranges={_format_chunk_ranges(chunks_to_read)}",
+        ]),
+    )
+
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        futures = [
+            executor.submit(_summarize_large_file_chunk, path, question, chunk)
+            for chunk in chunks_to_read
+        ]
+
+        for future in as_completed(futures):
+            try:
+                map_results.append(future.result())
+            except Exception as exc:
+                failed_note = f"Map chunk failed: {exc}"
+                debug_print("TOOL summarize_large_file MAP SUMMARY", failed_note)
+                map_results.append((10**12, failed_note))
+
     notes = []
+    notes_length = 0
 
-    for start_line, end_line, chunk_text in chunks_to_read:
-        response = llm.invoke([
-            SystemMessage(
-                content=(
-                    "You are a map step in a map-reduce file summarizer. "
-                    "Extract facts from this chunk that answer the user's question. "
-                    "Keep important line references. If this chunk is irrelevant, reply exactly: IRRELEVANT."
-                )
-            ),
-            HumanMessage(
-                content=(
-                    f"File: {path}\n"
-                    f"Question: {question}\n"
-                    f"Chunk lines: {start_line}-{end_line}\n\n"
-                    f"{chunk_text}"
-                )
-            ),
-        ])
+    for _start_line, note in sorted(map_results, key=lambda item: item[0]):
+        if not note:
+            continue
 
-        content = response.content.strip()
-        if content and content != "IRRELEVANT":
-            notes.append(f"Lines {start_line}-{end_line}:\n{content}")
+        notes.append(note)
+        notes_length += len(note)
 
-        if sum(len(note) for note in notes) > LARGE_FILE_SUMMARY_LIMIT:
+        if notes_length > LARGE_FILE_SUMMARY_LIMIT:
             break
 
     if not notes:
@@ -325,6 +384,15 @@ def summarize_large_file(path: str, question: str) -> str:
         debug_print("TOOL summarize_large_file OUTPUT", result)
         return result
 
+    llm = _create_summary_llm()
+    debug_print(
+        "TOOL summarize_large_file REDUCE INPUT",
+        "\n".join([
+            f"path={path!r}",
+            f"notes_count={len(notes)}",
+            f"notes_chars={sum(len(note) for note in notes)}",
+        ]),
+    )
     final_response = llm.invoke([
         SystemMessage(
             content=(
