@@ -6,9 +6,10 @@ from langgraph.prebuilt import ToolNode, tools_condition
 from langchain_openai import ChatOpenAI
 from langchain_core.messages import SystemMessage, HumanMessage
 
-from agent_config import MAX_GRAPH_STEPS, MODEL
+from agent_config import FILE_READ_CHUNK_LINES, MAX_GRAPH_STEPS, MODEL
 from agent_debug import debug_print, format_message, format_messages
-from agent_tools import tools
+from agent_subagent import delegate_to_subagent
+from agent_tools import parent_base_tools
 
 load_dotenv()
 API_KEY = os.getenv('ALIYUN_API_KEY')
@@ -27,7 +28,8 @@ llm = ChatOpenAI(
 # 工具列表会同时交给模型和 ToolNode：
 # - 模型根据工具描述决定是否发起工具调用。
 # - ToolNode 根据模型生成的 tool_calls 真正执行对应函数。
-llm_with_tools = llm.bind_tools(tools)
+parent_tools = [*parent_base_tools, delegate_to_subagent]
+llm_with_tools = llm.bind_tools(parent_tools)
 
 
 def agent_node(state: MessagesState) -> dict:
@@ -36,6 +38,19 @@ def agent_node(state: MessagesState) -> dict:
         SystemMessage(
             content=(
                 "You are a helpful assistant. "
+                "You may use read_workspace_file_lite only for small, specific snippets. "
+                "Do not call read_workspace_file_lite repeatedly to read a large file. "
+                "For any request that requires summarizing, searching, broad review, "
+                "or inspecting many parts of workspace file contents, delegate it to "
+                "delegate_to_subagent. "
+                "When a task requires many tool calls, broad review, or condensed "
+                "research over a large context, also delegate it to delegate_to_subagent. "
+                "The sub-agent cannot create more sub-agents, so delegation is one-level only. "
+                "When you need to run a command, use "
+                "run_command_in_container. "
+                "Do not use run_command_in_container to cat, sed, head, tail, or grep "
+                "workspace file contents; delegate file-content tasks instead. "
+                f"The sub-agent can read files in chunks of at most {FILE_READ_CHUNK_LINES} lines."
             )
         ),
         *state["messages"],
@@ -55,7 +70,7 @@ builder = StateGraph(MessagesState)
 
 # agent 节点负责让模型思考和生成回复；tools 节点负责执行工具。
 builder.add_node("agent", agent_node)
-builder.add_node("tools", ToolNode(tools))
+builder.add_node("tools", ToolNode(parent_tools))
 
 # 每一轮图执行都先进入 agent 节点。
 builder.add_edge(START, "agent")
