@@ -9,7 +9,7 @@ from langchain_core.messages import SystemMessage, HumanMessage
 from agent_config import FILE_READ_CHUNK_LINES, MAX_GRAPH_STEPS, MODEL
 from agent_debug import debug_print, format_message, format_messages
 from agent_subagent import delegate_to_subagent
-from agent_tools import parent_base_tools
+from agent_tools import parent_base_tools, skill_store
 
 load_dotenv()
 API_KEY = os.getenv('ALIYUN_API_KEY')
@@ -32,6 +32,11 @@ parent_tools = [*parent_base_tools, delegate_to_subagent]
 llm_with_tools = llm.bind_tools(parent_tools)
 
 
+def _format_skill_manifest_context() -> str:
+    """Load local skill manifests for the parent agent system prompt."""
+    return skill_store.format_skill_list()
+
+
 def agent_node(state: MessagesState) -> dict:
     """Agent 节点：读取消息历史，调用绑定工具后的模型。"""
     llm_messages = [
@@ -46,11 +51,16 @@ def agent_node(state: MessagesState) -> dict:
                 "When a task requires many tool calls, broad review, or condensed "
                 "research over a large context, also delegate it to delegate_to_subagent. "
                 "The sub-agent cannot create more sub-agents, so delegation is one-level only. "
+                "The local skill manifest is already loaded below. Use it to decide "
+                "whether a skill applies. If a listed skill is relevant, call read_skill "
+                "with its directory or name before answering or acting. "
                 "When you need to run a command, use "
                 "run_command_in_container. "
                 "Do not use run_command_in_container to cat, sed, head, tail, or grep "
                 "workspace file contents; delegate file-content tasks instead. "
                 f"The sub-agent can read files in chunks of at most {FILE_READ_CHUNK_LINES} lines."
+                "\n\nLocal skill manifest:\n"
+                f"{_format_skill_manifest_context()}"
             )
         ),
         *state["messages"],

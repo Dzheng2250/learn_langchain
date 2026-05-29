@@ -56,6 +56,9 @@ def _subagent_node(state: MessagesState) -> dict:
                 "summarize_large_file first. Use read_workspace_file only after you already "
                 "know a narrow line range or need to verify a specific excerpt. Never call "
                 "read_workspace_file repeatedly to scan a file from beginning to end. "
+                "When the delegated task depends on a named skill, reusable workflow, "
+                "or local capability guide, use list_skills and read_skill to load the "
+                "relevant SKILL.md. "
                 "If you run commands, use run_command_in_container. Include useful file "
                 "names or line ranges."
             )

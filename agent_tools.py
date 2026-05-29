@@ -28,9 +28,11 @@ from agent_config import (
     PARENT_FILE_READ_OUTPUT_LIMIT,
 )
 from agent_debug import debug_print
+from agent_skills import LocalSkillStore
 
 
 WORKSPACE_DIR = os.path.abspath(os.getcwd())
+skill_store = LocalSkillStore(WORKSPACE_DIR)
 load_dotenv()
 SANDBOX_EXCLUDES = {
     ".env",
@@ -308,6 +310,31 @@ def read_workspace_file_lite(path: str, start_line: int = 1, max_lines: int = PA
     result = header + "\n" + "\n".join(numbered_lines) + footer
 
     debug_print("TOOL read_workspace_file_lite OUTPUT", result)
+    return result
+
+
+@tool
+def list_skills() -> str:
+    """List available local skills under the configured skills directory."""
+    debug_print("TOOL list_skills INPUT", f"skills_dir={skill_store.skills_dir!r}")
+    result = skill_store.format_skill_list()
+    debug_print("TOOL list_skills OUTPUT", result)
+    return result
+
+
+@tool
+def read_skill(skill_name: str) -> str:
+    """Read a specific local skill's SKILL.md file by skill directory name."""
+    debug_print("TOOL read_skill INPUT", f"skill_name={skill_name!r}")
+
+    try:
+        result = skill_store.read_skill(skill_name)
+    except ValueError as exc:
+        result = f"Skill read rejected: {exc}"
+        debug_print("TOOL read_skill OUTPUT", result)
+        return result
+
+    debug_print("TOOL read_skill OUTPUT", result)
     return result
 
 
@@ -611,8 +638,21 @@ def run_command_in_container(command: str) -> str:
 
 
 # 子 Agent 基础工具：不包含 delegate_to_subagent，避免递归委派。
-base_tools = [get_weather, read_workspace_file, summarize_large_file, run_command_in_container]
+base_tools = [
+    get_weather,
+    read_workspace_file,
+    list_skills,
+    read_skill,
+    summarize_large_file,
+    run_command_in_container,
+]
 
 # 父 Agent 基础工具：只提供轻量文件读取，复杂文件任务走子 Agent。
-parent_base_tools = [get_weather, read_workspace_file_lite, run_command_in_container]
+parent_base_tools = [
+    get_weather,
+    read_workspace_file_lite,
+    list_skills,
+    read_skill,
+    run_command_in_container,
+]
 tools = base_tools
