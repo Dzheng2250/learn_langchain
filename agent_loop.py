@@ -1,13 +1,13 @@
 import os
 from dotenv import load_dotenv
-from langgraph.errors import GraphRecursionError
 from langgraph.graph import StateGraph, START, END, MessagesState
 from langgraph.prebuilt import ToolNode, tools_condition
 from langchain_openai import ChatOpenAI
-from langchain_core.messages import SystemMessage, HumanMessage
+from langchain_core.messages import SystemMessage
 
 from agent_config import FILE_READ_CHUNK_LINES, MAX_GRAPH_STEPS, MODEL
 from agent_debug import debug_print, format_message, format_messages
+from agent_stream import stream_agent_events
 from agent_subagent import delegate_to_subagent
 from agent_tools import parent_base_tools, skill_store
 
@@ -122,37 +122,19 @@ def run_agent_loop() -> None:
             print("Bye.")
             break
 
-        # 本轮输入 = 历史消息 + 当前用户消息。
-        inputs = {
-            "messages": [*messages, HumanMessage(content=user_input)]
-        }
-
-        final_state = None
         print("AI: ", end="", flush=True)
 
-        # 同时监听两类流式事件：
-        # - messages：模型生成过程中的 token/chunk，用于实时打印。
-        # - values：图状态更新，用于在结束后保存完整消息历史。
-        try:
-            for stream_mode, chunk in app.stream(
-                inputs,
-                config={"recursion_limit": MAX_GRAPH_STEPS},
-                stream_mode=["messages", "values"],
-            ):
-                if stream_mode == "messages":
-                    message_chunk, _metadata = chunk
-                    if message_chunk.content:
-                        print(message_chunk.content, end="", flush=True)
-                elif stream_mode == "values":
-                    final_state = chunk
-        except GraphRecursionError:
-            print(f"\n本轮对话超过最大循环次数：{MAX_GRAPH_STEPS}")
+        # 命令行界面只打印 token；Web 接口可以直接复用 stream_agent_sse。
+        for item in stream_agent_events(app, messages, user_input):
+            if item["event"] == "token":
+                print(item["data"]["content"], end="", flush=True)
+            elif item["event"] == "error":
+                print(f"\n{item['data']['message']}", end="", flush=True)
+            elif item["event"] == "done":
+                messages = item["data"]["messages"]
 
         print()
 
-        # 保存本轮执行后的完整消息历史，供下一轮继续对话。
-        if final_state is not None:
-            messages = final_state["messages"]
 
 
 if __name__ == "__main__":
