@@ -1,9 +1,10 @@
-"""普通运行配置。
+"""Non-secret runtime configuration.
 
-这里放不属于密钥的配置项；API Key、base_url 等敏感信息继续放在 .env。
+API keys and provider endpoints stay in .env. This file keeps ordinary
+development settings that are safe to commit.
 """
 
-DEBUG_AGENT = False
+DEBUG_AGENT = True
 MAX_GRAPH_STEPS = 16
 BASH_PATH = "bash"
 MODEL = "deepseek-v4-flash"
@@ -37,7 +38,44 @@ SKILLS_DIR = "skills"
 SKILL_FILE_NAME = "SKILL.md"
 SKILL_READ_OUTPUT_LIMIT = 8000
 
-RECENT_MESSAGE_LIMIT = 8
-SUMMARY_TRIGGER_MESSAGE_LIMIT = 16
+RECENT_MESSAGE_LIMIT = 12
+SUMMARY_TRIGGER_MESSAGE_LIMIT = 40
+SUMMARY_TRIGGER_CHAR_LIMIT = 24000
 SESSION_SUMMARY_MAX_CHARS = 4000
 SUMMARY_SOURCE_CHAR_LIMIT = 12000
+
+MEMORY_ENABLED = True
+MEMORY_DB_HOST = "localhost"
+MEMORY_DB_PORT = 5432
+MEMORY_DB_NAME = "learn_agent"
+MEMORY_DB_USER = "postgres"
+MEMORY_DB_PASSWORD = "postgres"
+DEFAULT_SESSION_ID = "default"
+MEMORY_RETRIEVAL_LIMIT = 6
+MEMORY_EXTRACTION_ENABLED = True
+MEMORY_EXTRACTION_ASYNC = True
+MEMORY_EXTRACTION_INTERVAL_TURNS = 5
+MEMORY_EXTRACTION_MIN_CHARS = 1200
+MEMORY_EXTRACTION_HINT_KEYWORDS = [
+    "记住",
+    "保存",
+    "偏好",
+    "约定",
+    "规则",
+    "以后",
+    "长期",
+    "remember",
+    "preference",
+    "always",
+]
+MEMORY_MIN_IMPORTANCE = 3
+MEMORY_EXTRACT_SOURCE_CHAR_LIMIT = 12000
+
+START_DB = (
+    r"docker run -d -p 5432:5432 "
+    r"-e POSTGRES_USER=postgres "
+    r"-e POSTGRES_PASSWORD=postgres "
+    r"-e POSTGRES_DB=learn_agent "
+    r"-v E:\docker\pgvector2\data:/var/lib/postgresql/data "
+    r"--name pgvector2 pgvector/pgvector:pg17"
+)

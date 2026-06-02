@@ -114,6 +114,15 @@ def stream_graph_events(app, input_messages: list):
             },
         }
         return
+    except Exception as exc:
+        yield {
+            "event": "error",
+            "data": {
+                "type": "graph_execution_error",
+                "message": str(exc),
+            },
+        }
+        return
 
     yield {
         "event": "done",

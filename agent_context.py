@@ -9,6 +9,7 @@ from agent_config import (
     MODEL,
     RECENT_MESSAGE_LIMIT,
     SESSION_SUMMARY_MAX_CHARS,
+    SUMMARY_TRIGGER_CHAR_LIMIT,
     SUMMARY_SOURCE_CHAR_LIMIT,
     SUMMARY_TRIGGER_MESSAGE_LIMIT,
 )
@@ -16,6 +17,7 @@ from agent_debug import debug_print, format_message
 
 
 SUMMARY_MESSAGE_PREFIX = "Conversation context summary:"
+MEMORY_MESSAGE_PREFIX = "Relevant long-term memory:"
 
 
 @dataclass
@@ -33,31 +35,46 @@ class AgentContextManager:
         self,
         recent_message_limit: int = RECENT_MESSAGE_LIMIT,
         summary_trigger_message_limit: int = SUMMARY_TRIGGER_MESSAGE_LIMIT,
+        summary_trigger_char_limit: int = SUMMARY_TRIGGER_CHAR_LIMIT,
         summary_max_chars: int = SESSION_SUMMARY_MAX_CHARS,
         summary_source_char_limit: int = SUMMARY_SOURCE_CHAR_LIMIT,
     ) -> None:
         self.recent_message_limit = recent_message_limit
         self.summary_trigger_message_limit = summary_trigger_message_limit
+        self.summary_trigger_char_limit = summary_trigger_char_limit
         self.summary_max_chars = summary_max_chars
         self.summary_source_char_limit = summary_source_char_limit
 
-    def build_input_messages(self, state: AgentContextState, user_input: str) -> list:
+    def build_input_messages(
+        self,
+        state: AgentContextState,
+        user_input: str,
+        extra_system_messages: list | None = None,
+    ) -> list:
         """Build one bounded graph input from compact context state."""
         messages = []
         if state.summary:
             messages.append(SystemMessage(content=f"{SUMMARY_MESSAGE_PREFIX}\n{state.summary}"))
 
+        if extra_system_messages:
+            messages.extend(extra_system_messages)
+
         messages.extend(state.recent_messages[-self.recent_message_limit:])
         messages.append(HumanMessage(content=user_input))
         return messages
 
-    def update_after_turn(self, state: AgentContextState, final_messages: list) -> AgentContextState:
+    def update_after_turn(
+        self,
+        state: AgentContextState,
+        final_messages: list,
+        force_summarize: bool = False,
+    ) -> AgentContextState:
         """Update compact context after one graph execution."""
         final_conversation_messages = self._strip_context_summary_messages(final_messages)
         unsent_previous_messages = state.recent_messages[:-self.recent_message_limit]
         conversation_messages = [*unsent_previous_messages, *final_conversation_messages]
 
-        if len(conversation_messages) <= self.summary_trigger_message_limit:
+        if not force_summarize and not self._should_summarize(conversation_messages):
             return AgentContextState(
                 summary=state.summary,
                 recent_messages=conversation_messages,
@@ -69,6 +86,21 @@ class AgentContextManager:
 
         return AgentContextState(summary=summary, recent_messages=recent_messages)
 
+    def _should_summarize(self, messages: list) -> bool:
+        """Return whether message volume is large enough to compress."""
+        if len(messages) > self.summary_trigger_message_limit:
+            return True
+
+        total_chars = 0
+        for message in messages:
+            content = getattr(message, "content", "")
+            if isinstance(content, str):
+                total_chars += len(content)
+            else:
+                total_chars += len(repr(content))
+
+        return total_chars > self.summary_trigger_char_limit
+
     def _strip_context_summary_messages(self, messages: list) -> list:
         """Remove synthetic summary messages before persisting recent history."""
         stripped = []
@@ -76,7 +108,10 @@ class AgentContextManager:
             if (
                 message.__class__.__name__ == "SystemMessage"
                 and isinstance(message.content, str)
-                and message.content.startswith(SUMMARY_MESSAGE_PREFIX)
+                and (
+                    message.content.startswith(SUMMARY_MESSAGE_PREFIX)
+                    or message.content.startswith(MEMORY_MESSAGE_PREFIX)
+                )
             ):
                 continue
             stripped.append(message)

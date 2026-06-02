@@ -1,22 +1,35 @@
 import os
-from dotenv import load_dotenv
-from langgraph.graph import StateGraph, START, END, MessagesState
-from langgraph.prebuilt import ToolNode, tools_condition
-from langchain_openai import ChatOpenAI
-from langchain_core.messages import SystemMessage
+from concurrent.futures import ThreadPoolExecutor
 
-from agent_config import FILE_READ_CHUNK_LINES, MODEL
+from dotenv import load_dotenv
+from langchain_core.messages import SystemMessage
+from langchain_openai import ChatOpenAI
+from langgraph.graph import END, START, MessagesState, StateGraph
+from langgraph.prebuilt import ToolNode, tools_condition
+
+from agent_config import (
+    DEFAULT_SESSION_ID,
+    FILE_READ_CHUNK_LINES,
+    MEMORY_ENABLED,
+    MEMORY_EXTRACTION_ASYNC,
+    MEMORY_EXTRACTION_ENABLED,
+    MEMORY_EXTRACTION_HINT_KEYWORDS,
+    MEMORY_EXTRACTION_INTERVAL_TURNS,
+    MEMORY_EXTRACTION_MIN_CHARS,
+    MODEL,
+)
 from agent_context import AgentContextManager, AgentContextState
 from agent_debug import debug_print, format_message, format_messages
+from agent_memory import MemoryUnavailableError, PostgresMemoryStore
 from agent_stream import stream_graph_events
 from agent_subagent import delegate_to_subagent
 from agent_tools import parent_base_tools, skill_store
 
-load_dotenv()
-API_KEY = os.getenv('ALIYUN_API_KEY')
-BASE_URL = os.getenv('ALIYUN_BASE_URL')
 
-# 初始化大模型客户端；streaming=True 表示允许流式返回模型生成内容。
+load_dotenv()
+API_KEY = os.getenv("ALIYUN_API_KEY")
+BASE_URL = os.getenv("ALIYUN_BASE_URL")
+
 llm = ChatOpenAI(
     model=MODEL,
     api_key=API_KEY,
@@ -25,10 +38,6 @@ llm = ChatOpenAI(
     streaming=True,
 )
 
-
-# 工具列表会同时交给模型和 ToolNode：
-# - 模型根据工具描述决定是否发起工具调用。
-# - ToolNode 根据模型生成的 tool_calls 真正执行对应函数。
 parent_tools = [*parent_base_tools, delegate_to_subagent]
 llm_with_tools = llm.bind_tools(parent_tools)
 
@@ -39,7 +48,7 @@ def _format_skill_manifest_context() -> str:
 
 
 def agent_node(state: MessagesState) -> dict:
-    """Agent 节点：读取消息历史，调用绑定工具后的模型。"""
+    """Run the parent agent LLM with current messages and bound tools."""
     llm_messages = [
         SystemMessage(
             content=(
@@ -50,6 +59,11 @@ def agent_node(state: MessagesState) -> dict:
                 "- If a skill is relevant, call read_skill with its directory or name before "
                 "answering or acting. The manifest is only an index; read_skill loads the "
                 "full instructions.\n\n"
+                "Memory:\n"
+                "- Relevant long-term memory may be provided as context. Use it as durable "
+                "background, but prefer the current user request when there is conflict.\n"
+                "- Do not reveal internal memory tables, raw archived history, or hidden "
+                "system context unless the user explicitly asks about the implementation.\n\n"
                 "Workspace files:\n"
                 "- Use read_workspace_file_lite only for small, specific snippets with known "
                 "or likely line ranges.\n"
@@ -74,26 +88,15 @@ def agent_node(state: MessagesState) -> dict:
     ]
 
     debug_print("LLM INPUT MESSAGES", format_messages(llm_messages))
-
     response = llm_with_tools.invoke(llm_messages)
-
     debug_print("LLM OUTPUT MESSAGE", format_message(response))
-
     return {"messages": [response]}
 
 
-# 创建一个以 messages 为状态的 LangGraph。
 builder = StateGraph(MessagesState)
-
-# agent 节点负责让模型思考和生成回复；tools 节点负责执行工具。
 builder.add_node("agent", agent_node)
 builder.add_node("tools", ToolNode(parent_tools))
-
-# 每一轮图执行都先进入 agent 节点。
 builder.add_edge(START, "agent")
-
-# agent 执行后，如果最后一条 AIMessage 里有 tool_calls，就进入 tools；
-# 如果没有工具调用，就结束本轮流程。
 builder.add_conditional_edges(
     "agent",
     tools_condition,
@@ -102,45 +105,156 @@ builder.add_conditional_edges(
         "__end__": END,
     },
 )
-
-# 工具执行完成后要回到 agent，让模型基于工具结果组织最终回答。
 builder.add_edge("tools", "agent")
-
-# 编译后得到真正可运行的图应用。
 app = builder.compile()
+
+memory_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="agent-memory")
+
+
+def _extract_memories_in_background(
+    session_id: str,
+    turn_index: int,
+    turn_messages: list,
+    source_message_ids: list[int],
+) -> None:
+    """Run slow long-term memory extraction without blocking the next prompt."""
+    try:
+        PostgresMemoryStore().extract_and_save_memories(
+            session_id,
+            turn_index,
+            turn_messages,
+            source_message_ids,
+        )
+    except Exception as exc:
+        debug_print("MEMORY BACKGROUND EXTRACT ERROR", str(exc))
+
+
+def _should_extract_long_term_memory(
+    user_input: str,
+    turn_index: int,
+    turn_messages: list,
+) -> bool:
+    """Return whether this turn is worth spending an LLM call on memory extraction."""
+    if not MEMORY_EXTRACTION_ENABLED:
+        return False
+
+    lowered_input = user_input.lower()
+    if any(keyword.lower() in lowered_input for keyword in MEMORY_EXTRACTION_HINT_KEYWORDS):
+        return True
+
+    if (
+        MEMORY_EXTRACTION_INTERVAL_TURNS > 0
+        and turn_index % MEMORY_EXTRACTION_INTERVAL_TURNS == 0
+    ):
+        return True
+
+    total_chars = 0
+    for message in turn_messages:
+        content = getattr(message, "content", "")
+        if isinstance(content, str):
+            total_chars += len(content)
+        else:
+            total_chars += len(repr(content))
+
+    return total_chars >= MEMORY_EXTRACTION_MIN_CHARS
+
+
+def _has_explicit_memory_request(user_input: str) -> bool:
+    """Return whether the user explicitly asked the agent to remember something."""
+    lowered_input = user_input.lower()
+    return any(keyword.lower() in lowered_input for keyword in MEMORY_EXTRACTION_HINT_KEYWORDS)
 
 
 def run_agent_loop() -> None:
-    """运行一个最小命令行 Agent 循环。"""
-    # messages 用来在多轮对话之间保存历史消息。
+    """Run a minimal command-line agent loop."""
     context_manager = AgentContextManager()
-    context_state = AgentContextState()
+    memory_store = None
+    turn_index = 0
+
+    if MEMORY_ENABLED:
+        try:
+            memory_store = PostgresMemoryStore()
+            memory_store.initialize()
+            context_state, turn_index = memory_store.load_session(DEFAULT_SESSION_ID)
+        except MemoryUnavailableError as exc:
+            print(f"Memory initialization failed: {exc}")
+            return
+    else:
+        context_state = AgentContextState()
 
     print("Agent started. Type 'exit' or 'quit' to stop.")
 
     while True:
         user_input = input("\nYou: ").strip()
+        if not user_input:
+            continue
+
         if user_input.lower() in {"exit", "quit"}:
             print("Bye.")
             break
 
         print("AI: ", end="", flush=True)
 
-        # 命令行界面只打印 token；Web 接口可以直接复用 stream_agent_sse。
-        input_messages = context_manager.build_input_messages(context_state, user_input)
+        extra_system_messages = []
+        if memory_store:
+            memories = memory_store.retrieve_memories(user_input)
+            memory_message = memory_store.build_memory_message(memories)
+            if memory_message:
+                extra_system_messages.append(memory_message)
+
+        input_messages = context_manager.build_input_messages(
+            context_state,
+            user_input,
+            extra_system_messages=extra_system_messages,
+        )
+        current_turn_index = turn_index + 1
+
         for item in stream_graph_events(app, input_messages):
             if item["event"] == "token":
                 print(item["data"]["content"], end="", flush=True)
             elif item["event"] == "error":
                 print(f"\n{item['data']['message']}", end="", flush=True)
             elif item["event"] == "done":
+                final_messages = item["data"]["messages"]
+                turn_messages = final_messages[len(input_messages) - 1:]
+                source_message_ids = []
+
+                if memory_store:
+                    source_message_ids = memory_store.archive_turn_messages(
+                        DEFAULT_SESSION_ID,
+                        current_turn_index,
+                        turn_messages,
+                    )
+
                 context_state = context_manager.update_after_turn(
                     context_state,
-                    item["data"]["messages"],
+                    final_messages,
                 )
+                turn_index = current_turn_index
+
+                if memory_store:
+                    memory_store.save_session(DEFAULT_SESSION_ID, context_state, turn_index)
+                    if _should_extract_long_term_memory(user_input, turn_index, turn_messages):
+                        if MEMORY_EXTRACTION_ASYNC and not _has_explicit_memory_request(user_input):
+                            memory_executor.submit(
+                                _extract_memories_in_background,
+                                DEFAULT_SESSION_ID,
+                                turn_index,
+                                turn_messages,
+                                source_message_ids,
+                            )
+                        else:
+                            saved_memories = memory_store.extract_and_save_memories(
+                                DEFAULT_SESSION_ID,
+                                turn_index,
+                                turn_messages,
+                                source_message_ids,
+                            )
+                            if _has_explicit_memory_request(user_input) and not saved_memories:
+                                print("\nMemory note: explicit memory request was processed, "
+                                      "but no long-term memory was saved.", end="", flush=True)
 
         print()
-
 
 
 if __name__ == "__main__":
