@@ -5,9 +5,10 @@ from langgraph.prebuilt import ToolNode, tools_condition
 from langchain_openai import ChatOpenAI
 from langchain_core.messages import SystemMessage
 
-from agent_config import FILE_READ_CHUNK_LINES, MAX_GRAPH_STEPS, MODEL
+from agent_config import FILE_READ_CHUNK_LINES, MODEL
+from agent_context import AgentContextManager, AgentContextState
 from agent_debug import debug_print, format_message, format_messages
-from agent_stream import stream_agent_events
+from agent_stream import stream_graph_events
 from agent_subagent import delegate_to_subagent
 from agent_tools import parent_base_tools, skill_store
 
@@ -112,7 +113,8 @@ app = builder.compile()
 def run_agent_loop() -> None:
     """运行一个最小命令行 Agent 循环。"""
     # messages 用来在多轮对话之间保存历史消息。
-    messages = []
+    context_manager = AgentContextManager()
+    context_state = AgentContextState()
 
     print("Agent started. Type 'exit' or 'quit' to stop.")
 
@@ -125,13 +127,17 @@ def run_agent_loop() -> None:
         print("AI: ", end="", flush=True)
 
         # 命令行界面只打印 token；Web 接口可以直接复用 stream_agent_sse。
-        for item in stream_agent_events(app, messages, user_input):
+        input_messages = context_manager.build_input_messages(context_state, user_input)
+        for item in stream_graph_events(app, input_messages):
             if item["event"] == "token":
                 print(item["data"]["content"], end="", flush=True)
             elif item["event"] == "error":
                 print(f"\n{item['data']['message']}", end="", flush=True)
             elif item["event"] == "done":
-                messages = item["data"]["messages"]
+                context_state = context_manager.update_after_turn(
+                    context_state,
+                    item["data"]["messages"],
+                )
 
         print()
 

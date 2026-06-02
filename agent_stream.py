@@ -68,11 +68,9 @@ def _step_events_from_message(message) -> list[dict]:
     return []
 
 
-def stream_agent_events(app, messages: list, user_input: str):
-    """Yield step/token/done/error events for one user turn."""
-    inputs = {
-        "messages": [*messages, HumanMessage(content=user_input)]
-    }
+def stream_graph_events(app, input_messages: list):
+    """Yield step/token/done/error events for one prepared graph input."""
+    inputs = {"messages": input_messages}
     final_state = None
     seen_message_count = len(inputs["messages"])
 
@@ -123,6 +121,12 @@ def stream_agent_events(app, messages: list, user_input: str):
             "messages": final_state["messages"] if final_state is not None else messages,
         },
     }
+
+
+def stream_agent_events(app, messages: list, user_input: str):
+    """Yield events for one user turn using raw recent messages."""
+    input_messages = [*messages, HumanMessage(content=user_input)]
+    yield from stream_graph_events(app, input_messages)
 
 
 def format_sse_event(event: str, data) -> str:
