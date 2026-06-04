@@ -257,6 +257,8 @@ def run_agent_loop() -> None:
 
         if user_input.lower() in {"exit", "quit"}:
             print("Bye.")
+            if memory_store:
+                memory_store.close()
             break
 
         print("AI: ", end="", flush=True)

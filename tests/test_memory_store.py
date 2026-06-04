@@ -27,6 +27,7 @@ class PostgresMemoryStoreManualTest(unittest.TestCase):
 
     def tearDown(self) -> None:
         set_event_sinks(None)
+        self.store.close()
 
     def test_01_write_test_data(self) -> None:
         """Write fixed test data and leave it in the database."""

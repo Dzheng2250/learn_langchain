@@ -4,7 +4,7 @@ API keys and provider endpoints stay in .env. This file keeps ordinary
 development settings that are safe to commit.
 """
 
-DEBUG_AGENT = True
+DEBUG_AGENT = False
 MAX_GRAPH_STEPS = 16
 BASH_PATH = "bash"
 MODEL = "deepseek-v4-flash"

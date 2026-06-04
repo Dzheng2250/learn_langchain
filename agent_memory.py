@@ -66,7 +66,7 @@ class PostgresMemoryStore:
         self.password = password
         self.retrieval_limit = retrieval_limit
         self.min_importance = min_importance
-        self._psycopg = self._load_psycopg()
+        self._pool = self._load_pool()
         self._Jsonb = self._load_jsonb_adapter()
 
     def initialize(self) -> None:
@@ -573,14 +573,9 @@ class PostgresMemoryStore:
         return "\n".join(lines)
 
     def _connect(self):
+        """Return a connection context manager from the pool."""
         try:
-            return self._psycopg.connect(
-                host=self.host,
-                port=self.port,
-                dbname=self.dbname,
-                user=self.user,
-                password=self.password,
-            )
+            return self._pool.connection()
         except Exception as exc:
             raise MemoryUnavailableError(
                 "Cannot connect to PostgreSQL memory database. "
@@ -588,16 +583,35 @@ class PostgresMemoryStore:
                 "Create it first with: createdb -U postgres learn_agent"
             ) from exc
 
-    def _load_psycopg(self):
-        try:
-            import psycopg
+    def close(self):
+        """Close the connection pool, releasing all connections."""
+        self._pool.close()
 
-            return psycopg
+    def _load_pool(self):
+        """Lazy-import psycopg_pool and create a ConnectionPool."""
+        try:
+            from psycopg_pool import ConnectionPool
         except ImportError as exc:
             raise MemoryUnavailableError(
-                "Python package 'psycopg' is required for PostgreSQL memory. "
+                "Python package 'psycopg_pool' is required for connection pooling. "
                 "Install it in the agent_learn environment, for example: "
-                "pip install psycopg[binary]"
+                "pip install psycopg[pool]"
+            ) from exc
+        try:
+            return ConnectionPool(
+                conninfo=(
+                    f"host={self.host} port={self.port} "
+                    f"dbname={self.dbname} "
+                    f"user={self.user} password={self.password}"
+                ),
+                min_size=1,
+                max_size=2,
+                open=True,
+            )
+        except Exception as exc:
+            raise MemoryUnavailableError(
+                "Failed to create PostgreSQL connection pool. "
+                f"Expected database '{self.dbname}' on {self.host}:{self.port}."
             ) from exc
 
     def _load_jsonb_adapter(self):
