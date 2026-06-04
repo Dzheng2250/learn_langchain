@@ -19,6 +19,7 @@ from agent_config import (
     DOCKER_TIMEOUT_SECONDS,
     FILE_READ_CHUNK_LINES,
     FILE_READ_OUTPUT_LIMIT,
+    ENTIRE_FILE_MAX_LINES,
     LARGE_FILE_CHUNK_LINES,
     LARGE_FILE_MAP_WORKERS,
     LARGE_FILE_MAX_CHUNKS,
@@ -242,14 +243,53 @@ def read_workspace_file(path: str, start_line: int = 1, max_lines: int = FILE_RE
 
     next_line = last_line_number + 1
     header = f"{path} 共 {total_lines} 行，当前读取 {start_line}-{last_line_number} 行。"
-    footer = (
-        f"\n下一段可调用 read_workspace_file(path={path!r}, start_line={next_line})"
-        if next_line <= total_lines
-        else "\n已到达文件末尾。"
-    )
+    remaining = total_lines - last_line_number
+    if remaining > 0:
+        footer = (
+            f"\n\n⚠ 文件还剩 {remaining} 行未读（第 {next_line}-{total_lines} 行）。"
+            "\n请使用 summarize_large_file 总结剩余内容，"
+            "不要连续调用 read_workspace_file 逐块读取，这会导致超出循环次数。"
+        )
+    else:
+        footer = "\n已到达文件末尾。"
     result = header + "\n" + "\n".join(numbered_lines) + footer
 
     debug_print("TOOL read_workspace_file OUTPUT", result)
+    return result
+
+
+@tool
+def read_entire_file(path: str) -> str:
+    """一次读取整个文件；仅适合 300 行以内的中小文件，大文件请用 summarize_large_file。"""
+    debug_print("TOOL read_entire_file INPUT", f"path={path!r}")
+
+    try:
+        file_path = _resolve_workspace_file(path)
+    except ValueError as exc:
+        result = f"读取被拒绝：{exc}"
+        debug_print("TOOL read_entire_file OUTPUT", result)
+        return result
+
+    with open(file_path, "r", encoding="utf-8", errors="replace") as file:
+        lines = file.readlines()
+
+    total_lines = len(lines)
+
+    if total_lines <= ENTIRE_FILE_MAX_LINES:
+        numbered = [f"{i}: {line.rstrip()}" for i, line in enumerate(lines, start=1)]
+        result = f"{path} 共 {total_lines} 行，全文返回。\n" + "\n".join(numbered)
+        debug_print("TOOL read_entire_file OUTPUT", result)
+        return result
+
+    preview_lines = lines[:ENTIRE_FILE_MAX_LINES]
+    numbered = [f"{i}: {line.rstrip()}" for i, line in enumerate(preview_lines, start=1)]
+    result = (
+        f"{path} 共 {total_lines} 行，超出 {ENTIRE_FILE_MAX_LINES} 行上限，仅返回前 {ENTIRE_FILE_MAX_LINES} 行。\n"
+        + "\n".join(numbered)
+        + f"\n\n⚠ 文件剩余 {total_lines - ENTIRE_FILE_MAX_LINES} 行未显示。"
+        "\n请使用 summarize_large_file 总结全文，不要用 read_workspace_file 逐块读取。"
+    )
+    debug_print("TOOL read_entire_file OUTPUT", result)
     return result
 
 
@@ -304,10 +344,15 @@ def read_workspace_file_lite(path: str, start_line: int = 1, max_lines: int = PA
     header = (
         f"{path} 共 {total_lines} 行，父 Agent 轻量读取 {start_line}-{last_line_number} 行。"
     )
-    footer = (
-        "\n如果还需要继续读取更多内容，请改用 delegate_to_subagent，"
-        "不要连续调用 read_workspace_file_lite。"
-    )
+    remaining = total_lines - last_line_number
+    if remaining > 0:
+        footer = (
+            f"\n\n⚠ 文件还剩 {remaining} 行未读（第 {last_line_number + 1}-{total_lines} 行）。"
+            "\n请立即使用 delegate_to_subagent 一次性读取剩余内容，"
+            "不要连续调用 read_workspace_file_lite 逐块读取，这会导致超出循环次数限制。"
+        )
+    else:
+        footer = "\n文件已全部读取完毕。"
     result = header + "\n" + "\n".join(numbered_lines) + footer
 
     debug_print("TOOL read_workspace_file_lite OUTPUT", result)
@@ -709,6 +754,7 @@ def run_command_in_container(command: str) -> str:
 base_tools = [
     get_weather,
     read_workspace_file,
+    read_entire_file,
     list_skills,
     read_skill,
     summarize_large_file,
