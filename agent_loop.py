@@ -250,137 +250,149 @@ def run_agent_loop() -> None:
 
     print("Agent started. Type 'exit' or 'quit' to stop.")
 
-    while True:
-        user_input = input("\nYou: ").strip()
-        if not user_input:
-            continue
+    try:
+        while True:
+            user_input = input("\nYou: ").strip()
+            if not user_input:
+                continue
 
-        if user_input.lower() in {"exit", "quit"}:
-            print("Bye.")
-            if memory_store:
-                memory_store.close()
-            break
+            if user_input.lower() in {"exit", "quit"}:
+                print("Bye.")
+                break
 
-        print("AI: ", end="", flush=True)
+            print("AI: ", end="", flush=True)
 
-        current_turn_index = turn_index + 1
-        run_id = str(uuid4())
-        set_event_context(DEFAULT_SESSION_ID, current_turn_index, run_id)
-        emit_event(
-            "turn_started",
-            "agent_loop",
-            "Started agent turn.",
-            {"user_input_preview": user_input[:300]},
-        )
-
-        extra_system_messages = []
-        if memory_store:
-            memories = memory_store.retrieve_memories(user_input)
-            memory_message = memory_store.build_memory_message(memories)
-            if memory_message:
-                extra_system_messages.append(memory_message)
-
-        input_messages = context_manager.build_input_messages(
-            context_state,
-            user_input,
-                extra_system_messages=extra_system_messages,
-        )
-        emit_event(
-            "context_loaded",
-            "agent_loop",
-            "Built input messages for agent turn.",
-            {
-                "input_message_count": len(input_messages),
-                "extra_system_messages": len(extra_system_messages),
-                "recent_messages": len(context_state.recent_messages),
-                "has_summary": bool(context_state.summary),
-            },
-        )
-
-        for item in stream_graph_events(app, input_messages):
-            if item["event"] == "token":
-                print(item["data"]["content"], end="", flush=True)
-            elif item["event"] == "error":
-                record_error(
-                    "agent_loop",
-                    "turn",
-                    RuntimeError(item["data"].get("message", "")),
-                    "Agent turn failed.",
-                    item["data"],
-                    event_type="turn_failed",
-                )
-                print(f"\n{item['data']['message']}", end="", flush=True)
-            elif item["event"] == "done":
-                final_messages = item["data"]["messages"]
-                turn_messages = final_messages[len(input_messages) - 1:]
-                source_message_ids = []
-
-                if memory_store:
-                    source_message_ids = memory_store.archive_turn_messages(
-                        DEFAULT_SESSION_ID,
-                        current_turn_index,
-                        turn_messages,
-                    )
-
-                context_state = context_manager.update_after_turn(
-                    context_state,
-                    final_messages,
-                )
-                turn_index = current_turn_index
-
-                if memory_store:
-                    memory_store.save_session(DEFAULT_SESSION_ID, context_state, turn_index)
-                    extraction_reason = _memory_extraction_reason(user_input, turn_index, turn_messages)
-                    if extraction_reason != "not_triggered" and extraction_reason != "disabled":
-                        emit_event(
-                            "memory_extract_triggered",
-                            "agent_loop",
-                            "Long-term memory extraction trigger matched.",
-                            {
-                                "reason": extraction_reason,
-                                "turn_message_chars": _turn_message_chars(turn_messages),
-                            },
-                        )
-                        if MEMORY_EXTRACTION_ASYNC and not _has_explicit_memory_request(user_input):
-                            memory_executor.submit(
-                                _extract_memories_in_background,
-                                DEFAULT_SESSION_ID,
-                                turn_index,
-                                turn_messages,
-                                source_message_ids,
-                            )
-                        else:
-                            saved_memories = memory_store.extract_and_save_memories(
-                                DEFAULT_SESSION_ID,
-                                turn_index,
-                                turn_messages,
-                                source_message_ids,
-                            )
-                            if _has_explicit_memory_request(user_input) and not saved_memories:
-                                print("\nMemory note: explicit memory request was processed, "
-                                      "but no long-term memory was saved.", end="", flush=True)
-                    else:
-                        emit_event(
-                            "memory_extract_skipped",
-                            "agent_loop",
-                            "Long-term memory extraction skipped for this turn.",
-                            {
-                                "reason": extraction_reason,
-                                "turn_message_chars": _turn_message_chars(turn_messages),
-                            },
-                        )
-
+            try:
+                current_turn_index = turn_index + 1
+                run_id = str(uuid4())
+                set_event_context(DEFAULT_SESSION_ID, current_turn_index, run_id)
                 emit_event(
-                    "turn_finished",
+                    "turn_started",
                     "agent_loop",
-                    "Finished agent turn.",
+                    "Started agent turn.",
+                    {"user_input_preview": user_input[:300]},
+                )
+
+                extra_system_messages = []
+                if memory_store:
+                    memories = memory_store.retrieve_memories(user_input)
+                    memory_message = memory_store.build_memory_message(memories)
+                    if memory_message:
+                        extra_system_messages.append(memory_message)
+
+                input_messages = context_manager.build_input_messages(
+                    context_state,
+                    user_input,
+                        extra_system_messages=extra_system_messages,
+                )
+                emit_event(
+                    "context_loaded",
+                    "agent_loop",
+                    "Built input messages for agent turn.",
                     {
-                        "final_message_count": len(final_messages),
-                        "turn_message_count": len(turn_messages),
+                        "input_message_count": len(input_messages),
+                        "extra_system_messages": len(extra_system_messages),
+                        "recent_messages": len(context_state.recent_messages),
+                        "has_summary": bool(context_state.summary),
                     },
                 )
 
-        print()
+                for item in stream_graph_events(app, input_messages):
+                    if item["event"] == "token":
+                        print(item["data"]["content"], end="", flush=True)
+                    elif item["event"] == "error":
+                        record_error(
+                            "agent_loop",
+                            "turn",
+                            RuntimeError(item["data"].get("message", "")),
+                            "Agent turn failed.",
+                            item["data"],
+                            event_type="turn_failed",
+                        )
+                        print(f"\n{item['data']['message']}", end="", flush=True)
+                    elif item["event"] == "done":
+                        final_messages = item["data"]["messages"]
+                        turn_messages = final_messages[len(input_messages) - 1:]
+                        source_message_ids = []
+
+                        if memory_store:
+                            source_message_ids = memory_store.archive_turn_messages(
+                                DEFAULT_SESSION_ID,
+                                current_turn_index,
+                                turn_messages,
+                            )
+
+                        context_state = context_manager.update_after_turn(
+                            context_state,
+                            final_messages,
+                        )
+                        turn_index = current_turn_index
+
+                        if memory_store:
+                            memory_store.save_session(DEFAULT_SESSION_ID, context_state, turn_index)
+                            extraction_reason = _memory_extraction_reason(user_input, turn_index, turn_messages)
+                            if extraction_reason != "not_triggered" and extraction_reason != "disabled":
+                                emit_event(
+                                    "memory_extract_triggered",
+                                    "agent_loop",
+                                    "Long-term memory extraction trigger matched.",
+                                    {
+                                        "reason": extraction_reason,
+                                        "turn_message_chars": _turn_message_chars(turn_messages),
+                                    },
+                                )
+                                if MEMORY_EXTRACTION_ASYNC and not _has_explicit_memory_request(user_input):
+                                    memory_executor.submit(
+                                        _extract_memories_in_background,
+                                        DEFAULT_SESSION_ID,
+                                        turn_index,
+                                        turn_messages,
+                                        source_message_ids,
+                                    )
+                                else:
+                                    saved_memories = memory_store.extract_and_save_memories(
+                                        DEFAULT_SESSION_ID,
+                                        turn_index,
+                                        turn_messages,
+                                        source_message_ids,
+                                    )
+                                    if _has_explicit_memory_request(user_input) and not saved_memories:
+                                        print("\nMemory note: explicit memory request was processed, "
+                                              "but no long-term memory was saved.", end="", flush=True)
+                            else:
+                                emit_event(
+                                    "memory_extract_skipped",
+                                    "agent_loop",
+                                    "Long-term memory extraction skipped for this turn.",
+                                    {
+                                        "reason": extraction_reason,
+                                        "turn_message_chars": _turn_message_chars(turn_messages),
+                                    },
+                                )
+
+                        emit_event(
+                            "turn_finished",
+                            "agent_loop",
+                            "Finished agent turn.",
+                            {
+                                "final_message_count": len(final_messages),
+                                "turn_message_count": len(turn_messages),
+                            },
+                        )
+
+                print()
+            except Exception as exc:
+                print(f"\nTurn error: {exc}", flush=True)
+                record_error(
+                    "agent_loop",
+                    "turn",
+                    exc,
+                    "Agent turn failed with unhandled exception.",
+                    event_type="turn_failed",
+                )
+    finally:
+        if memory_store:
+            memory_store.close()
 
 
 if __name__ == "__main__":
