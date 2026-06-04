@@ -4,6 +4,7 @@ from langchain_core.messages import HumanMessage
 from langgraph.errors import GraphRecursionError
 
 from agent_config import MAX_GRAPH_STEPS
+from agent_hooks import emit_event, record_error
 
 
 def _message_text(message) -> str:
@@ -106,6 +107,13 @@ def stream_graph_events(app, input_messages: list):
                 for message in new_messages:
                     yield from _step_events_from_message(message)
     except GraphRecursionError:
+        emit_event(
+            "recursion_limit",
+            "agent_stream",
+            f"Graph exceeded recursion_limit={MAX_GRAPH_STEPS}.",
+            {"recursion_limit": MAX_GRAPH_STEPS},
+            level="error",
+        )
         yield {
             "event": "error",
             "data": {
@@ -115,6 +123,13 @@ def stream_graph_events(app, input_messages: list):
         }
         return
     except Exception as exc:
+        record_error(
+            "agent_stream",
+            "llm_or_graph",
+            exc,
+            "Graph execution failed.",
+            event_type="llm_or_graph_failed",
+        )
         yield {
             "event": "error",
             "data": {

@@ -14,6 +14,7 @@ from agent_config import (
     SUMMARY_TRIGGER_MESSAGE_LIMIT,
 )
 from agent_debug import debug_print, format_message
+from agent_hooks import emit_event, event_span, record_error
 
 
 SUMMARY_MESSAGE_PREFIX = "Conversation context summary:"
@@ -74,7 +75,19 @@ class AgentContextManager:
         unsent_previous_messages = state.recent_messages[:-self.recent_message_limit]
         conversation_messages = [*unsent_previous_messages, *final_conversation_messages]
 
-        if not force_summarize and not self._should_summarize(conversation_messages):
+        should_summarize = force_summarize or self._should_summarize(conversation_messages)
+        if not should_summarize:
+            emit_event(
+                "context_summary_skipped",
+                "agent_context",
+                "Context summary skipped.",
+                {
+                    "message_count": len(conversation_messages),
+                    "recent_message_limit": self.recent_message_limit,
+                    "summary_trigger_message_limit": self.summary_trigger_message_limit,
+                    "summary_trigger_char_limit": self.summary_trigger_char_limit,
+                },
+            )
             return AgentContextState(
                 summary=state.summary,
                 recent_messages=conversation_messages,
@@ -82,7 +95,28 @@ class AgentContextManager:
 
         old_messages = conversation_messages[:-self.recent_message_limit]
         recent_messages = conversation_messages[-self.recent_message_limit:]
-        summary = self._summarize_messages(state.summary, old_messages)
+        emit_event(
+            "context_summarize_triggered",
+            "agent_context",
+            "Context summary triggered.",
+            {
+                "force_summarize": force_summarize,
+                "old_message_count": len(old_messages),
+                "recent_message_count": len(recent_messages),
+            },
+        )
+        try:
+            summary = self._summarize_messages(state.summary, old_messages)
+        except Exception as exc:
+            record_error(
+                "agent_context",
+                "context_summary",
+                exc,
+                "Context summary failed.",
+                {"old_message_count": len(old_messages)},
+                event_type="context_summary_failed",
+            )
+            raise
 
         return AgentContextState(summary=summary, recent_messages=recent_messages)
 
@@ -124,31 +158,42 @@ class AgentContextManager:
             source = source[-self.summary_source_char_limit:]
 
         llm = self._create_summary_llm()
-        response = llm.invoke([
-            SystemMessage(
-                content=(
-                    "You maintain compact context for a coding agent. "
-                    "Update the session summary using only the supplied prior summary "
-                    "and older conversation messages. Preserve concrete facts, decisions, "
-                    "file names, current architecture, open issues, user preferences, and "
-                    "constraints. Remove transient wording and redundant tool output. "
-                    "Use concise Markdown sections."
-                )
-            ),
-            HumanMessage(
-                content=(
-                    f"Previous summary:\n{previous_summary or '(none)'}\n\n"
-                    f"Older messages to compress:\n{source}\n\n"
-                    f"Return an updated summary under {self.summary_max_chars} characters."
-                )
-            ),
-        ])
+        with event_span(
+            "context_summary_llm",
+            "agent_context",
+            payload={"source_chars": len(source), "message_count": len(messages)},
+        ):
+            response = llm.invoke([
+                SystemMessage(
+                    content=(
+                        "You maintain compact context for a coding agent. "
+                        "Update the session summary using only the supplied prior summary "
+                        "and older conversation messages. Preserve concrete facts, decisions, "
+                        "file names, current architecture, open issues, user preferences, and "
+                        "constraints. Remove transient wording and redundant tool output. "
+                        "Use concise Markdown sections."
+                    )
+                ),
+                HumanMessage(
+                    content=(
+                        f"Previous summary:\n{previous_summary or '(none)'}\n\n"
+                        f"Older messages to compress:\n{source}\n\n"
+                        f"Return an updated summary under {self.summary_max_chars} characters."
+                    )
+                ),
+            ])
 
         summary = response.content.strip()
         if len(summary) > self.summary_max_chars:
             summary = summary[:self.summary_max_chars] + "\n... summary truncated ..."
 
         debug_print("CONTEXT SUMMARY UPDATED", summary)
+        emit_event(
+            "context_summarized",
+            "agent_context",
+            "Context summary updated.",
+            {"summary_chars": len(summary), "compressed_messages": len(messages)},
+        )
         return summary
 
     def _format_messages_for_summary(self, messages: list) -> str:

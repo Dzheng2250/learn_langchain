@@ -1,11 +1,12 @@
 import os
 from concurrent.futures import ThreadPoolExecutor
+from uuid import uuid4
 
 from dotenv import load_dotenv
 from langchain_core.messages import SystemMessage
 from langchain_openai import ChatOpenAI
 from langgraph.graph import END, START, MessagesState, StateGraph
-from langgraph.prebuilt import ToolNode, tools_condition
+from langgraph.prebuilt import tools_condition
 
 from agent_config import (
     DEFAULT_SESSION_ID,
@@ -20,7 +21,9 @@ from agent_config import (
 )
 from agent_context import AgentContextManager, AgentContextState
 from agent_debug import debug_print, format_message, format_messages
+from agent_hooks import emit_event, record_error, set_event_context
 from agent_memory import MemoryUnavailableError, PostgresMemoryStore
+from agent_observed_tools import ObservedToolNode
 from agent_stream import stream_graph_events
 from agent_subagent import delegate_to_subagent
 from agent_tools import parent_base_tools, skill_store
@@ -88,14 +91,39 @@ def agent_node(state: MessagesState) -> dict:
     ]
 
     debug_print("LLM INPUT MESSAGES", format_messages(llm_messages))
-    response = llm_with_tools.invoke(llm_messages)
+    emit_event(
+        "llm_started",
+        "agent_loop",
+        "Calling parent LLM.",
+        {"message_count": len(llm_messages), "model": MODEL},
+    )
+    try:
+        response = llm_with_tools.invoke(llm_messages)
+    except Exception as exc:
+        record_error(
+            "agent_loop",
+            "llm",
+            exc,
+            "Parent LLM call failed.",
+            event_type="llm_failed",
+        )
+        raise
     debug_print("LLM OUTPUT MESSAGE", format_message(response))
+    emit_event(
+        "llm_finished",
+        "agent_loop",
+        "Parent LLM call finished.",
+        {
+            "has_tool_calls": bool(getattr(response, "tool_calls", None)),
+            "content_chars": len(response.content) if isinstance(response.content, str) else len(repr(response.content)),
+        },
+    )
     return {"messages": [response]}
 
 
 builder = StateGraph(MessagesState)
 builder.add_node("agent", agent_node)
-builder.add_node("tools", ToolNode(parent_tools))
+builder.add_node("tools", ObservedToolNode(parent_tools))
 builder.add_edge(START, "agent")
 builder.add_conditional_edges(
     "agent",
@@ -159,10 +187,48 @@ def _should_extract_long_term_memory(
     return total_chars >= MEMORY_EXTRACTION_MIN_CHARS
 
 
+def _memory_extraction_reason(
+    user_input: str,
+    turn_index: int,
+    turn_messages: list,
+) -> str:
+    """Return why long-term memory extraction should run, or why it is skipped."""
+    if not MEMORY_EXTRACTION_ENABLED:
+        return "disabled"
+
+    lowered_input = user_input.lower()
+    if any(keyword.lower() in lowered_input for keyword in MEMORY_EXTRACTION_HINT_KEYWORDS):
+        return "explicit_memory_keyword"
+
+    if (
+        MEMORY_EXTRACTION_INTERVAL_TURNS > 0
+        and turn_index % MEMORY_EXTRACTION_INTERVAL_TURNS == 0
+    ):
+        return "interval_turn"
+
+    total_chars = _turn_message_chars(turn_messages)
+    if total_chars >= MEMORY_EXTRACTION_MIN_CHARS:
+        return "content_size"
+
+    return "not_triggered"
+
+
 def _has_explicit_memory_request(user_input: str) -> bool:
     """Return whether the user explicitly asked the agent to remember something."""
     lowered_input = user_input.lower()
     return any(keyword.lower() in lowered_input for keyword in MEMORY_EXTRACTION_HINT_KEYWORDS)
+
+
+def _turn_message_chars(turn_messages: list) -> int:
+    """Return approximate character count for one completed turn."""
+    total_chars = 0
+    for message in turn_messages:
+        content = getattr(message, "content", "")
+        if isinstance(content, str):
+            total_chars += len(content)
+        else:
+            total_chars += len(repr(content))
+    return total_chars
 
 
 def run_agent_loop() -> None:
@@ -195,6 +261,16 @@ def run_agent_loop() -> None:
 
         print("AI: ", end="", flush=True)
 
+        current_turn_index = turn_index + 1
+        run_id = str(uuid4())
+        set_event_context(DEFAULT_SESSION_ID, current_turn_index, run_id)
+        emit_event(
+            "turn_started",
+            "agent_loop",
+            "Started agent turn.",
+            {"user_input_preview": user_input[:300]},
+        )
+
         extra_system_messages = []
         if memory_store:
             memories = memory_store.retrieve_memories(user_input)
@@ -205,14 +281,32 @@ def run_agent_loop() -> None:
         input_messages = context_manager.build_input_messages(
             context_state,
             user_input,
-            extra_system_messages=extra_system_messages,
+                extra_system_messages=extra_system_messages,
         )
-        current_turn_index = turn_index + 1
+        emit_event(
+            "context_loaded",
+            "agent_loop",
+            "Built input messages for agent turn.",
+            {
+                "input_message_count": len(input_messages),
+                "extra_system_messages": len(extra_system_messages),
+                "recent_messages": len(context_state.recent_messages),
+                "has_summary": bool(context_state.summary),
+            },
+        )
 
         for item in stream_graph_events(app, input_messages):
             if item["event"] == "token":
                 print(item["data"]["content"], end="", flush=True)
             elif item["event"] == "error":
+                record_error(
+                    "agent_loop",
+                    "turn",
+                    RuntimeError(item["data"].get("message", "")),
+                    "Agent turn failed.",
+                    item["data"],
+                    event_type="turn_failed",
+                )
                 print(f"\n{item['data']['message']}", end="", flush=True)
             elif item["event"] == "done":
                 final_messages = item["data"]["messages"]
@@ -234,7 +328,17 @@ def run_agent_loop() -> None:
 
                 if memory_store:
                     memory_store.save_session(DEFAULT_SESSION_ID, context_state, turn_index)
-                    if _should_extract_long_term_memory(user_input, turn_index, turn_messages):
+                    extraction_reason = _memory_extraction_reason(user_input, turn_index, turn_messages)
+                    if extraction_reason != "not_triggered" and extraction_reason != "disabled":
+                        emit_event(
+                            "memory_extract_triggered",
+                            "agent_loop",
+                            "Long-term memory extraction trigger matched.",
+                            {
+                                "reason": extraction_reason,
+                                "turn_message_chars": _turn_message_chars(turn_messages),
+                            },
+                        )
                         if MEMORY_EXTRACTION_ASYNC and not _has_explicit_memory_request(user_input):
                             memory_executor.submit(
                                 _extract_memories_in_background,
@@ -253,6 +357,26 @@ def run_agent_loop() -> None:
                             if _has_explicit_memory_request(user_input) and not saved_memories:
                                 print("\nMemory note: explicit memory request was processed, "
                                       "but no long-term memory was saved.", end="", flush=True)
+                    else:
+                        emit_event(
+                            "memory_extract_skipped",
+                            "agent_loop",
+                            "Long-term memory extraction skipped for this turn.",
+                            {
+                                "reason": extraction_reason,
+                                "turn_message_chars": _turn_message_chars(turn_messages),
+                            },
+                        )
+
+                emit_event(
+                    "turn_finished",
+                    "agent_loop",
+                    "Finished agent turn.",
+                    {
+                        "final_message_count": len(final_messages),
+                        "turn_message_count": len(turn_messages),
+                    },
+                )
 
         print()
 

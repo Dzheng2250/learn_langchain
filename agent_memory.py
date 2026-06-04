@@ -23,6 +23,7 @@ from agent_config import (
 )
 from agent_context import AgentContextState
 from agent_debug import debug_print, format_message
+from agent_hooks import emit_event, event_span, record_error, record_memory_saved
 
 
 MEMORY_MESSAGE_PREFIX = "Relevant long-term memory:"
@@ -116,6 +117,23 @@ class PostgresMemoryStore:
                     """
                 )
                 cur.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS agent_events (
+                        id BIGSERIAL PRIMARY KEY,
+                        run_id TEXT NOT NULL,
+                        session_id TEXT NOT NULL,
+                        turn_index INTEGER,
+                        event_type TEXT NOT NULL,
+                        source TEXT NOT NULL,
+                        level TEXT NOT NULL DEFAULT 'info',
+                        message TEXT NOT NULL DEFAULT '',
+                        payload JSONB NOT NULL DEFAULT '{}',
+                        duration_ms INTEGER,
+                        created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+                    )
+                    """
+                )
+                cur.execute(
                     "CREATE INDEX IF NOT EXISTS idx_agent_messages_session "
                     "ON agent_messages(session_id, turn_index, id)"
                 )
@@ -136,6 +154,18 @@ class PostgresMemoryStore:
                     "ON agent_memories "
                     "USING GIN (to_tsvector('simple', content))"
                 )
+                cur.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_agent_events_session_turn "
+                    "ON agent_events(session_id, turn_index, id)"
+                )
+                cur.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_agent_events_run "
+                    "ON agent_events(run_id)"
+                )
+                cur.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_agent_events_type "
+                    "ON agent_events(event_type)"
+                )
             conn.commit()
 
     def load_session(self, session_id: str) -> tuple[AgentContextState, int]:
@@ -154,6 +184,12 @@ class PostgresMemoryStore:
 
         if not row:
             debug_print("MEMORY SESSION LOAD", f"session_id={session_id}, new session")
+            emit_event(
+                "context_loaded",
+                "agent_memory",
+                "No persisted session context found.",
+                {"session_id": session_id, "turn_index": 0, "recent_messages": 0},
+            )
             return AgentContextState(), 0
 
         summary, recent_messages_json, turn_index = row
@@ -161,6 +197,17 @@ class PostgresMemoryStore:
         debug_print(
             "MEMORY SESSION LOAD",
             f"session_id={session_id}, turn_index={turn_index}, recent_messages={len(recent_messages)}",
+        )
+        emit_event(
+            "context_loaded",
+            "agent_memory",
+            "Loaded persisted session context.",
+            {
+                "session_id": session_id,
+                "turn_index": turn_index,
+                "summary_chars": len(summary or ""),
+                "recent_messages": len(recent_messages),
+            },
         )
         return AgentContextState(summary=summary or "", recent_messages=recent_messages), turn_index
 
@@ -194,6 +241,17 @@ class PostgresMemoryStore:
             "MEMORY SESSION SAVE",
             f"session_id={session_id}, turn_index={turn_index}, recent_messages={len(state.recent_messages)}",
         )
+        emit_event(
+            "context_saved",
+            "agent_memory",
+            "Saved compact session context.",
+            {
+                "session_id": session_id,
+                "turn_index": turn_index,
+                "summary_chars": len(state.summary),
+                "recent_messages": len(state.recent_messages),
+            },
+        )
 
     def archive_turn_messages(self, session_id: str, turn_index: int, messages: list) -> list[int]:
         """Append all graph messages from one turn to the durable message log."""
@@ -225,6 +283,17 @@ class PostgresMemoryStore:
         debug_print(
             "MEMORY MESSAGE ARCHIVE",
             f"session_id={session_id}, turn_index={turn_index}, messages={len(message_ids)}",
+        )
+        emit_event(
+            "messages_archived",
+            "agent_memory",
+            "Archived turn messages.",
+            {
+                "session_id": session_id,
+                "turn_index": turn_index,
+                "message_count": len(message_ids),
+                "message_ids": message_ids,
+            },
         )
         return message_ids
 
@@ -264,6 +333,17 @@ class PostgresMemoryStore:
 
         memories = [self._memory_from_row(row) for row in rows]
         debug_print("MEMORY RETRIEVE", self.format_memories(memories))
+        emit_event(
+            "memory_retrieved",
+            "agent_memory",
+            "Retrieved long-term memories.",
+            {
+                "query": query,
+                "scope": scope,
+                "memory_count": len(memories),
+                "memory_ids": [memory.id for memory in memories],
+            },
+        )
         return memories
 
     def extract_and_save_memories(
@@ -276,15 +356,66 @@ class PostgresMemoryStore:
     ) -> list[str]:
         """Extract stable long-term memories from one completed turn."""
         if not MEMORY_EXTRACTION_ENABLED:
+            emit_event(
+                "memory_extract_skipped",
+                "agent_memory",
+                "Memory extraction is disabled.",
+                {"session_id": session_id, "turn_index": turn_index, "reason": "disabled"},
+            )
             return []
 
         source = self._format_messages_for_extraction(messages)
         if not source.strip():
+            emit_event(
+                "memory_extract_skipped",
+                "agent_memory",
+                "No source messages for memory extraction.",
+                {"session_id": session_id, "turn_index": turn_index, "reason": "empty_source"},
+            )
             return []
 
-        candidates = self._extract_memory_candidates(source)
+        emit_event(
+            "memory_extract_triggered",
+            "agent_memory",
+            "Started long-term memory extraction.",
+            {
+                "session_id": session_id,
+                "turn_index": turn_index,
+                "message_count": len(messages),
+                "source_message_ids": source_message_ids,
+                "source_chars": len(source),
+            },
+        )
+
+        try:
+            candidates = self._extract_memory_candidates(source)
+        except Exception as exc:
+            record_error(
+                "agent_memory",
+                "memory",
+                exc,
+                "Long-term memory extraction failed.",
+                {
+                    "session_id": session_id,
+                    "turn_index": turn_index,
+                },
+                event_type="memory_failed",
+            )
+            raise
+
         if not candidates:
             debug_print("MEMORY EXTRACT", "No long-term memories extracted.")
+            emit_event(
+                "memory_extract_finished",
+                "agent_memory",
+                "No long-term memories extracted.",
+                {
+                    "session_id": session_id,
+                    "turn_index": turn_index,
+                    "candidate_count": 0,
+                    "saved_count": 0,
+                },
+            )
             return []
 
         saved = []
@@ -294,17 +425,44 @@ class PostgresMemoryStore:
                 for candidate in candidates:
                     importance = int(candidate.get("importance", 3))
                     if importance < self.min_importance:
-                        skipped.append(
-                            f"low importance {importance}: {str(candidate.get('content', ''))[:120]}"
+                        reason = "low_importance"
+                        skipped_item = {
+                            "reason": reason,
+                            "importance": importance,
+                            "content_preview": str(candidate.get("content", ""))[:120],
+                        }
+                        skipped.append(skipped_item)
+                        emit_event(
+                            "memory_skipped",
+                            "agent_memory",
+                            "Skipped memory candidate.",
+                            skipped_item,
                         )
                         continue
 
                     content = str(candidate.get("content", "")).strip()
                     if not content:
-                        skipped.append("empty content")
+                        skipped_item = {"reason": "empty_content"}
+                        skipped.append(skipped_item)
+                        emit_event(
+                            "memory_skipped",
+                            "agent_memory",
+                            "Skipped memory candidate.",
+                            skipped_item,
+                        )
                         continue
                     if self._looks_sensitive(content):
-                        skipped.append(f"sensitive content skipped: {content[:120]}")
+                        skipped_item = {
+                            "reason": "sensitive_content",
+                            "content_preview": content[:120],
+                        }
+                        skipped.append(skipped_item)
+                        emit_event(
+                            "memory_skipped",
+                            "agent_memory",
+                            "Skipped memory candidate.",
+                            skipped_item,
+                        )
                         continue
 
                     kind = str(candidate.get("kind", "project_fact")).strip() or "project_fact"
@@ -333,7 +491,17 @@ class PostgresMemoryStore:
                                 existing_id,
                             ),
                         )
-                        saved.append(f"updated {existing_id}: {kind}: {content[:120]}")
+                        saved_item = f"updated {existing_id}: {kind}: {content[:120]}"
+                        saved.append(saved_item)
+                        record_memory_saved(
+                            "agent_memory",
+                            memory_id=existing_id,
+                            action="updated",
+                            kind=kind,
+                            importance=importance,
+                            content=content,
+                            message="Updated long-term memory.",
+                        )
                     else:
                         memory_id = str(uuid4())
                         cur.execute(
@@ -355,12 +523,34 @@ class PostgresMemoryStore:
                                 self._json_param(source_message_ids),
                             ),
                         )
-                        saved.append(f"created {memory_id}: {kind}: {content[:120]}")
+                        saved_item = f"created {memory_id}: {kind}: {content[:120]}"
+                        saved.append(saved_item)
+                        record_memory_saved(
+                            "agent_memory",
+                            memory_id=memory_id,
+                            action="created",
+                            kind=kind,
+                            importance=importance,
+                            content=content,
+                            message="Created long-term memory.",
+                        )
             conn.commit()
 
         debug_print("MEMORY SAVE LONG TERM", "\n".join(saved) or "No memories saved.")
         if skipped:
-            debug_print("MEMORY SAVE SKIPPED", "\n".join(skipped))
+            debug_print("MEMORY SAVE SKIPPED", json.dumps(skipped, ensure_ascii=False, indent=2))
+        emit_event(
+            "memory_extract_finished",
+            "agent_memory",
+            "Finished long-term memory extraction.",
+            {
+                "session_id": session_id,
+                "turn_index": turn_index,
+                "candidate_count": len(candidates),
+                "saved_count": len(saved),
+                "skipped_count": len(skipped),
+            },
+        )
         return saved
 
     def build_memory_message(self, memories: list[RetrievedMemory]) -> SystemMessage | None:
@@ -488,6 +678,16 @@ class PostgresMemoryStore:
                 rows = cur.fetchall()
         memories = [self._memory_from_row(row) for row in rows]
         debug_print("MEMORY RETRIEVE", self.format_memories(memories))
+        emit_event(
+            "memory_retrieved",
+            "agent_memory",
+            "Retrieved recent important memories.",
+            {
+                "scope": scope,
+                "memory_count": len(memories),
+                "memory_ids": [memory.id for memory in memories],
+            },
+        )
         return memories
 
     def _normalize_search_query(self, query: str) -> str:
@@ -509,26 +709,31 @@ class PostgresMemoryStore:
 
     def _extract_memory_candidates(self, source: str) -> list[dict]:
         llm = self._create_memory_llm()
-        response = llm.invoke(
-            [
-                SystemMessage(
-                    content=(
-                        "Extract durable long-term memories for a local coding agent. "
-                        "Return strict JSON only: an array of objects with keys "
-                        "kind, content, tags, importance, confidence. "
-                        "Only include stable user preferences, project facts, architecture "
-                        "decisions, task state, or reusable troubleshooting notes. "
-                        "If the user explicitly asks to remember something, extract the "
-                        "thing they asked to remember as a durable memory unless it is "
-                        "sensitive or unsafe. "
-                        "Do not include secrets, API keys, passwords, .env values, transient "
-                        "tool output, or generic conversation filler. "
-                        "If nothing should be remembered, return []."
-                    )
-                ),
-                HumanMessage(content=f"Conversation turn:\n{source}"),
-            ]
-        )
+        with event_span(
+            "memory_candidate_extract",
+            "agent_memory",
+            payload={"source_chars": len(source)},
+        ):
+            response = llm.invoke(
+                [
+                    SystemMessage(
+                        content=(
+                            "Extract durable long-term memories for a local coding agent. "
+                            "Return strict JSON only: an array of objects with keys "
+                            "kind, content, tags, importance, confidence. "
+                            "Only include stable user preferences, project facts, architecture "
+                            "decisions, task state, or reusable troubleshooting notes. "
+                            "If the user explicitly asks to remember something, extract the "
+                            "thing they asked to remember as a durable memory unless it is "
+                            "sensitive or unsafe. "
+                            "Do not include secrets, API keys, passwords, .env values, transient "
+                            "tool output, or generic conversation filler. "
+                            "If nothing should be remembered, return []."
+                        )
+                    ),
+                    HumanMessage(content=f"Conversation turn:\n{source}"),
+                ]
+            )
 
         content = str(response.content).strip()
         try:

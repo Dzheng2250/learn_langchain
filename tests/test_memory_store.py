@@ -3,6 +3,7 @@ import unittest
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 
 from agent_context import AgentContextState
+from agent_hooks import AgentEvent, NoopEventSink, PostgresEventSink, set_event_sinks
 from agent_memory import MemoryUnavailableError, PostgresMemoryStore
 
 
@@ -20,8 +21,12 @@ class PostgresMemoryStoreManualTest(unittest.TestCase):
     """
 
     def setUp(self) -> None:
+        set_event_sinks([NoopEventSink()])
         self.store = PostgresMemoryStore(retrieval_limit=5, min_importance=1)
         self.store.initialize()
+
+    def tearDown(self) -> None:
+        set_event_sinks(None)
 
     def test_01_write_test_data(self) -> None:
         """Write fixed test data and leave it in the database."""
@@ -153,6 +158,47 @@ class PostgresMemoryStoreManualTest(unittest.TestCase):
         self.assertEqual("", loaded_state.summary)
         self.assertEqual([], loaded_state.recent_messages)
         self.assertFalse(any(memory.id == TEST_MEMORY_ID for memory in memories))
+
+    def test_04_write_and_delete_event_data(self) -> None:
+        """Write one fixed event and delete it."""
+        run_id = "test_run_manual_memory_test"
+        sink = PostgresEventSink(async_write=True, batch_size=2, flush_interval_seconds=0.1)
+        sink.emit(
+            AgentEvent(
+                event_type="test_event",
+                source="test_memory_store",
+                message="test event write",
+                payload={"marker": TEST_MARKER},
+                session_id=TEST_SESSION_ID,
+                turn_index=99,
+                run_id=run_id,
+            )
+        )
+        sink.flush()
+        sink.close()
+
+        with self.store._connect() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT event_type, source, message, payload
+                    FROM agent_events
+                    WHERE run_id = %s
+                    """,
+                    (run_id,),
+                )
+                row = cur.fetchone()
+
+                cur.execute("DELETE FROM agent_events WHERE run_id = %s", (run_id,))
+                deleted_events = cur.rowcount
+            conn.commit()
+
+        self.assertIsNotNone(row)
+        self.assertEqual("test_event", row[0])
+        self.assertEqual("test_memory_store", row[1])
+        self.assertEqual("test event write", row[2])
+        self.assertEqual(TEST_MARKER, row[3]["marker"])
+        self.assertEqual(1, deleted_events)
 
 
 if __name__ == "__main__":
