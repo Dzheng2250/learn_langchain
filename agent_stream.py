@@ -1,5 +1,6 @@
 import json
 
+from langchain_core.messages import AIMessageChunk
 from langchain_core.messages import HumanMessage
 from langgraph.errors import GraphRecursionError
 
@@ -91,7 +92,7 @@ def stream_graph_events(app, input_messages: list):
         ):
             if stream_mode == "messages":
                 message_chunk, _metadata = chunk
-                if message_chunk.content:
+                if isinstance(message_chunk, AIMessageChunk) and message_chunk.content:
                     yield {
                         "event": "token",
                         "data": {

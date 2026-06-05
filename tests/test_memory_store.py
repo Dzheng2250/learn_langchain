@@ -5,6 +5,15 @@ from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 from agent_context import AgentContextState
 from agent_hooks import AgentEvent, NoopEventSink, PostgresEventSink, set_event_sinks
 from agent_memory import MemoryUnavailableError, PostgresMemoryStore
+from tests.test_sql import (
+    DELETE_TEST_EVENTS,
+    DELETE_TEST_MEMORIES,
+    DELETE_TEST_MESSAGES,
+    DELETE_TEST_SESSION,
+    SELECT_TEST_ARCHIVED_MESSAGES,
+    SELECT_TEST_EVENT,
+    UPSERT_TEST_MEMORY,
+)
 
 
 TEST_MARKER = "manual_memory_test"
@@ -27,6 +36,7 @@ class PostgresMemoryStoreManualTest(unittest.TestCase):
 
     def tearDown(self) -> None:
         set_event_sinks(None)
+        self.store.close()
 
     def test_01_write_test_data(self) -> None:
         """Write fixed test data and leave it in the database."""
@@ -57,23 +67,7 @@ class PostgresMemoryStoreManualTest(unittest.TestCase):
         with self.store._connect() as conn:
             with conn.cursor() as cur:
                 cur.execute(
-                    """
-                    INSERT INTO agent_memories (
-                        id, scope, kind, content, tags, importance,
-                        confidence, source_message_ids, archived_at
-                    )
-                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, NULL)
-                    ON CONFLICT (id) DO UPDATE SET
-                        scope = EXCLUDED.scope,
-                        kind = EXCLUDED.kind,
-                        content = EXCLUDED.content,
-                        tags = EXCLUDED.tags,
-                        importance = EXCLUDED.importance,
-                        confidence = EXCLUDED.confidence,
-                        source_message_ids = EXCLUDED.source_message_ids,
-                        archived_at = NULL,
-                        updated_at = now()
-                    """,
+                    UPSERT_TEST_MEMORY,
                     (
                         TEST_MEMORY_ID,
                         TEST_SCOPE,
@@ -103,15 +97,7 @@ class PostgresMemoryStoreManualTest(unittest.TestCase):
 
         with self.store._connect() as conn:
             with conn.cursor() as cur:
-                cur.execute(
-                    """
-                    SELECT role, message_type, content
-                    FROM agent_messages
-                    WHERE session_id = %s
-                    ORDER BY id
-                    """,
-                    (TEST_SESSION_ID,),
-                )
+                cur.execute(SELECT_TEST_ARCHIVED_MESSAGES, (TEST_SESSION_ID,))
                 archived_rows = cur.fetchall()
 
         self.assertGreaterEqual(len(archived_rows), 3)
@@ -134,16 +120,13 @@ class PostgresMemoryStoreManualTest(unittest.TestCase):
         """Delete fixed test data and verify it is gone."""
         with self.store._connect() as conn:
             with conn.cursor() as cur:
-                cur.execute("DELETE FROM agent_messages WHERE session_id = %s", (TEST_SESSION_ID,))
+                cur.execute(DELETE_TEST_MESSAGES, (TEST_SESSION_ID,))
                 deleted_messages = cur.rowcount
 
-                cur.execute("DELETE FROM agent_sessions WHERE session_id = %s", (TEST_SESSION_ID,))
+                cur.execute(DELETE_TEST_SESSION, (TEST_SESSION_ID,))
                 deleted_sessions = cur.rowcount
 
-                cur.execute(
-                    "DELETE FROM agent_memories WHERE id = %s OR scope = %s OR content ILIKE %s",
-                    (TEST_MEMORY_ID, TEST_SCOPE, f"%{TEST_MARKER}%"),
-                )
+                cur.execute(DELETE_TEST_MEMORIES, (TEST_MEMORY_ID, TEST_SCOPE, f"%{TEST_MARKER}%"))
                 deleted_memories = cur.rowcount
             conn.commit()
 
@@ -179,17 +162,10 @@ class PostgresMemoryStoreManualTest(unittest.TestCase):
 
         with self.store._connect() as conn:
             with conn.cursor() as cur:
-                cur.execute(
-                    """
-                    SELECT event_type, source, message, payload
-                    FROM agent_events
-                    WHERE run_id = %s
-                    """,
-                    (run_id,),
-                )
+                cur.execute(SELECT_TEST_EVENT, (run_id,))
                 row = cur.fetchone()
 
-                cur.execute("DELETE FROM agent_events WHERE run_id = %s", (run_id,))
+                cur.execute(DELETE_TEST_EVENTS, (run_id,))
                 deleted_events = cur.rowcount
             conn.commit()
 

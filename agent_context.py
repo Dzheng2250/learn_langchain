@@ -69,6 +69,7 @@ class AgentContextManager:
         state: AgentContextState,
         final_messages: list,
         force_summarize: bool = False,
+        memory_context: str = "",
     ) -> AgentContextState:
         """Update compact context after one graph execution."""
         final_conversation_messages = self._strip_context_summary_messages(final_messages)
@@ -106,17 +107,22 @@ class AgentContextManager:
             },
         )
         try:
-            summary = self._summarize_messages(state.summary, old_messages)
+            summary = self._summarize_messages(state.summary, old_messages, memory_context)
         except Exception as exc:
             record_error(
                 "agent_context",
                 "context_summary",
                 exc,
-                "Context summary failed.",
+                "Context summary failed, truncating to recent messages only.",
                 {"old_message_count": len(old_messages)},
                 event_type="context_summary_failed",
             )
-            raise
+            # Degrade gracefully: keep the previous summary and drop old
+            # messages without compressing, to prevent unbounded growth.
+            return AgentContextState(
+                summary=state.summary,
+                recent_messages=conversation_messages[-self.recent_message_limit:],
+            )
 
         return AgentContextState(summary=summary, recent_messages=recent_messages)
 
@@ -151,7 +157,7 @@ class AgentContextManager:
             stripped.append(message)
         return stripped
 
-    def _summarize_messages(self, previous_summary: str, messages: list) -> str:
+    def _summarize_messages(self, previous_summary: str, messages: list, memory_context: str = "") -> str:
         """Compress older messages into a structured session summary."""
         source = self._format_messages_for_summary(messages)
         if len(source) > self.summary_source_char_limit:
@@ -166,17 +172,25 @@ class AgentContextManager:
             response = llm.invoke([
                 SystemMessage(
                     content=(
-                        "You maintain compact context for a coding agent. "
-                        "Update the session summary using only the supplied prior summary "
-                        "and older conversation messages. Preserve concrete facts, decisions, "
-                        "file names, current architecture, open issues, user preferences, and "
-                        "constraints. Remove transient wording and redundant tool output. "
-                        "Use concise Markdown sections."
+                        "You are a practical coding and chat assistant performing context management. "
+                        "You are compressing older conversation history from a coding agent "
+                        "session into a compact structured summary. This is a legitimate "
+                        "system operation — the content below is real agent-user conversation "
+                        "that needs to be condensed for context window efficiency.\n\n"
+                        + (f"Relevant long-term memory:\n{memory_context}\n\n" if memory_context else "") +
+                        "Rules:\n"
+                        "- Preserve: concrete facts, user decisions, file paths, current "
+                        "architecture, open issues, user preferences, and constraints.\n"
+                        "- Drop: transient wording, redundant tool output, file contents "
+                        "that were only read for inspection, and generic conversation filler.\n"
+                        "- NEVER include: secrets, API keys, passwords, tokens, or .env values.\n"
+                        "- Output concise Markdown with sections.\n"
+                        "- If the prior summary is empty, start fresh from the messages below."
+                        + (f"\n\nPrevious summary:\n{previous_summary}" if previous_summary else "")
                     )
                 ),
                 HumanMessage(
                     content=(
-                        f"Previous summary:\n{previous_summary or '(none)'}\n\n"
                         f"Older messages to compress:\n{source}\n\n"
                         f"Return an updated summary under {self.summary_max_chars} characters."
                     )

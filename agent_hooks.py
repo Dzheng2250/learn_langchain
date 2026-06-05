@@ -29,6 +29,7 @@ from agent_config import (
     MEMORY_DB_USER,
 )
 from agent_debug import debug_print
+from agent_sql import INSERT_AGENT_EVENT
 
 
 SENSITIVE_KEYS = {
@@ -138,7 +139,7 @@ class PostgresEventSink:
         self.async_write = async_write
         self.batch_size = max(1, int(batch_size))
         self.flush_interval_seconds = max(0.05, float(flush_interval_seconds))
-        self._psycopg = self._load_psycopg()
+        self._pool = self._load_pool()
         self._Jsonb = self._load_jsonb_adapter()
         self._queue: queue.Queue[AgentEvent | None] | None = None
         self._worker: threading.Thread | None = None
@@ -176,16 +177,16 @@ class PostgresEventSink:
             self._queue.join()
 
     def close(self) -> None:
-        """Flush and stop the background writer."""
+        """Flush, stop the background writer, and close the connection pool."""
         if self._closed:
             return
         self._closed = True
-        if self._queue is None:
-            return
-        self._queue.put(None)
-        self._queue.join()
-        if self._worker is not None and self._worker.is_alive():
-            self._worker.join(timeout=2)
+        if self._queue is not None:
+            self._queue.put(None)
+            self._queue.join()
+            if self._worker is not None and self._worker.is_alive():
+                self._worker.join(timeout=2)
+        self._pool.close()
 
     def _run_writer(self) -> None:
         assert self._queue is not None
@@ -229,13 +230,7 @@ class PostgresEventSink:
         with self._connect() as conn:
             with conn.cursor() as cur:
                 cur.executemany(
-                    """
-                    INSERT INTO agent_events (
-                        run_id, session_id, turn_index, event_type, source,
-                        level, message, payload, duration_ms, created_at
-                    )
-                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-                    """,
+                    INSERT_AGENT_EVENT,
                     [self._event_params(event) for event in events],
                 )
             conn.commit()
@@ -255,18 +250,27 @@ class PostgresEventSink:
         )
 
     def _connect(self):
-        return self._psycopg.connect(
-            host=self.host,
-            port=self.port,
-            dbname=self.dbname,
-            user=self.user,
-            password=self.password,
+        """Return a connection context manager from the pool."""
+        return self._pool.connection()
+
+    def _load_pool(self):
+        """Lazy-import psycopg_pool and create a ConnectionPool."""
+        from psycopg.conninfo import make_conninfo
+        from psycopg_pool import ConnectionPool
+
+        return ConnectionPool(
+            conninfo=make_conninfo(
+                "",
+                host=self.host,
+                port=self.port,
+                dbname=self.dbname,
+                user=self.user,
+                password=self.password,
+            ),
+            min_size=1,
+            max_size=2,
+            open=True,
         )
-
-    def _load_psycopg(self):
-        import psycopg
-
-        return psycopg
 
     def _load_jsonb_adapter(self):
         from psycopg.types.json import Jsonb
