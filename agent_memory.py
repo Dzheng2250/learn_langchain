@@ -24,6 +24,17 @@ from agent_config import (
 from agent_context import AgentContextState
 from agent_debug import debug_print, format_message
 from agent_hooks import emit_event, event_span, record_error, record_memory_saved
+from agent_sql import (
+    INSERT_AGENT_MEMORY,
+    INSERT_AGENT_MESSAGE,
+    SELECT_RECENT_IMPORTANT_MEMORIES,
+    SELECT_RELEVANT_MEMORIES,
+    SELECT_SESSION_CONTEXT,
+    SELECT_SIMILAR_MEMORY_ID,
+    UPDATE_AGENT_MEMORY,
+    UPSERT_SESSION_CONTEXT,
+    execute_sql_file,
+)
 
 
 MEMORY_MESSAGE_PREFIX = "Relevant long-term memory:"
@@ -73,113 +84,14 @@ class PostgresMemoryStore:
         """Create required tables and indexes if they do not exist."""
         with self._connect() as conn:
             with conn.cursor() as cur:
-                cur.execute(
-                    """
-                    CREATE TABLE IF NOT EXISTS agent_sessions (
-                        session_id TEXT PRIMARY KEY,
-                        summary TEXT NOT NULL DEFAULT '',
-                        recent_messages JSONB NOT NULL DEFAULT '[]',
-                        turn_index INTEGER NOT NULL DEFAULT 0,
-                        created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-                        updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
-                    )
-                    """
-                )
-                cur.execute(
-                    """
-                    CREATE TABLE IF NOT EXISTS agent_messages (
-                        id BIGSERIAL PRIMARY KEY,
-                        session_id TEXT NOT NULL,
-                        role TEXT NOT NULL,
-                        content TEXT NOT NULL DEFAULT '',
-                        message_type TEXT NOT NULL,
-                        raw JSONB NOT NULL DEFAULT '{}',
-                        turn_index INTEGER NOT NULL,
-                        created_at TIMESTAMPTZ NOT NULL DEFAULT now()
-                    )
-                    """
-                )
-                cur.execute(
-                    """
-                    CREATE TABLE IF NOT EXISTS agent_memories (
-                        id UUID PRIMARY KEY,
-                        scope TEXT NOT NULL,
-                        kind TEXT NOT NULL,
-                        content TEXT NOT NULL,
-                        tags JSONB NOT NULL DEFAULT '[]',
-                        importance INTEGER NOT NULL DEFAULT 3,
-                        confidence DOUBLE PRECISION NOT NULL DEFAULT 1.0,
-                        source_message_ids JSONB NOT NULL DEFAULT '[]',
-                        created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-                        updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-                        archived_at TIMESTAMPTZ
-                    )
-                    """
-                )
-                cur.execute(
-                    """
-                    CREATE TABLE IF NOT EXISTS agent_events (
-                        id BIGSERIAL PRIMARY KEY,
-                        run_id TEXT NOT NULL,
-                        session_id TEXT NOT NULL,
-                        turn_index INTEGER,
-                        event_type TEXT NOT NULL,
-                        source TEXT NOT NULL,
-                        level TEXT NOT NULL DEFAULT 'info',
-                        message TEXT NOT NULL DEFAULT '',
-                        payload JSONB NOT NULL DEFAULT '{}',
-                        duration_ms INTEGER,
-                        created_at TIMESTAMPTZ NOT NULL DEFAULT now()
-                    )
-                    """
-                )
-                cur.execute(
-                    "CREATE INDEX IF NOT EXISTS idx_agent_messages_session "
-                    "ON agent_messages(session_id, turn_index, id)"
-                )
-                cur.execute(
-                    "CREATE INDEX IF NOT EXISTS idx_agent_memories_scope "
-                    "ON agent_memories(scope)"
-                )
-                cur.execute(
-                    "CREATE INDEX IF NOT EXISTS idx_agent_memories_kind "
-                    "ON agent_memories(kind)"
-                )
-                cur.execute(
-                    "CREATE INDEX IF NOT EXISTS idx_agent_memories_importance "
-                    "ON agent_memories(importance DESC)"
-                )
-                cur.execute(
-                    "CREATE INDEX IF NOT EXISTS idx_agent_memories_content_tsv "
-                    "ON agent_memories "
-                    "USING GIN (to_tsvector('simple', content))"
-                )
-                cur.execute(
-                    "CREATE INDEX IF NOT EXISTS idx_agent_events_session_turn "
-                    "ON agent_events(session_id, turn_index, id)"
-                )
-                cur.execute(
-                    "CREATE INDEX IF NOT EXISTS idx_agent_events_run "
-                    "ON agent_events(run_id)"
-                )
-                cur.execute(
-                    "CREATE INDEX IF NOT EXISTS idx_agent_events_type "
-                    "ON agent_events(event_type)"
-                )
+                execute_sql_file(cur, "schema.sql")
             conn.commit()
 
     def load_session(self, session_id: str) -> tuple[AgentContextState, int]:
         """Load compact context state and current turn index."""
         with self._connect() as conn:
             with conn.cursor() as cur:
-                cur.execute(
-                    """
-                    SELECT summary, recent_messages, turn_index
-                    FROM agent_sessions
-                    WHERE session_id = %s
-                    """,
-                    (session_id,),
-                )
+                cur.execute(SELECT_SESSION_CONTEXT, (session_id,))
                 row = cur.fetchone()
 
         if not row:
@@ -217,17 +129,7 @@ class PostgresMemoryStore:
         with self._connect() as conn:
             with conn.cursor() as cur:
                 cur.execute(
-                    """
-                    INSERT INTO agent_sessions (
-                        session_id, summary, recent_messages, turn_index, updated_at
-                    )
-                    VALUES (%s, %s, %s, %s, now())
-                    ON CONFLICT (session_id) DO UPDATE SET
-                        summary = EXCLUDED.summary,
-                        recent_messages = EXCLUDED.recent_messages,
-                        turn_index = EXCLUDED.turn_index,
-                        updated_at = now()
-                    """,
+                    UPSERT_SESSION_CONTEXT,
                     (
                         session_id,
                         state.summary,
@@ -261,13 +163,7 @@ class PostgresMemoryStore:
                 for message in messages:
                     raw = self._message_to_raw(message)
                     cur.execute(
-                        """
-                        INSERT INTO agent_messages (
-                            session_id, role, content, message_type, raw, turn_index
-                        )
-                        VALUES (%s, %s, %s, %s, %s, %s)
-                        RETURNING id
-                        """,
+                        INSERT_AGENT_MESSAGE,
                         (
                             session_id,
                             self._message_role(message),
@@ -306,21 +202,7 @@ class PostgresMemoryStore:
         with self._connect() as conn:
             with conn.cursor() as cur:
                 cur.execute(
-                    """
-                    SELECT id::text, scope, kind, content, tags, importance, confidence
-                    FROM agent_memories
-                    WHERE archived_at IS NULL
-                      AND scope IN (%s, 'global')
-                      AND (
-                          to_tsvector('simple', content) @@ plainto_tsquery('simple', %s)
-                          OR content ILIKE %s
-                      )
-                    ORDER BY
-                        ts_rank(to_tsvector('simple', content), plainto_tsquery('simple', %s)) DESC,
-                        importance DESC,
-                        updated_at DESC
-                    LIMIT %s
-                    """,
+                    SELECT_RELEVANT_MEMORIES,
                     (
                         scope,
                         normalized_query,
@@ -472,16 +354,7 @@ class PostgresMemoryStore:
                     existing_id = self._find_similar_memory_id(cur, scope, kind, content)
                     if existing_id:
                         cur.execute(
-                            """
-                            UPDATE agent_memories
-                            SET content = %s,
-                                tags = %s,
-                                importance = GREATEST(importance, %s),
-                                confidence = GREATEST(confidence, %s),
-                                source_message_ids = %s,
-                                updated_at = now()
-                            WHERE id = %s
-                            """,
+                            UPDATE_AGENT_MEMORY,
                             (
                                 content,
                                 self._json_param(tags),
@@ -505,13 +378,7 @@ class PostgresMemoryStore:
                     else:
                         memory_id = str(uuid4())
                         cur.execute(
-                            """
-                            INSERT INTO agent_memories (
-                                id, scope, kind, content, tags, importance,
-                                confidence, source_message_ids
-                            )
-                            VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
-                            """,
+                            INSERT_AGENT_MEMORY,
                             (
                                 memory_id,
                                 scope,
@@ -590,6 +457,7 @@ class PostgresMemoryStore:
     def _load_pool(self):
         """Lazy-import psycopg_pool and create a ConnectionPool."""
         try:
+            from psycopg.conninfo import make_conninfo
             from psycopg_pool import ConnectionPool
         except ImportError as exc:
             raise MemoryUnavailableError(
@@ -599,10 +467,13 @@ class PostgresMemoryStore:
             ) from exc
         try:
             return ConnectionPool(
-                conninfo=(
-                    f"host={self.host} port={self.port} "
-                    f"dbname={self.dbname} "
-                    f"user={self.user} password={self.password}"
+                conninfo=make_conninfo(
+                    "",
+                    host=self.host,
+                    port=self.port,
+                    dbname=self.dbname,
+                    user=self.user,
+                    password=self.password,
                 ),
                 min_size=1,
                 max_size=2,
@@ -678,17 +549,7 @@ class PostgresMemoryStore:
     def _recent_important_memories(self, scope: str) -> list[RetrievedMemory]:
         with self._connect() as conn:
             with conn.cursor() as cur:
-                cur.execute(
-                    """
-                    SELECT id::text, scope, kind, content, tags, importance, confidence
-                    FROM agent_memories
-                    WHERE archived_at IS NULL
-                      AND scope IN (%s, 'global')
-                    ORDER BY importance DESC, updated_at DESC
-                    LIMIT %s
-                    """,
-                    (scope, self.retrieval_limit),
-                )
+                cur.execute(SELECT_RECENT_IMPORTANT_MEMORIES, (scope, self.retrieval_limit))
                 rows = cur.fetchall()
         memories = [self._memory_from_row(row) for row in rows]
         debug_print("MEMORY RETRIEVE", self.format_memories(memories))
@@ -780,21 +641,7 @@ class PostgresMemoryStore:
 
     def _find_similar_memory_id(self, cur, scope: str, kind: str, content: str) -> str | None:
         content_prefix = content[:160]
-        cur.execute(
-            """
-            SELECT id::text
-            FROM agent_memories
-            WHERE archived_at IS NULL
-              AND scope = %s
-              AND kind = %s
-              AND (
-                  content = %s
-                  OR left(content, 160) = %s
-              )
-            LIMIT 1
-            """,
-            (scope, kind, content, content_prefix),
-        )
+        cur.execute(SELECT_SIMILAR_MEMORY_ID, (scope, kind, content, content_prefix))
         row = cur.fetchone()
         return row[0] if row else None
 

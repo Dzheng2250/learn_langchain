@@ -29,6 +29,7 @@ from agent_config import (
     MEMORY_DB_USER,
 )
 from agent_debug import debug_print
+from agent_sql import INSERT_AGENT_EVENT
 
 
 SENSITIVE_KEYS = {
@@ -229,13 +230,7 @@ class PostgresEventSink:
         with self._connect() as conn:
             with conn.cursor() as cur:
                 cur.executemany(
-                    """
-                    INSERT INTO agent_events (
-                        run_id, session_id, turn_index, event_type, source,
-                        level, message, payload, duration_ms, created_at
-                    )
-                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-                    """,
+                    INSERT_AGENT_EVENT,
                     [self._event_params(event) for event in events],
                 )
             conn.commit()
@@ -260,13 +255,17 @@ class PostgresEventSink:
 
     def _load_pool(self):
         """Lazy-import psycopg_pool and create a ConnectionPool."""
+        from psycopg.conninfo import make_conninfo
         from psycopg_pool import ConnectionPool
 
         return ConnectionPool(
-            conninfo=(
-                f"host={self.host} port={self.port} "
-                f"dbname={self.dbname} "
-                f"user={self.user} password={self.password}"
+            conninfo=make_conninfo(
+                "",
+                host=self.host,
+                port=self.port,
+                dbname=self.dbname,
+                user=self.user,
+                password=self.password,
             ),
             min_size=1,
             max_size=2,
