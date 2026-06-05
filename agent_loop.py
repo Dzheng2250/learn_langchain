@@ -274,11 +274,13 @@ def run_agent_loop() -> None:
                 )
 
                 extra_system_messages = []
+                memory_context_text = ""
                 if memory_store:
                     memories = memory_store.retrieve_memories(user_input)
                     memory_message = memory_store.build_memory_message(memories)
                     if memory_message:
                         extra_system_messages.append(memory_message)
+                        memory_context_text = memory_message.content
 
                 input_messages = context_manager.build_input_messages(
                     context_state,
@@ -325,6 +327,7 @@ def run_agent_loop() -> None:
                         context_state = context_manager.update_after_turn(
                             context_state,
                             final_messages,
+                            memory_context=memory_context_text,
                         )
                         turn_index = current_turn_index
 
