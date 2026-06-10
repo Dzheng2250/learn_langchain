@@ -9,9 +9,9 @@ from langgraph.errors import GraphRecursionError
 from langgraph.graph import END, START, MessagesState, StateGraph
 from langgraph.prebuilt import InjectedState, ToolNode, tools_condition
 
-from agent_config import MODEL, SUBAGENT_CONTEXT_MESSAGE_LIMIT, SUBAGENT_MAX_STEPS, SUBAGENT_RESULT_LIMIT
-from agent_debug import debug_print, format_message, format_messages
-from agent_tools import base_tools
+from src.core.common.debug import debug_print, format_message, format_messages
+from src.core.config.settings import MODEL, SUBAGENT_CONTEXT_MESSAGE_LIMIT, SUBAGENT_MAX_STEPS, SUBAGENT_RESULT_LIMIT
+from src.core.tools.registry import base_tools
 
 
 load_dotenv()

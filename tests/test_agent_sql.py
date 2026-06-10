@@ -1,6 +1,6 @@
 import unittest
 
-from agent_sql import load_sql_file, split_sql_statements
+from src.core.database.queries import load_sql_file, split_sql_statements
 
 
 class AgentSqlTest(unittest.TestCase):
@@ -17,7 +17,7 @@ class AgentSqlTest(unittest.TestCase):
 
     def test_load_sql_file_rejects_path_traversal(self) -> None:
         with self.assertRaises(ValueError):
-            load_sql_file("../agent_memory.py")
+            load_sql_file("../memory/store.py")
 
 
 if __name__ == "__main__":

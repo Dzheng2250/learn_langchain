@@ -2,16 +2,16 @@ import unittest
 
 from langchain_core.messages import AIMessage, HumanMessage
 
-from agent_loop import _has_explicit_memory_request, _should_extract_long_term_memory
+from src.core.memory.policy import has_explicit_memory_request, should_extract_long_term_memory
 
 
 class MemoryExtractionPolicyTest(unittest.TestCase):
     """Tests for deciding whether to spend an LLM call on long-term memory extraction."""
 
     def test_explicit_memory_hint_triggers_extraction(self) -> None:
-        self.assertTrue(_has_explicit_memory_request("请记住我喜欢中文注释"))
+        self.assertTrue(has_explicit_memory_request("请记住我喜欢中文注释"))
         self.assertTrue(
-            _should_extract_long_term_memory(
+            should_extract_long_term_memory(
                 "请记住我喜欢中文注释",
                 turn_index=1,
                 turn_messages=[HumanMessage(content="short"), AIMessage(content="ok")],
@@ -20,7 +20,7 @@ class MemoryExtractionPolicyTest(unittest.TestCase):
 
     def test_interval_turn_triggers_extraction(self) -> None:
         self.assertTrue(
-            _should_extract_long_term_memory(
+            should_extract_long_term_memory(
                 "普通问题",
                 turn_index=5,
                 turn_messages=[HumanMessage(content="short"), AIMessage(content="ok")],
@@ -29,7 +29,7 @@ class MemoryExtractionPolicyTest(unittest.TestCase):
 
     def test_large_turn_triggers_extraction(self) -> None:
         self.assertTrue(
-            _should_extract_long_term_memory(
+            should_extract_long_term_memory(
                 "普通问题",
                 turn_index=1,
                 turn_messages=[
@@ -41,7 +41,7 @@ class MemoryExtractionPolicyTest(unittest.TestCase):
 
     def test_small_ordinary_turn_does_not_trigger_extraction(self) -> None:
         self.assertFalse(
-            _should_extract_long_term_memory(
+            should_extract_long_term_memory(
                 "普通问题",
                 turn_index=1,
                 turn_messages=[HumanMessage(content="short"), AIMessage(content="ok")],

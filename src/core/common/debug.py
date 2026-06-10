@@ -1,4 +1,4 @@
-from agent_config import DEBUG_AGENT
+from src.core.config.settings import DEBUG_AGENT
 
 
 def is_debug_enabled() -> bool:

@@ -1,11 +1,9 @@
-import json
-
 from langchain_core.messages import AIMessageChunk
 from langchain_core.messages import HumanMessage
 from langgraph.errors import GraphRecursionError
 
-from agent_config import MAX_GRAPH_STEPS
-from agent_hooks import emit_event, record_error
+from src.core.config.settings import MAX_GRAPH_STEPS
+from src.core.hooks.events import emit_event, record_error
 
 
 def _message_text(message) -> str:
@@ -143,7 +141,7 @@ def stream_graph_events(app, input_messages: list):
     yield {
         "event": "done",
         "data": {
-            "messages": final_state["messages"] if final_state is not None else messages,
+            "messages": final_state["messages"] if final_state is not None else input_messages,
         },
     }
 
@@ -152,18 +150,3 @@ def stream_agent_events(app, messages: list, user_input: str):
     """Yield events for one user turn using raw recent messages."""
     input_messages = [*messages, HumanMessage(content=user_input)]
     yield from stream_graph_events(app, input_messages)
-
-
-def format_sse_event(event: str, data) -> str:
-    """Format one event as a Server-Sent Events frame."""
-    payload = json.dumps(data, ensure_ascii=False, default=repr)
-    return f"event: {event}\ndata: {payload}\n\n"
-
-
-def stream_agent_sse(app, messages: list, user_input: str):
-    """Yield SSE frames for one user turn."""
-    for item in stream_agent_events(app, messages, user_input):
-        data = item["data"]
-        if item["event"] == "done":
-            data = {"status": "ok"}
-        yield format_sse_event(item["event"], data)

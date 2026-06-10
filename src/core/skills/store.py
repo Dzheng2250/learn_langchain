@@ -1,25 +1,8 @@
 import os
-from dataclasses import dataclass
 
-from agent_config import SKILL_FILE_NAME, SKILL_READ_OUTPUT_LIMIT, SKILLS_DIR
-
-
-@dataclass(frozen=True)
-class SkillManifest:
-    """Small skill index entry used for discovery and selection."""
-
-    directory: str
-    name: str
-    description: str
-
-
-@dataclass(frozen=True)
-class SkillDocument:
-    """Full skill document loaded after a skill has been selected."""
-
-    manifest: SkillManifest
-    relative_path: str
-    content: str
+from src.core.config.settings import SKILL_FILE_NAME, SKILL_READ_OUTPUT_LIMIT, SKILLS_DIR
+from src.core.skills.models import SkillDocument, SkillManifest
+from src.core.skills.parser import SkillMetadataParser
 
 
 class LocalSkillStore:
@@ -37,6 +20,7 @@ class LocalSkillStore:
         self.skill_file_name = skill_file_name
         self.output_limit = output_limit
         self.skills_root = os.path.abspath(os.path.join(self.workspace_dir, self.skills_dir))
+        self.metadata_parser = SkillMetadataParser()
 
     def list_skill_names(self) -> list[str]:
         """Return skill directory names that contain a skill file."""
@@ -59,7 +43,7 @@ class LocalSkillStore:
             with open(skill_file, "r", encoding="utf-8", errors="replace") as file:
                 content = file.read()
 
-            metadata = self._parse_skill_metadata(content)
+            metadata = self.metadata_parser.parse(content)
             manifests.append(
                 SkillManifest(
                     directory=directory,
@@ -97,7 +81,7 @@ class LocalSkillStore:
         with open(skill_file, "r", encoding="utf-8", errors="replace") as file:
             content = file.read()
 
-        metadata = self._parse_skill_metadata(content)
+        metadata = self.metadata_parser.parse(content)
         manifest = SkillManifest(
             directory=directory,
             name=metadata.get("name") or directory,
@@ -151,71 +135,3 @@ class LocalSkillStore:
                 return manifest.directory
 
         return None
-
-    def _parse_skill_metadata(self, content: str) -> dict[str, str]:
-        """Parse name/description metadata from a skill file."""
-        metadata = self._parse_frontmatter_metadata(content)
-        if metadata:
-            return metadata
-
-        return self._parse_plain_metadata(content)
-
-    def _parse_frontmatter_metadata(self, content: str) -> dict[str, str]:
-        """Parse a small YAML-like frontmatter block without external dependencies."""
-        lines = content.splitlines()
-        if not lines or lines[0].strip() != "---":
-            return {}
-
-        end_index = None
-        for index, line in enumerate(lines[1:], start=1):
-            if line.strip() == "---":
-                end_index = index
-                break
-
-        if end_index is None:
-            return {}
-
-        return self._parse_key_value_lines(lines[1:end_index])
-
-    def _parse_plain_metadata(self, content: str) -> dict[str, str]:
-        """Parse top-level name/description lines from the beginning of a skill file."""
-        lines = content.splitlines()[:80]
-        return self._parse_key_value_lines(lines)
-
-    def _parse_key_value_lines(self, lines: list[str]) -> dict[str, str]:
-        """Parse simple key: value and indented block values for name/description."""
-        metadata: dict[str, str] = {}
-        index = 0
-
-        while index < len(lines):
-            line = lines[index]
-            stripped = line.strip()
-
-            if not stripped or stripped.startswith("#") or ":" not in stripped:
-                index += 1
-                continue
-
-            key, value = stripped.split(":", 1)
-            key = key.strip().casefold()
-            value = value.strip().strip("\"'")
-
-            if key not in {"name", "description"}:
-                index += 1
-                continue
-
-            if value in {"|", ">"}:
-                block_lines = []
-                index += 1
-                while index < len(lines):
-                    block_line = lines[index]
-                    if block_line.strip() and not block_line.startswith((" ", "\t")):
-                        break
-                    block_lines.append(block_line.strip())
-                    index += 1
-                metadata[key] = " ".join(part for part in block_lines if part).strip()
-                continue
-
-            metadata[key] = value
-            index += 1
-
-        return metadata

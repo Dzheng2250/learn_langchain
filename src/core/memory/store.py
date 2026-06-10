@@ -1,30 +1,23 @@
 import json
-import os
 import re
-from dataclasses import dataclass, field
 from datetime import datetime
 from uuid import uuid4
 
-from dotenv import load_dotenv
-from langchain_core.messages import HumanMessage, SystemMessage, messages_from_dict, messages_to_dict
-from langchain_openai import ChatOpenAI
+from langchain_core.messages import SystemMessage, messages_from_dict, messages_to_dict
 
-from agent_config import (
+from src.core.config.settings import (
     MEMORY_DB_HOST,
     MEMORY_DB_NAME,
     MEMORY_DB_PASSWORD,
     MEMORY_DB_PORT,
     MEMORY_DB_USER,
-    MEMORY_EXTRACT_SOURCE_CHAR_LIMIT,
     MEMORY_EXTRACTION_ENABLED,
     MEMORY_MIN_IMPORTANCE,
     MEMORY_RETRIEVAL_LIMIT,
-    MODEL,
 )
-from agent_context import AgentContextState
-from agent_debug import debug_print, format_message
-from agent_hooks import emit_event, event_span, record_error, record_memory_saved
-from agent_sql import (
+from src.core.common.debug import debug_print
+from src.core.context.manager import AgentContextState
+from src.core.database.queries import (
     INSERT_AGENT_MEMORY,
     INSERT_AGENT_MESSAGE,
     SELECT_RECENT_IMPORTANT_MEMORIES,
@@ -35,26 +28,13 @@ from agent_sql import (
     UPSERT_SESSION_CONTEXT,
     execute_sql_file,
 )
+from src.core.hooks.events import emit_event, record_error, record_memory_saved
+from src.core.memory.errors import MemoryUnavailableError
+from src.core.memory.extractor import MemoryCandidateExtractor
+from src.core.memory.models import RetrievedMemory
 
 
 MEMORY_MESSAGE_PREFIX = "Relevant long-term memory:"
-
-
-@dataclass
-class RetrievedMemory:
-    """One long-term memory record selected for the current user turn."""
-
-    id: str
-    scope: str
-    kind: str
-    content: str
-    tags: list[str] = field(default_factory=list)
-    importance: int = 3
-    confidence: float = 1.0
-
-
-class MemoryUnavailableError(RuntimeError):
-    """Raised when the configured memory backend cannot be used."""
 
 
 class PostgresMemoryStore:
@@ -77,6 +57,7 @@ class PostgresMemoryStore:
         self.password = password
         self.retrieval_limit = retrieval_limit
         self.min_importance = min_importance
+        self.extractor = MemoryCandidateExtractor()
         self._pool = self._load_pool()
         self._Jsonb = self._load_jsonb_adapter()
 
@@ -246,7 +227,7 @@ class PostgresMemoryStore:
             )
             return []
 
-        source = self._format_messages_for_extraction(messages)
+        source = self.extractor.format_messages(messages)
         if not source.strip():
             emit_event(
                 "memory_extract_skipped",
@@ -270,7 +251,7 @@ class PostgresMemoryStore:
         )
 
         try:
-            candidates = self._extract_memory_candidates(source)
+            candidates = self.extractor.extract(source)
         except Exception as exc:
             record_error(
                 "agent_memory",
@@ -301,107 +282,128 @@ class PostgresMemoryStore:
             return []
 
         saved = []
+        saved_events = []
         skipped = []
-        with self._connect() as conn:
-            with conn.cursor() as cur:
-                for candidate in candidates:
-                    importance = int(candidate.get("importance", 3))
-                    if importance < self.min_importance:
-                        reason = "low_importance"
-                        skipped_item = {
-                            "reason": reason,
-                            "importance": importance,
-                            "content_preview": str(candidate.get("content", ""))[:120],
-                        }
-                        skipped.append(skipped_item)
-                        emit_event(
-                            "memory_skipped",
-                            "agent_memory",
-                            "Skipped memory candidate.",
-                            skipped_item,
-                        )
-                        continue
+        try:
+            with self._connect() as conn:
+                with conn.cursor() as cur:
+                    for candidate in candidates:
+                        importance = int(candidate.get("importance", 3))
+                        if importance < self.min_importance:
+                            skipped_item = {
+                                "reason": "low_importance",
+                                "importance": importance,
+                                "content_preview": str(candidate.get("content", ""))[:120],
+                            }
+                            skipped.append(skipped_item)
+                            emit_event(
+                                "memory_skipped",
+                                "agent_memory",
+                                "Skipped memory candidate.",
+                                skipped_item,
+                            )
+                            continue
 
-                    content = str(candidate.get("content", "")).strip()
-                    if not content:
-                        skipped_item = {"reason": "empty_content"}
-                        skipped.append(skipped_item)
-                        emit_event(
-                            "memory_skipped",
-                            "agent_memory",
-                            "Skipped memory candidate.",
-                            skipped_item,
-                        )
-                        continue
-                    if self._looks_sensitive(content):
-                        skipped_item = {
-                            "reason": "sensitive_content",
-                            "content_preview": content[:120],
-                        }
-                        skipped.append(skipped_item)
-                        emit_event(
-                            "memory_skipped",
-                            "agent_memory",
-                            "Skipped memory candidate.",
-                            skipped_item,
-                        )
-                        continue
+                        content = str(candidate.get("content", "")).strip()
+                        if not content:
+                            skipped_item = {"reason": "empty_content"}
+                            skipped.append(skipped_item)
+                            emit_event(
+                                "memory_skipped",
+                                "agent_memory",
+                                "Skipped memory candidate.",
+                                skipped_item,
+                            )
+                            continue
+                        if self.extractor.looks_sensitive(content):
+                            skipped_item = {
+                                "reason": "sensitive_content",
+                                "content_preview": content[:120],
+                            }
+                            skipped.append(skipped_item)
+                            emit_event(
+                                "memory_skipped",
+                                "agent_memory",
+                                "Skipped memory candidate.",
+                                skipped_item,
+                            )
+                            continue
 
-                    kind = str(candidate.get("kind", "project_fact")).strip() or "project_fact"
-                    tags = candidate.get("tags") if isinstance(candidate.get("tags"), list) else []
-                    confidence = float(candidate.get("confidence", 0.8))
+                        kind = str(candidate.get("kind", "project_fact")).strip() or "project_fact"
+                        tags = candidate.get("tags") if isinstance(candidate.get("tags"), list) else []
+                        confidence = float(candidate.get("confidence", 0.8))
 
-                    existing_id = self._find_similar_memory_id(cur, scope, kind, content)
-                    if existing_id:
-                        cur.execute(
-                            UPDATE_AGENT_MEMORY,
-                            (
-                                content,
-                                self._json_param(tags),
-                                importance,
-                                confidence,
-                                self._json_param(source_message_ids),
-                                existing_id,
-                            ),
-                        )
-                        saved_item = f"updated {existing_id}: {kind}: {content[:120]}"
-                        saved.append(saved_item)
-                        record_memory_saved(
-                            "agent_memory",
-                            memory_id=existing_id,
-                            action="updated",
-                            kind=kind,
-                            importance=importance,
-                            content=content,
-                            message="Updated long-term memory.",
-                        )
-                    else:
-                        memory_id = str(uuid4())
-                        cur.execute(
-                            INSERT_AGENT_MEMORY,
-                            (
-                                memory_id,
-                                scope,
-                                kind,
-                                content,
-                                self._json_param(tags),
-                                importance,
-                                confidence,
-                                self._json_param(source_message_ids),
-                            ),
-                        )
-                        saved_item = f"created {memory_id}: {kind}: {content[:120]}"
-                        saved.append(saved_item)
-                        record_memory_saved(
-                            "agent_memory",
-                            memory_id=memory_id,
-                            action="created",
-                            kind=kind,
-                            importance=importance,
-                            content=content,
-                            message="Created long-term memory.",
-                        )
-            conn.commit()
+                        existing_id = self._find_similar_memory_id(cur, scope, kind, content)
+                        if existing_id:
+                            cur.execute(
+                                UPDATE_AGENT_MEMORY,
+                                (
+                                    content,
+                                    self._json_param(tags),
+                                    importance,
+                                    confidence,
+                                    self._json_param(source_message_ids),
+                                    existing_id,
+                                ),
+                            )
+                            saved_item = f"updated {existing_id}: {kind}: {content[:120]}"
+                            saved.append(saved_item)
+                            saved_events.append(
+                                {
+                                    "memory_id": existing_id,
+                                    "action": "updated",
+                                    "kind": kind,
+                                    "importance": importance,
+                                    "content": content,
+                                    "message": "Updated long-term memory.",
+                                }
+                            )
+                        else:
+                            memory_id = str(uuid4())
+                            cur.execute(
+                                INSERT_AGENT_MEMORY,
+                                (
+                                    memory_id,
+                                    scope,
+                                    kind,
+                                    content,
+                                    self._json_param(tags),
+                                    importance,
+                                    confidence,
+                                    self._json_param(source_message_ids),
+                                ),
+                            )
+                            saved_item = f"created {memory_id}: {kind}: {content[:120]}"
+                            saved.append(saved_item)
+                            saved_events.append(
+                                {
+                                    "memory_id": memory_id,
+                                    "action": "created",
+                                    "kind": kind,
+                                    "importance": importance,
+                                    "content": content,
+                                    "message": "Created long-term memory.",
+                                }
+                            )
+                conn.commit()
+        except Exception as exc:
+            record_error(
+                "agent_memory",
+                "memory_save",
+                exc,
+                "Long-term memory database transaction failed.",
+                {
+                    "session_id": session_id,
+                    "turn_index": turn_index,
+                    "candidate_count": len(candidates),
+                    "pending_save_count": len(saved_events),
+                },
+                event_type="memory_failed",
+            )
+            raise
+
+        for saved_event in saved_events:
+            record_memory_saved("agent_memory", **saved_event)
 
         debug_print("MEMORY SAVE LONG TERM", "\n".join(saved) or "No memories saved.")
         if skipped:
@@ -569,92 +571,9 @@ class PostgresMemoryStore:
         words = re.findall(r"[\w\u4e00-\u9fff]+", query)
         return " ".join(words[:20])
 
-    def _format_messages_for_extraction(self, messages: list) -> str:
-        formatted = []
-        for index, message in enumerate(messages, start=1):
-            text = format_message(message)
-            if len(text) > 1200:
-                text = text[:1200] + "\n... message truncated ..."
-            formatted.append(f"[{index}]\n{text}")
-
-        source = "\n\n".join(formatted)
-        if len(source) > MEMORY_EXTRACT_SOURCE_CHAR_LIMIT:
-            source = source[-MEMORY_EXTRACT_SOURCE_CHAR_LIMIT:]
-        return source
-
-    def _extract_memory_candidates(self, source: str) -> list[dict]:
-        llm = self._create_memory_llm()
-        with event_span(
-            "memory_candidate_extract",
-            "agent_memory",
-            payload={"source_chars": len(source)},
-        ):
-            response = llm.invoke(
-                [
-                    SystemMessage(
-                        content=(
-                            "Extract durable long-term memories for a local coding agent. "
-                            "Return strict JSON only: an array of objects with keys "
-                            "kind, content, tags, importance, confidence. "
-                            "Only include stable user preferences, project facts, architecture "
-                            "decisions, task state, or reusable troubleshooting notes. "
-                            "If the user explicitly asks to remember something, extract the "
-                            "thing they asked to remember as a durable memory unless it is "
-                            "sensitive or unsafe. "
-                            "Do not include secrets, API keys, passwords, .env values, transient "
-                            "tool output, or generic conversation filler. "
-                            "If nothing should be remembered, return []."
-                        )
-                    ),
-                    HumanMessage(content=f"Conversation turn:\n{source}"),
-                ]
-            )
-
-        content = str(response.content).strip()
-        try:
-            parsed = json.loads(self._strip_json_fence(content))
-        except json.JSONDecodeError:
-            debug_print("MEMORY EXTRACT PARSE FAILED", content)
-            return []
-
-        if not isinstance(parsed, list):
-            return []
-
-        debug_print("MEMORY EXTRACT", json.dumps(parsed, ensure_ascii=False, indent=2))
-        return [item for item in parsed if isinstance(item, dict)]
-
-    def _strip_json_fence(self, content: str) -> str:
-        if content.startswith("```"):
-            content = re.sub(r"^```(?:json)?\s*", "", content)
-            content = re.sub(r"\s*```$", "", content)
-        return content.strip()
-
-    def _create_memory_llm(self) -> ChatOpenAI:
-        load_dotenv()
-        return ChatOpenAI(
-            model=MODEL,
-            api_key=os.getenv("ALIYUN_API_KEY"),
-            base_url=os.getenv("ALIYUN_BASE_URL"),
-            temperature=0,
-            streaming=False,
-        )
-
     def _find_similar_memory_id(self, cur, scope: str, kind: str, content: str) -> str | None:
         content_prefix = content[:160]
         cur.execute(SELECT_SIMILAR_MEMORY_ID, (scope, kind, content, content_prefix))
         row = cur.fetchone()
         return row[0] if row else None
 
-    def _looks_sensitive(self, content: str) -> bool:
-        lower = content.lower()
-        sensitive_terms = [
-            "api_key",
-            "apikey",
-            "password",
-            "passwd",
-            "secret",
-            "token",
-            ".env",
-            "authorization",
-        ]
-        return any(term in lower for term in sensitive_terms)

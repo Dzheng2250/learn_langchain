@@ -4,7 +4,7 @@ from langchain_core.messages import AIMessage
 from langchain_core.tools import tool
 from langgraph.graph import END, START, MessagesState, StateGraph
 
-from agent_hooks import (
+from src.core.hooks.events import (
     AgentEvent,
     event_span,
     emit_event,
@@ -21,7 +21,7 @@ from agent_hooks import (
     set_event_context,
     set_event_sinks,
 )
-from agent_observed_tools import ObservedToolNode
+from src.core.tools.observed import ObservedToolNode
 
 
 class MemorySink:

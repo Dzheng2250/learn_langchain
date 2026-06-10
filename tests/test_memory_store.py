@@ -2,9 +2,9 @@ import unittest
 
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 
-from agent_context import AgentContextState
-from agent_hooks import AgentEvent, NoopEventSink, PostgresEventSink, set_event_sinks
-from agent_memory import MemoryUnavailableError, PostgresMemoryStore
+from src.core.context.manager import AgentContextState
+from src.core.hooks.events import AgentEvent, NoopEventSink, PostgresEventSink, set_event_sinks
+from src.core.memory.store import MemoryUnavailableError, PostgresMemoryStore
 from tests.test_sql import (
     DELETE_TEST_EVENTS,
     DELETE_TEST_MEMORIES,

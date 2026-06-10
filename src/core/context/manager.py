@@ -1,11 +1,10 @@
 import os
-from dataclasses import dataclass, field
 
 from dotenv import load_dotenv
 from langchain_core.messages import HumanMessage, SystemMessage
 from langchain_openai import ChatOpenAI
 
-from agent_config import (
+from src.core.config.settings import (
     MODEL,
     RECENT_MESSAGE_LIMIT,
     SESSION_SUMMARY_MAX_CHARS,
@@ -13,21 +12,13 @@ from agent_config import (
     SUMMARY_SOURCE_CHAR_LIMIT,
     SUMMARY_TRIGGER_MESSAGE_LIMIT,
 )
-from agent_debug import debug_print, format_message
-from agent_hooks import emit_event, event_span, record_error
+from src.core.common.debug import debug_print, format_message
+from src.core.hooks.events import emit_event, event_span, record_error
+from src.core.context.models import AgentContextState
 
 
 SUMMARY_MESSAGE_PREFIX = "Conversation context summary:"
 MEMORY_MESSAGE_PREFIX = "Relevant long-term memory:"
-
-
-@dataclass
-class AgentContextState:
-    """Compact conversation state kept outside the LangGraph message history."""
-
-    summary: str = ""
-    recent_messages: list = field(default_factory=list)
-
 
 class AgentContextManager:
     """Build bounded LLM inputs and compress old conversation turns."""
