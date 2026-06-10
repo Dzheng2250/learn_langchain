@@ -1,6 +1,6 @@
-"""Parent agent graph and runtime loop."""
+"""Parent agent graph and application service."""
 
 from .graph import app
-from .runtime import run_agent_loop
+from .service import AgentTurnService, SessionLockRegistry
 
-__all__ = ["app", "run_agent_loop"]
+__all__ = ["AgentTurnService", "SessionLockRegistry", "app"]

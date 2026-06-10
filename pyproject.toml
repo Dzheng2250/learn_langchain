@@ -11,12 +11,14 @@ dependencies = [
     "langchain-core",
     "langchain-openai",
     "langgraph",
+    "pydantic>=2",
     "psycopg[binary,pool]",
     "python-dotenv",
 ]
 
 [project.scripts]
-learn-agent = "src.core.agent.runtime:run_agent_loop"
+learn-agent = "src.cli.main:main"
+learn-agent-core = "src.core.main:main"
 
 [tool.setuptools.packages.find]
 where = ["."]
