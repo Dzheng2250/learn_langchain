@@ -1,6 +1,6 @@
 import os
 
-from src.core.config.settings import SKILL_FILE_NAME, SKILL_READ_OUTPUT_LIMIT, SKILLS_DIR
+from src.config.settings import SKILL_FILE_NAME, SKILL_READ_OUTPUT_LIMIT, SKILLS_DIR
 from src.core.skills.models import SkillDocument, SkillManifest
 from src.core.skills.parser import SkillMetadataParser
 

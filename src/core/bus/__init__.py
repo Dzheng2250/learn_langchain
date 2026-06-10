@@ -1,5 +1,5 @@
-"""Validated JSON-RPC transport for the Core daemon."""
+"""Validated JSON-RPC routing for the Core daemon."""
 
-from .server import CoreRpcServer
+from .router import RpcRouter
 
-__all__ = ["CoreRpcServer"]
+__all__ = ["RpcRouter"]

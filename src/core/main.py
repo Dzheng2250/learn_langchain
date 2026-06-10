@@ -3,15 +3,21 @@
 import argparse
 import asyncio
 
-from src.core.bus.server import CoreRpcServer
+from src.core.app import CoreApp
+from src.core.config.models import CoreConfig
 from src.config.settings import CORE_HOST, CORE_PORT
 from src.ipc.auth import create_token, read_token, token_path
 
 
 async def serve(host: str = CORE_HOST, port: int = CORE_PORT) -> None:
-    token = read_token() if token_path().exists() else create_token()
-    server = CoreRpcServer(token, host=host, port=port)
-    await server.serve_until_shutdown()
+    config = CoreConfig.load(host=host, port=port)
+    token = (
+        read_token(config.runtime_dir)
+        if token_path(config.runtime_dir).exists()
+        else create_token(config.runtime_dir)
+    )
+    app = CoreApp(config, token)
+    await app.run()
 
 
 def main(argv: list[str] | None = None) -> int:

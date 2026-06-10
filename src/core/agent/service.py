@@ -7,7 +7,7 @@ from uuid import uuid4
 
 from src.core.agent.graph import app
 from src.core.common.debug import debug_print
-from src.core.config.settings import MEMORY_ENABLED, MEMORY_EXTRACTION_ASYNC
+from src.config.settings import MEMORY_ENABLED, MEMORY_EXTRACTION_ASYNC
 from src.core.context.manager import AgentContextManager
 from src.core.hooks.events import emit_event, record_error, set_event_context
 from src.core.memory.policy import (

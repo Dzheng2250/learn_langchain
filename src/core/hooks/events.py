@@ -2,7 +2,7 @@ import time
 from contextlib import contextmanager
 from contextvars import ContextVar
 
-from src.core.config.settings import (
+from src.config.settings import (
     AGENT_EVENTS_CONSOLE_ENABLED,
     AGENT_EVENTS_ENABLED,
     AGENT_EVENTS_FILE_ENABLED,

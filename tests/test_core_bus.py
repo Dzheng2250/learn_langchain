@@ -4,7 +4,9 @@ import unittest
 from unittest.mock import patch
 
 from src.cli.client import CoreClient
-from src.core.bus.framing import FrameError, encode_ndjson, read_ndjson
+from src.core.app import CoreApp
+from src.core.config.models import CoreConfig
+from src.core.transport.framing import FrameError, encode_ndjson, read_ndjson
 from src.ipc.models import PingParams
 from src.core.bus.router import (
     INVALID_PARAMS,
@@ -12,10 +14,20 @@ from src.core.bus.router import (
     UNAUTHORIZED,
     RpcRouter,
 )
-from src.core.bus.server import ConnectionContext, CoreRpcServer
+from src.core.transport.socket_server import SocketRequestContext
 
 
 TOKEN = "test-token"
+
+
+class FakeRequestContext:
+    request_id = "request"
+
+    async def send_notification(self, _value):
+        pass
+
+    def request_close(self):
+        pass
 
 
 class FakeAgentService:
@@ -35,6 +47,7 @@ class RouterTest(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
         self.calls = 0
         self.router = RpcRouter(TOKEN)
+        self.context = FakeRequestContext()
 
         async def handler(_params, _context):
             self.calls += 1
@@ -44,27 +57,38 @@ class RouterTest(unittest.IsolatedAsyncioTestCase):
 
     async def test_valid_request_reaches_handler(self):
         response = await self.router.dispatch(
-            {"jsonrpc": "2.0", "id": "1", "method": "core.ping", "params": {"auth_token": TOKEN}}
+            {"jsonrpc": "2.0", "id": "1", "method": "core.ping", "params": {"auth_token": TOKEN}},
+            self.context,
         )
         self.assertEqual({"status": "ok"}, response.result)
         self.assertEqual(1, self.calls)
 
     async def test_bad_token_never_reaches_handler(self):
         response = await self.router.dispatch(
-            {"jsonrpc": "2.0", "id": "1", "method": "core.ping", "params": {"auth_token": "bad"}}
+            {"jsonrpc": "2.0", "id": "1", "method": "core.ping", "params": {"auth_token": "bad"}},
+            self.context,
         )
         self.assertEqual(UNAUTHORIZED, response.error.code)
         self.assertEqual(0, self.calls)
 
     async def test_unknown_method_and_invalid_params(self):
         missing = await self.router.dispatch(
-            {"jsonrpc": "2.0", "id": "1", "method": "missing", "params": {"auth_token": TOKEN}}
+            {"jsonrpc": "2.0", "id": "1", "method": "missing", "params": {"auth_token": TOKEN}},
+            self.context,
         )
         invalid = await self.router.dispatch(
-            {"jsonrpc": "2.0", "id": "2", "method": "core.ping", "params": {}}
+            {"jsonrpc": "2.0", "id": "2", "method": "core.ping", "params": {}},
+            self.context,
         )
         self.assertEqual(METHOD_NOT_FOUND, missing.error.code)
         self.assertEqual(INVALID_PARAMS, invalid.error.code)
+
+    async def test_duplicate_method_registration_is_rejected(self):
+        async def handler(_params, _context):
+            return {}
+
+        with self.assertRaises(ValueError):
+            self.router.register("core.ping", PingParams, handler)
 
 
 class FramingTest(unittest.IsolatedAsyncioTestCase):
@@ -105,10 +129,10 @@ class YieldingWriter:
 class ConnectionWriteTest(unittest.IsolatedAsyncioTestCase):
     async def test_concurrent_writes_remain_complete_ndjson_frames(self):
         writer = YieldingWriter()
-        context = ConnectionContext(writer)
+        context = SocketRequestContext(writer)
         await asyncio.gather(
-            context.send({"id": "a", "value": "first"}),
-            context.send({"id": "b", "value": "second"}),
+            context.send_notification({"id": "a", "value": "first"}),
+            context.send_notification({"id": "b", "value": "second"}),
         )
         self.assertEqual(2, len(writer.frames))
         for frame in writer.frames:
@@ -118,19 +142,22 @@ class ConnectionWriteTest(unittest.IsolatedAsyncioTestCase):
 
 class CoreServerIntegrationTest(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
-        self.server = CoreRpcServer(
-            TOKEN,
+        config = CoreConfig.load(
             port=0,
-            agent_service=FakeAgentService(),
             manage_runtime_files=False,
         )
-        await self.server.start()
+        self.app = CoreApp(
+            config,
+            TOKEN,
+            agent_service=FakeAgentService(),
+        )
+        await self.app.start()
 
     async def asyncTearDown(self):
-        await self.server.close()
+        await self.app.close()
 
     async def _request(self, method, params):
-        reader, writer = await asyncio.open_connection("127.0.0.1", self.server.port)
+        reader, writer = await asyncio.open_connection("127.0.0.1", self.app.transport.port)
         request_id = "request-1"
         writer.write(
             encode_ndjson(
@@ -158,7 +185,7 @@ class CoreServerIntegrationTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual("ok", messages[-1]["result"]["status"])
 
     async def test_cli_client_can_ping_server(self):
-        client = CoreClient(port=self.server.port)
+        client = CoreClient(port=self.app.transport.port)
         with patch("src.cli.client.read_token", return_value=TOKEN):
             result = await asyncio.to_thread(client.request, "core.ping")
         self.assertEqual("ok", result["status"])
@@ -176,7 +203,7 @@ class CoreServerIntegrationTest(unittest.IsolatedAsyncioTestCase):
     async def test_shutdown_returns_response_and_sets_shutdown_event(self):
         messages = await self._request("core.shutdown", {"auth_token": TOKEN})
         self.assertEqual("shutting_down", messages[-1]["result"]["status"])
-        await asyncio.wait_for(self.server.shutdown_event.wait(), timeout=1)
+        await asyncio.wait_for(self.app.shutdown_event.wait(), timeout=1)
 
 
 if __name__ == "__main__":

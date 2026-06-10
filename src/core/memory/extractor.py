@@ -7,7 +7,7 @@ from langchain_core.messages import HumanMessage, SystemMessage
 from langchain_openai import ChatOpenAI
 
 from src.core.common.debug import debug_print, format_message
-from src.core.config.settings import MEMORY_EXTRACT_SOURCE_CHAR_LIMIT, MODEL
+from src.config.settings import MEMORY_EXTRACT_SOURCE_CHAR_LIMIT, MODEL
 from src.core.hooks.events import event_span
 
 

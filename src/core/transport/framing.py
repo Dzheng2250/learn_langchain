@@ -1,4 +1,4 @@
-"""NDJSON framing helpers for the JSON-RPC transport."""
+"""NDJSON framing helpers for the socket transport."""
 
 import asyncio
 import json
@@ -23,10 +23,9 @@ async def read_ndjson(reader: asyncio.StreamReader, max_bytes: int):
     except UnicodeDecodeError as exc:
         raise FrameError("message is not valid UTF-8") from exc
     try:
-        value = json.loads(text)
+        return json.loads(text)
     except json.JSONDecodeError as exc:
         raise FrameError("invalid JSON") from exc
-    return value
 
 
 def encode_ndjson(value) -> bytes:

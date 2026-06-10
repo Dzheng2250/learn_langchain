@@ -7,7 +7,7 @@ from langgraph.graph import END, START, MessagesState, StateGraph
 from langgraph.prebuilt import tools_condition
 
 from src.core.common.debug import debug_print, format_message, format_messages
-from src.core.config.settings import FILE_READ_CHUNK_LINES, MODEL
+from src.config.settings import FILE_READ_CHUNK_LINES, MODEL
 from src.core.hooks.events import emit_event, record_error
 from src.core.subagent.graph import delegate_to_subagent
 from src.core.tools.observed import ObservedToolNode

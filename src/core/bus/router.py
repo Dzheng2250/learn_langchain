@@ -1,10 +1,11 @@
 """Validated JSON-RPC method routing."""
 
 from collections.abc import Awaitable, Callable
-from typing import Any
+import logging
 
 from pydantic import BaseModel, ValidationError
 
+from src.core.bus.context import RequestContext
 from src.ipc.auth import verify_token
 from src.ipc.models import (
     JsonRpcError,
@@ -21,7 +22,9 @@ INVALID_PARAMS = -32602
 INTERNAL_ERROR = -32603
 UNAUTHORIZED = -32001
 
-RpcHandler = Callable[[BaseModel, Any], Awaitable[Any]]
+logger = logging.getLogger(__name__)
+
+RpcHandler = Callable[[BaseModel, RequestContext], Awaitable[object]]
 
 
 class RpcRouter:
@@ -32,9 +35,11 @@ class RpcRouter:
         self._handlers: dict[str, tuple[type[BaseModel], RpcHandler]] = {}
 
     def register(self, method: str, params_model: type[BaseModel], handler: RpcHandler) -> None:
+        if method in self._handlers:
+            raise ValueError(f"RPC method already registered: {method}")
         self._handlers[method] = (params_model, handler)
 
-    async def dispatch(self, raw: dict, context: Any = None):
+    async def dispatch(self, raw: dict, context: RequestContext):
         request_id = raw.get("id") if isinstance(raw, dict) else None
         try:
             request = JsonRpcRequest.model_validate(raw)
@@ -58,7 +63,8 @@ class RpcRouter:
         try:
             result = await handler(params, context)
         except Exception as exc:
-            return error_response(request.id, INTERNAL_ERROR, "Internal error", str(exc))
+            logger.exception("RPC handler failed method=%s: %s", request.method, exc)
+            return error_response(request.id, INTERNAL_ERROR, "Internal error")
         return JsonRpcSuccess(id=request.id, result=result)
 
 

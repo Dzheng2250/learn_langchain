@@ -5,7 +5,7 @@ from uuid import uuid4
 
 from langchain_core.messages import SystemMessage, messages_from_dict, messages_to_dict
 
-from src.core.config.settings import (
+from src.config.settings import (
     MEMORY_DB_HOST,
     MEMORY_DB_NAME,
     MEMORY_DB_PASSWORD,

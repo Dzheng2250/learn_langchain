@@ -606,10 +606,10 @@ v1 明确不处理以下问题：
 | daemon 启停与状态 | `src/cli/daemon.py` |
 | Core daemon 入口 | `src/core/main.py` |
 | JSON-RPC 模型与参数验证 | `src/ipc/models.py` |
-| NDJSON 分帧 | `src/core/bus/framing.py` |
+| NDJSON 分帧 | `src/core/transport/framing.py` |
 | token 鉴权 | `src/ipc/auth.py` |
 | 方法注册与分发 | `src/core/bus/router.py` |
-| TCP server 与流式通知 | `src/core/bus/server.py` |
+| TCP server 与流式通知 | `src/core/transport/socket_server.py` |
 | 单次 Agent turn 编排 | `src/core/agent/service.py` |
 
 当前 RPC 方法包括：

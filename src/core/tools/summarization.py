@@ -8,7 +8,7 @@ from langchain_core.tools import tool
 from langchain_openai import ChatOpenAI
 
 from src.core.common.debug import debug_print
-from src.core.config.settings import (
+from src.config.settings import (
     LARGE_FILE_CHUNK_LINES,
     LARGE_FILE_MAP_WORKERS,
     LARGE_FILE_MAX_CHUNKS,

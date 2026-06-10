@@ -8,7 +8,7 @@ import tempfile
 from langchain_core.tools import tool
 
 from src.core.common.debug import debug_print
-from src.core.config.settings import (
+from src.config.settings import (
     BASH_PATH,
     DOCKER_CPUS,
     DOCKER_IMAGE,

@@ -2,7 +2,7 @@ from langchain_core.messages import AIMessageChunk
 from langchain_core.messages import HumanMessage
 from langgraph.errors import GraphRecursionError
 
-from src.core.config.settings import MAX_GRAPH_STEPS
+from src.config.settings import MAX_GRAPH_STEPS
 from src.core.hooks.events import emit_event, record_error
 
 

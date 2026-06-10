@@ -2,7 +2,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Protocol
 
-from src.core.config.settings import DEFAULT_SESSION_ID
+from src.config.settings import DEFAULT_SESSION_ID
 
 
 @dataclass

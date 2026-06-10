@@ -1,6 +1,6 @@
 from dataclasses import asdict
 
-from src.core.config.settings import AGENT_EVENTS_PAYLOAD_PREVIEW_LIMIT
+from src.config.settings import AGENT_EVENTS_PAYLOAD_PREVIEW_LIMIT
 from src.core.hooks.models import AgentEvent
 
 

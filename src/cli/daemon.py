@@ -45,7 +45,7 @@ def start_daemon(config: CliConfig) -> dict:
                 [
                     sys.executable,
                     "-m",
-                    "src.core.main",
+                    "src.core",
                     "serve",
                     "--host",
                     config.core_host,

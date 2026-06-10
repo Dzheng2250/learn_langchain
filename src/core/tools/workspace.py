@@ -4,7 +4,7 @@ import os
 from langchain_core.tools import tool
 
 from src.core.common.debug import debug_print
-from src.core.config.settings import (
+from src.config.settings import (
     ENTIRE_FILE_MAX_LINES,
     FILE_READ_CHUNK_LINES,
     FILE_READ_OUTPUT_LIMIT,

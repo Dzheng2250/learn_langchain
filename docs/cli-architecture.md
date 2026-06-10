@@ -637,4 +637,4 @@ CliRenderError
 - 将项目包名从通用的 `src` 调整为正式包名，例如 `learn_agent`。
 - 增加配置文件与环境变量覆盖机制。
 - 为 TUI 复用 `ipc` 模型和 RPC client。
-- Core 后续可继续拆分 `bus` 与 `transport`，并增加 `CoreApp` 组合根。
+- Core 已拆分 `bus`、`handlers` 与 `transport`，并由 `CoreApp` 统一组装和管理生命周期。详见 `docs/core-architecture.md`。

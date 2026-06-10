@@ -4,7 +4,7 @@ from dotenv import load_dotenv
 from langchain_core.messages import HumanMessage, SystemMessage
 from langchain_openai import ChatOpenAI
 
-from src.core.config.settings import (
+from src.config.settings import (
     MODEL,
     RECENT_MESSAGE_LIMIT,
     SESSION_SUMMARY_MAX_CHARS,

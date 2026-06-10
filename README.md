@@ -80,8 +80,11 @@ src/
     client.py      JSON-RPC 客户端
     daemon.py      daemon 生命周期管理
   core/
-    main.py        Core daemon 入口
-    bus/           TCP、NDJSON、JSON-RPC、鉴权和路由
+    main.py        Core daemon 命令入口
+    app.py         依赖组装与生命周期管理
+    bus/           JSON-RPC 验证、鉴权和路由
+    handlers/      RPC 与业务服务适配
+    transport/     TCP 与 NDJSON 传输
     agent/         LangGraph 定义和 AgentTurnService
     context/       短期上下文管理与压缩
     memory/        会话归档和长期记忆
@@ -92,6 +95,8 @@ src/
 详细通信原理见 [双进程与JSON-RPC设计说明.md](双进程与JSON-RPC设计说明.md)。
 
 CLI 优化方案和扩展规则见 [docs/cli-architecture.md](docs/cli-architecture.md)。
+
+CoreApp、Handlers 与 Transport 架构见 [docs/core-architecture.md](docs/core-architecture.md)。
 
 ## 测试
 
