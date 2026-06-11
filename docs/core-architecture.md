@@ -5,6 +5,9 @@
 >
 > 单次 Agent 执行、ModelProvider、RunContext、ToolRegistry 与事件通道见
 > [`agent-execution-architecture.md`](agent-execution-architecture.md)。
+>
+> PR #3 review 整改与可靠性决策见
+> [`pr-3-review-hardening.md`](pr-3-review-hardening.md)。
 
 ## 重构目标
 
@@ -95,10 +98,12 @@ Agent service initialize
 
 ```text
 停止接受新连接
-  -> 等待活跃请求
-  -> 关闭连接
+  -> 关闭客户端 stream，释放空闲连接
+  -> 等待活跃 handler
+  -> 等待 Transport 完全关闭
   -> 关闭 Agent service
   -> flush/关闭事件 sink
+  -> 关闭数据库连接池
   -> 删除 PID
 ```
 
@@ -119,6 +124,7 @@ Handlers 是协议与业务之间的适配层。
 - 将 `agent.chat` 参数转换为 `AgentTurnService.run_turn()` 调用。
 - 将 Agent 事件转换为 `agent.event` notification。
 - 只依赖 `AgentTurnRunner` 和抽象 `RequestContext`。
+- 直接等待异步应用服务接口，不负责选择或管理执行线程池。
 
 Handler 不负责连接读取、JSON 解码、鉴权或业务服务生命周期。
 
@@ -156,7 +162,7 @@ Transport 只负责数据传输。
 - 读取有大小限制的 NDJSON frame。
 - 将消息交给 Router。
 - 并发安全地写回响应和 notification。
-- 停止接收新连接后等待活跃请求。
+- 停止接收新连接后关闭客户端 stream，并等待活跃 handler。
 
 Transport 不允许依赖：
 
@@ -180,7 +186,9 @@ daemon PID/token 管理
 
 ### 依赖倒置原则
 
-`AgentHandlers` 依赖 `AgentTurnRunner` 协议，`CoreApp` 依赖 `CoreAgentService` 和 `CoreTransport` 协议。测试和未来 Transport 可以注入替代实现。
+`AgentHandlers` 依赖 `AgentTurnRunner` 协议，`CoreApp` 依赖 `ManagedAgentService` 和
+`CoreTransport` 协议。两个 Agent service 协议集中定义在 `core.agent.contracts`，
+测试和未来 Transport 可以注入替代实现。
 
 ### 开闭原则
 
@@ -226,6 +234,7 @@ Handler 只获得最小 `RequestContext`，不能访问底层 TCP writer。Agent
 - `core.ping`、`core.shutdown`、`agent.chat`。
 - Agent token/step/error/done 流式通知。
 - 同 session 串行、跨 session 并行。
+- 同步 Agent turn 通过专用有界 executor 执行，不占用 asyncio 默认线程池。
 - 启动失败反向清理资源。
 - shutdown 等待活跃请求并设置超时。
 

@@ -69,6 +69,7 @@ CLI 只读取：
 ```text
 Core 地址和端口
 连接超时
+daemon 启动和停止超时
 运行时目录
 默认 session
 ```
@@ -422,6 +423,8 @@ CLI 当前只读取并验证：
 CORE_HOST
 CORE_PORT
 CORE_CONNECT_TIMEOUT_SECONDS
+CORE_DAEMON_STARTUP_TIMEOUT_SECONDS
+CORE_DAEMON_STOP_TIMEOUT_SECONDS
 CORE_RUNTIME_DIR
 DEFAULT_SESSION_ID
 ```
@@ -446,6 +449,7 @@ Docker 沙盒配置
 
 `CoreClient` 当前支持：
 
+- 同步、单请求单连接调用模型。
 - 每次请求创建独立 TCP 连接。
 - 为请求生成唯一 `request_id`。
 - 自动读取本地 token 并加入请求参数。
@@ -456,6 +460,7 @@ Docker 沙盒配置
 
 当前不支持：
 
+- 异步 client；未来 TUI 应新增独立 async client，而不是阻塞事件循环。
 - 长连接和连接池。
 - 同一连接并发发送多个请求。
 - 自动重试。

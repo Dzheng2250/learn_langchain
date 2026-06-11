@@ -1,4 +1,5 @@
 import asyncio
+import time
 import unittest
 from unittest.mock import call, patch
 
@@ -19,7 +20,7 @@ class FakeAgentService:
     def close(self):
         self.events.append("agent.close")
 
-    def run_turn(self, *_args, **_kwargs):
+    async def run_turn(self, *_args, **_kwargs):
         return {"status": "ok"}
 
 
@@ -36,6 +37,14 @@ class FakeTransport:
 
     async def close(self, _timeout):
         self.events.append("transport.close")
+
+
+class FakePool:
+    def __init__(self):
+        self.close_timeouts = []
+
+    def close(self, *, timeout):
+        self.close_timeouts.append(timeout)
 
 
 class CoreAppTest(unittest.IsolatedAsyncioTestCase):
@@ -133,6 +142,65 @@ class CoreAppTest(unittest.IsolatedAsyncioTestCase):
             await app.close()
 
             set_publisher.assert_called_once_with(None)
+
+    async def test_close_passes_shutdown_timeout_to_pool(self):
+        events = []
+        app = CoreApp(
+            self._config(),
+            "token",
+            agent_service=FakeAgentService(events),
+            transport_factory=lambda _config, _router: FakeTransport(events),
+        )
+        pool = FakePool()
+        app._pool = pool
+
+        await app.close()
+
+        self.assertEqual([app.config.shutdown_timeout_seconds], pool.close_timeouts)
+
+    async def test_blocking_service_close_does_not_block_event_loop(self):
+        events = []
+
+        class SlowCloseService(FakeAgentService):
+            def close(self):
+                time.sleep(0.05)
+                super().close()
+
+        app = CoreApp(
+            self._config(),
+            "token",
+            agent_service=SlowCloseService(events),
+            transport_factory=lambda _config, _router: FakeTransport(events),
+        )
+
+        close_task = asyncio.create_task(app.close())
+        await asyncio.sleep(0.01)
+        self.assertFalse(close_task.done())
+        await close_task
+
+    async def test_close_releases_remaining_resources_when_agent_close_fails(self):
+        events = []
+        pool = FakePool()
+
+        class FailingCloseService(FakeAgentService):
+            def close(self):
+                super().close()
+                raise RuntimeError("agent close failed")
+
+        with patch("src.core.app.set_event_publisher") as set_publisher:
+            app = CoreApp(
+                self._config(),
+                "token",
+                agent_service=FailingCloseService(events),
+                transport_factory=lambda _config, _router: FakeTransport(events),
+            )
+            app._pool = pool
+
+            with self.assertRaisesRegex(RuntimeError, "agent close failed"):
+                await app.close()
+
+            set_publisher.assert_called_once_with(None)
+            self.assertEqual([app.config.shutdown_timeout_seconds], pool.close_timeouts)
 
     def test_core_config_rejects_non_loopback_host(self):
         with self.assertRaises(ValueError):

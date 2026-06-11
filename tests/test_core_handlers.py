@@ -1,5 +1,6 @@
 import asyncio
 import unittest
+from unittest.mock import patch
 
 from src.core.handlers.agent import AgentHandlers
 from src.core.handlers.core import CoreHandlers
@@ -20,8 +21,8 @@ class FakeRequestContext:
 
 
 class FakeAgentService:
-    def run_turn(self, workspace_root, session_name, message, on_event, *, run_id=None):
-        on_event({"event": "token", "data": {"content": "hello"}})
+    async def run_turn(self, workspace_root, session_name, message, on_event, *, run_id=None):
+        await asyncio.to_thread(on_event, {"event": "token", "data": {"content": "hello"}})
         return {
             "status": "ok",
             "run_id": run_id,
@@ -62,6 +63,38 @@ class AgentHandlersTest(unittest.IsolatedAsyncioTestCase):
         params = context.notifications[0].params
         self.assertEqual("request-1", params["request_id"])
         self.assertEqual("token", params["event"])
+
+    async def test_notification_failure_is_recorded_once_without_cancelling_turn(self):
+        completed = False
+
+        class FailingContext(FakeRequestContext):
+            def __init__(self):
+                super().__init__()
+                self.attempts = 0
+
+            async def send_notification(self, _value):
+                self.attempts += 1
+                raise ConnectionError("client disconnected")
+
+        class MultiEventService:
+            async def run_turn(self, _workspace, _session, _message, on_event, *, run_id=None):
+                nonlocal completed
+                await asyncio.to_thread(on_event, {"event": "token", "data": {}})
+                await asyncio.to_thread(on_event, {"event": "done", "data": {}})
+                completed = True
+                return {"status": "ok", "run_id": run_id}
+
+        context = FailingContext()
+        with patch("src.core.handlers.agent.record_error") as record_error:
+            result = await AgentHandlers(MultiEventService()).chat(
+                ChatParams(auth_token="token", workspace_root=".", session_name="session", message="hello"),
+                context,
+            )
+
+        self.assertEqual("ok", result["status"])
+        self.assertTrue(completed)
+        self.assertEqual(1, context.attempts)
+        record_error.assert_called_once()
 
 
 if __name__ == "__main__":

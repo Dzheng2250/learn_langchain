@@ -5,12 +5,12 @@ import os
 from collections.abc import Callable
 from typing import Protocol
 
+from src.core.agent.contracts import ManagedAgentService
 from src.core.agent.service import AgentTurnService
 from src.core.agent.models import RunLimits
 from src.core.bus.router import RpcRouter
 from src.core.config.models import CoreConfig
 from src.core.handlers import AgentHandlers, CoreHandlers
-from src.core.handlers.agent import AgentTurnRunner
 from src.core.hooks.events import set_event_publisher
 from src.core.hooks.publisher import EventPublisher
 from src.core.transport.socket_server import SocketServer
@@ -21,14 +21,6 @@ from src.core.context.manager import AgentContextManager
 from src.core.llm.provider import OpenAICompatibleProvider
 from src.core.workspace.repository import WorkspaceRepository
 from src.core.workspace.runtime import WorkspaceRuntimeFactory, WorkspaceRuntimeRegistry
-
-
-class CoreAgentService(AgentTurnRunner, Protocol):
-    def initialize(self) -> None:
-        """Initialize durable dependencies."""
-
-    def close(self) -> None:
-        """Close service-owned resources."""
 
 
 class CoreTransport(Protocol):
@@ -59,7 +51,7 @@ class CoreApp:
         config: CoreConfig,
         auth_token: str,
         *,
-        agent_service: CoreAgentService | None = None,
+        agent_service: ManagedAgentService | None = None,
         transport_factory: TransportFactory = create_socket_transport,
         event_publisher: EventPublisher | None = None,
     ) -> None:
@@ -128,12 +120,19 @@ class CoreApp:
         try:
             await self.transport.close(self.config.shutdown_timeout_seconds)
         finally:
-            self.agent_service.close()
-            set_event_publisher(None)
-            if self._pool is not None:
-                self._pool.close()
-            if self.config.manage_runtime_files:
+            try:
+                await asyncio.to_thread(self.agent_service.close)
+            finally:
                 try:
-                    pid_path(self.config.runtime_dir).unlink(missing_ok=True)
-                except OSError:
-                    pass
+                    set_event_publisher(None)
+                    if self._pool is not None:
+                        await asyncio.to_thread(
+                            self._pool.close,
+                            timeout=self.config.shutdown_timeout_seconds,
+                        )
+                finally:
+                    if self.config.manage_runtime_files:
+                        try:
+                            pid_path(self.config.runtime_dir).unlink(missing_ok=True)
+                        except OSError:
+                            pass

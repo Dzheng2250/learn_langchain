@@ -15,6 +15,9 @@ class WorkspaceRepository:
         root = canonicalize_workspace(path)
         with self.pool.connection() as conn:
             with conn.cursor() as cur:
+                # One atomic UPSERT keeps concurrent first-use registration safe.
+                # Losing contenders may allocate an unused UUID, which is cheaper
+                # and safer than a SELECT-then-INSERT race.
                 cur.execute(UPSERT_WORKSPACE, (uuid4(), canonical_path_key(root), str(root)))
                 workspace_id = cur.fetchone()[0]
             conn.commit()

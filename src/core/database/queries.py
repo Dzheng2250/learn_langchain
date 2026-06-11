@@ -2,6 +2,8 @@
 
 from pathlib import Path
 
+import sqlparse
+
 
 SQL_DIR = Path(__file__).resolve().parent / "sql"
 
@@ -19,7 +21,11 @@ def execute_sql_file(cur, filename: str) -> None:
 
 
 def split_sql_statements(sql: str) -> list[str]:
-    return [part.strip() for part in sql.split(";") if part.strip()]
+    return [
+        statement.strip().removesuffix(";").rstrip()
+        for statement in sqlparse.split(sql)
+        if statement.strip()
+    ]
 
 
 DETECT_LEGACY_SCHEMA = """

@@ -63,7 +63,7 @@ def start_daemon(config: CliConfig) -> dict:
             "Unable to start the Core daemon process.",
             hint=f"Check permissions and Python environment. Details: {exc}",
         ) from exc
-    deadline = time.monotonic() + max(5.0, config.connect_timeout_seconds * 3)
+    deadline = time.monotonic() + config.daemon_startup_timeout_seconds
     while time.monotonic() < deadline:
         status = daemon_status(config)
         if status is not None:
@@ -85,7 +85,7 @@ def stop_daemon(config: CliConfig) -> dict:
             hint="Use 'learn-agent start' to start it.",
         )
 
-    deadline = time.monotonic() + 12
+    deadline = time.monotonic() + config.daemon_stop_timeout_seconds
     while time.monotonic() < deadline and daemon_status(config) is not None:
         time.sleep(0.1)
     if daemon_status(config) is not None:

@@ -46,6 +46,8 @@ CLI 识别 Workspace
 ```
 
 同一 Session 通过内部 UUID 锁串行执行。不同 Session 和不同 Workspace 可以并行。
+同步 LangGraph、工具和数据库链路运行在专用 `agent-turn` executor 中，最大并发由
+`CORE_AGENT_WORKERS` 控制。RPC Handler 只等待异步服务接口，不直接管理线程池。
 
 ## AgentRunContext 与 RunLimits
 
@@ -218,6 +220,7 @@ LangGraph stream
 当前仍未实现：
 
 - 运行中任务取消和超时中断。
+- 全异步 LangGraph、工具和 psycopg Repository。
 - Token 预算和成本预算。
 - 子 Agent 工具调用次数独立限制。
 - 按用途配置不同模型和重试策略。

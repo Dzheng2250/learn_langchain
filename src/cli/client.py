@@ -22,6 +22,8 @@ from src.ipc.models import AgentEventNotification, JsonRpcErrorResponse, JsonRpc
 
 
 class CoreClient:
+    """Synchronous, single-request-per-connection Core client for CLI commands."""
+
     def __init__(
         self,
         config: CliConfig | None = None,

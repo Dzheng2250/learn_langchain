@@ -37,9 +37,9 @@ class FakeAgentService:
     def close(self):
         pass
 
-    def run_turn(self, workspace_root, session_name, message, on_event, *, run_id=None):
-        on_event({"event": "token", "data": {"content": "hello"}})
-        on_event({"event": "done", "data": {"status": "ok"}})
+    async def run_turn(self, workspace_root, session_name, message, on_event, *, run_id=None):
+        await asyncio.to_thread(on_event, {"event": "token", "data": {"content": "hello"}})
+        await asyncio.to_thread(on_event, {"event": "done", "data": {"status": "ok"}})
         return {"status": "ok", "run_id": run_id}
 
 
@@ -204,6 +204,60 @@ class CoreServerIntegrationTest(unittest.IsolatedAsyncioTestCase):
         messages = await self._request("core.shutdown", {"auth_token": TOKEN})
         self.assertEqual("shutting_down", messages[-1]["result"]["status"])
         await asyncio.wait_for(self.app.shutdown_event.wait(), timeout=1)
+
+    async def test_malformed_frame_only_closes_its_own_connection(self):
+        reader, writer = await asyncio.open_connection("127.0.0.1", self.app.transport.port)
+        writer.write(b"not-json\n")
+        await writer.drain()
+        response = json.loads((await reader.readline()).decode("utf-8"))
+        self.assertEqual(-32700, response["error"]["code"])
+        self.assertEqual(b"", await reader.readline())
+        writer.close()
+        await writer.wait_closed()
+
+        messages = await self._request("core.ping", {"auth_token": TOKEN})
+        self.assertEqual("ok", messages[-1]["result"]["status"])
+
+    async def test_concurrent_connections_receive_independent_responses(self):
+        first, second = await asyncio.gather(
+            self._request("core.ping", {"auth_token": TOKEN}),
+            self._request("core.ping", {"auth_token": TOKEN}),
+        )
+        self.assertEqual("ok", first[-1]["result"]["status"])
+        self.assertEqual("ok", second[-1]["result"]["status"])
+
+    async def test_graceful_close_waits_for_active_request(self):
+        started = asyncio.Event()
+        release = asyncio.Event()
+
+        async def slow_handler(_params, _context):
+            started.set()
+            await release.wait()
+            return {"status": "ok"}
+
+        self.app.router.register("test.slow", PingParams, slow_handler)
+        reader, writer = await asyncio.open_connection("127.0.0.1", self.app.transport.port)
+        writer.write(
+            encode_ndjson(
+                {
+                    "jsonrpc": "2.0",
+                    "id": "slow",
+                    "method": "test.slow",
+                    "params": {"auth_token": TOKEN},
+                }
+            )
+        )
+        await writer.drain()
+        await started.wait()
+
+        close_task = asyncio.create_task(self.app.close())
+        await asyncio.sleep(0.01)
+        self.assertFalse(close_task.done())
+        release.set()
+        await asyncio.wait_for(close_task, timeout=2)
+
+        writer.close()
+        await writer.wait_closed()
 
 
 if __name__ == "__main__":

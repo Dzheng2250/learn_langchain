@@ -13,6 +13,7 @@ dependencies = [
     "langgraph",
     "pydantic>=2",
     "psycopg[binary,pool]",
+    "sqlparse",
     "python-dotenv",
     "platformdirs",
 ]

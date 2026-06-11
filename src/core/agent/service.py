@@ -1,11 +1,14 @@
 """Workspace-aware application service for one complete Agent turn."""
 
+import asyncio
 from collections.abc import Callable, Iterator
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import Executor, ThreadPoolExecutor
+from functools import partial
 from threading import Lock, RLock
 from uuid import UUID, uuid4
 
-from src.config.settings import MEMORY_ENABLED, MEMORY_EXTRACTION_ASYNC
+from src.config.settings import CORE_AGENT_WORKERS, MEMORY_ENABLED, MEMORY_EXTRACTION_ASYNC
+from src.core.agent.contracts import EventCallback
 from src.core.agent.models import AgentRunContext, RunLimits, StopReason
 from src.core.context.manager import AgentContextManager
 from src.core.hooks.events import (
@@ -23,9 +26,6 @@ from src.core.workspace.repository import WorkspaceRepository
 from src.core.workspace.runtime import WorkspaceRuntimeRegistry
 
 
-EventCallback = Callable[[dict], None]
-
-
 class SessionLockRegistry:
     def __init__(self) -> None:
         self._guard = Lock()
@@ -37,7 +37,12 @@ class SessionLockRegistry:
 
 
 class AgentTurnService:
-    """Resolve identities, serialize a Session, and orchestrate one Agent turn."""
+    """Run bounded synchronous Agent turns without blocking the Core event loop.
+
+    A dedicated executor limits concurrent turns. Session UUID locks additionally
+    serialize requests targeting the same Session while allowing different
+    Sessions to run concurrently.
+    """
 
     def __init__(
         self,
@@ -49,7 +54,11 @@ class AgentTurnService:
         memory_enabled: bool = MEMORY_ENABLED,
         lock_registry: SessionLockRegistry | None = None,
         run_limits: RunLimits | None = None,
+        turn_executor: Executor | None = None,
+        max_concurrent_turns: int = CORE_AGENT_WORKERS,
     ) -> None:
+        if max_concurrent_turns <= 0:
+            raise ValueError("max_concurrent_turns must be greater than zero")
         self.workspace_repository = workspace_repository
         self.runtime_registry = runtime_registry
         self.memory_store_factory = memory_store_factory
@@ -57,6 +66,12 @@ class AgentTurnService:
         self.memory_enabled = memory_enabled
         self.lock_registry = lock_registry or SessionLockRegistry()
         self.run_limits = run_limits or RunLimits()
+        self._turn_slots = asyncio.Semaphore(max_concurrent_turns)
+        self._turn_executor = turn_executor or ThreadPoolExecutor(
+            max_workers=max_concurrent_turns,
+            thread_name_prefix="agent-turn",
+        )
+        self._owns_turn_executor = turn_executor is None
         self._memory_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="agent-memory")
 
     def initialize(self) -> None:
@@ -66,7 +81,43 @@ class AgentTurnService:
         finally:
             store.close()
 
-    def run_turn(
+    async def run_turn(
+        self,
+        workspace_root: str,
+        session_name: str,
+        user_input: str,
+        on_event: EventCallback | None = None,
+        *,
+        run_id: str | None = None,
+    ) -> dict:
+        loop = asyncio.get_running_loop()
+        await self._turn_slots.acquire()
+        try:
+            worker_future = self._turn_executor.submit(
+                partial(
+                    self._run_turn_sync,
+                    workspace_root,
+                    session_name,
+                    user_input,
+                    on_event,
+                    run_id=run_id,
+                )
+            )
+        except Exception:
+            self._turn_slots.release()
+            raise
+
+        def release_slot(_future) -> None:
+            try:
+                loop.call_soon_threadsafe(self._turn_slots.release)
+            except RuntimeError:
+                # The process event loop is already closed; no later turn can use the slot.
+                pass
+
+        worker_future.add_done_callback(release_slot)
+        return await asyncio.wrap_future(worker_future)
+
+    def _run_turn_sync(
         self,
         workspace_root: str,
         session_name: str,
@@ -108,6 +159,8 @@ class AgentTurnService:
             yield from self._stream_locked_turn(session, runtime.graph, normalized, run_id)
 
     def close(self) -> None:
+        if self._owns_turn_executor:
+            self._turn_executor.shutdown(wait=True, cancel_futures=False)
         self._memory_executor.shutdown(wait=True, cancel_futures=False)
 
     def _stream_locked_turn(

@@ -33,7 +33,11 @@ class SocketRequestContext:
 
 
 class SocketServer:
-    """Accept TCP connections and delegate validated messages to a router."""
+    """Accept TCP connections and delegate validated messages to a router.
+
+    A malformed NDJSON frame closes only the connection that supplied it after
+    returning a Parse Error. Other concurrent connections remain unaffected.
+    """
 
     def __init__(
         self,
@@ -64,10 +68,17 @@ class SocketServer:
         return self.port
 
     async def close(self, timeout_seconds: float) -> None:
-        """Stop accepting connections, drain active requests, then close clients."""
+        """Stop accepting connections, close client streams, then drain requests."""
         if self._server is not None:
             self._server.close()
-            await self._server.wait_closed()
+
+        # Connection tasks otherwise remain blocked waiting for the next frame,
+        # while close() waits for those same tasks before closing their writer.
+        # Closing the streams first releases idle readers without cancelling a
+        # handler that is already executing.
+        writers = list(self._writers)
+        for writer in writers:
+            writer.close()
 
         current = asyncio.current_task()
         active = [task for task in self._tasks if task is not current and not task.done()]
@@ -78,13 +89,13 @@ class SocketServer:
             if pending:
                 await asyncio.gather(*pending, return_exceptions=True)
 
-        for writer in list(self._writers):
-            writer.close()
-        if self._writers:
+        if writers:
             await asyncio.gather(
-                *(self._wait_closed(writer) for writer in list(self._writers)),
+                *(self._wait_closed(writer) for writer in writers),
                 return_exceptions=True,
             )
+        if self._server is not None:
+            await self._server.wait_closed()
 
     async def _handle_connection(
         self,

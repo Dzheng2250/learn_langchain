@@ -1,25 +1,13 @@
 """Agent RPC handlers."""
 
 import asyncio
-from typing import Callable, Protocol
 from uuid import uuid4
 
+from src.core.agent.contracts import AgentTurnRunner
 from src.core.bus.context import RequestContext
 from src.core.bus.router import RpcRouter
+from src.core.hooks.events import record_error
 from src.ipc.models import AgentEventNotification, ChatParams
-
-
-class AgentTurnRunner(Protocol):
-    def run_turn(
-        self,
-        workspace_root: str,
-        session_name: str,
-        user_input: str,
-        on_event: Callable[[dict], None] | None = None,
-        *,
-        run_id: str | None = None,
-    ) -> dict:
-        """Execute one agent turn."""
 
 
 class AgentHandlers:
@@ -34,8 +22,12 @@ class AgentHandlers:
     async def chat(self, params: ChatParams, context: RequestContext) -> dict:
         loop = asyncio.get_running_loop()
         run_id = uuid4().hex
+        notification_failed = False
 
         def on_event(item: dict) -> None:
+            nonlocal notification_failed
+            if notification_failed:
+                return
             notification = AgentEventNotification(
                 params={
                     "request_id": context.request_id,
@@ -50,12 +42,21 @@ class AgentHandlers:
             )
             try:
                 future.result()
-            except Exception:
-                # A disconnected client must not cancel a turn already executing in Core.
-                pass
+            except Exception as exc:
+                notification_failed = True
+                record_error(
+                    "agent_handler",
+                    "stream_notification",
+                    exc,
+                    "Stopped streaming notifications after client delivery failed.",
+                    {
+                        "request_id": context.request_id,
+                        "run_id": run_id,
+                    },
+                    event_type="stream_notification_failed",
+                )
 
-        return await asyncio.to_thread(
-            self.agent_service.run_turn,
+        return await self.agent_service.run_turn(
             params.workspace_root,
             params.session_name,
             params.message,

@@ -1,4 +1,6 @@
+import shutil
 import unittest
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from uuid import uuid4
 
@@ -45,6 +47,28 @@ class WorkspaceMemoryStoreTest(unittest.TestCase):
         self.assertEqual("default", self.session_a.session_name)
         self.assertEqual("default", self.session_b.session_name)
         self.assertNotEqual(self.session_a.session_id, self.session_b.session_id)
+
+    def test_concurrent_workspace_registration_returns_one_identity(self) -> None:
+        root = Path(".test_tmp") / f"workspace-register-{uuid4().hex}"
+        root.mkdir(parents=True)
+        self.addCleanup(shutil.rmtree, root, True)
+        repository = WorkspaceRepository(self.pool)
+
+        with ThreadPoolExecutor(max_workers=4) as executor:
+            workspaces = list(executor.map(lambda _index: repository.resolve(root), range(8)))
+
+        workspace_ids = {workspace.workspace_id for workspace in workspaces}
+        self.assertEqual(1, len(workspace_ids))
+        workspace_id = workspace_ids.pop()
+        with self.pool.connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT count(*) FROM agent_workspaces WHERE workspace_id = %s",
+                    (workspace_id,),
+                )
+                self.assertEqual(1, cur.fetchone()[0])
+                cur.execute("DELETE FROM agent_workspaces WHERE workspace_id = %s", (workspace_id,))
+            conn.commit()
 
     def test_session_context_and_messages_round_trip(self) -> None:
         state = AgentContextState(
