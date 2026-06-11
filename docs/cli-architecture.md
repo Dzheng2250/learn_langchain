@@ -106,6 +106,9 @@ src/
 
 ## 调用流程
 
+完整的 CLI、RPC、Agent、工具、记忆和数据库时序见
+[Agent 完整数据流动示意图](agent-execution-architecture.md#完整数据流动示意图)。
+
 ```text
 learn-agent chat
   -> CliConfig.load()

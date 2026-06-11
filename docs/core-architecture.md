@@ -5,6 +5,8 @@
 >
 > 单次 Agent 执行、ModelProvider、RunContext、ToolRegistry 与事件通道见
 > [`agent-execution-architecture.md`](agent-execution-architecture.md)。
+> 端到端请求路径见其中的[完整数据流动示意图](agent-execution-architecture.md#完整数据流动示意图)，
+> Agent 内部执行与双事件通道见[调用链与事件通道图](agent-execution-architecture.md#agent-调用链与事件通道图)。
 >
 > PR #3 review 整改与可靠性决策见
 > [`pr-3-review-hardening.md`](pr-3-review-hardening.md)。
