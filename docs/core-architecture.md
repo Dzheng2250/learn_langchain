@@ -1,5 +1,8 @@
 # CoreApp 与 Transport 架构
 
+> Workspace 隔离、用户级 daemon、数据库迁移和最新依赖边界见
+> [`workspace-isolation-and-migration.md`](workspace-isolation-and-migration.md)。
+
 ## 重构目标
 
 Core daemon 负责 Agent、工具、上下文、记忆和 RPC 服务。重构前的 `CoreRpcServer` 同时承担 TCP 连接、JSON-RPC 路由、业务 handler、Agent 服务创建和 daemon 生命周期，违反单一职责原则，也使 Transport 无法独立测试或替换。

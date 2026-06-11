@@ -1,34 +1,26 @@
+"""Workspace-bound skill tools."""
+
+from pathlib import Path
 
 from langchain_core.tools import tool
 
-from src.core.common.debug import debug_print
 from src.core.skills.store import LocalSkillStore
-from src.core.tools.workspace import WORKSPACE_DIR
 
 
-skill_store = LocalSkillStore(WORKSPACE_DIR)
+def create_skill_tools(root: Path) -> tuple[object, object, LocalSkillStore]:
+    store = LocalSkillStore(str(root))
 
+    @tool
+    def list_skills() -> str:
+        """List skill manifests available in the current workspace."""
+        return store.format_skill_list()
 
-@tool
-def list_skills() -> str:
-    """List available local skills under the configured skills directory."""
-    debug_print("TOOL list_skills INPUT", f"skills_dir={skill_store.skills_dir!r}")
-    result = skill_store.format_skill_list()
-    debug_print("TOOL list_skills OUTPUT", result)
-    return result
+    @tool
+    def read_skill(skill_name: str) -> str:
+        """Read one current-workspace SKILL.md by skill directory or name."""
+        try:
+            return store.read_skill(skill_name)
+        except ValueError as exc:
+            return f"Skill read rejected: {exc}"
 
-
-@tool
-def read_skill(skill_name: str) -> str:
-    """Read a specific local skill's SKILL.md file by skill directory name."""
-    debug_print("TOOL read_skill INPUT", f"skill_name={skill_name!r}")
-
-    try:
-        result = skill_store.read_skill(skill_name)
-    except ValueError as exc:
-        result = f"Skill read rejected: {exc}"
-        debug_print("TOOL read_skill OUTPUT", result)
-        return result
-
-    debug_print("TOOL read_skill OUTPUT", result)
-    return result
+    return list_skills, read_skill, store

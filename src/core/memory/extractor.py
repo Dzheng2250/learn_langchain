@@ -2,7 +2,6 @@ import json
 import os
 import re
 
-from dotenv import load_dotenv
 from langchain_core.messages import HumanMessage, SystemMessage
 from langchain_openai import ChatOpenAI
 
@@ -92,7 +91,6 @@ class MemoryCandidateExtractor:
         return content.strip()
 
     def _create_llm(self) -> ChatOpenAI:
-        load_dotenv()
         return ChatOpenAI(
             model=MODEL,
             api_key=os.getenv("ALIYUN_API_KEY"),

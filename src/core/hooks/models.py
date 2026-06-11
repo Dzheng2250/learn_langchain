@@ -1,9 +1,7 @@
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Protocol
-
-from src.config.settings import DEFAULT_SESSION_ID
-
+from uuid import UUID
 
 @dataclass
 class AgentEvent:
@@ -14,7 +12,8 @@ class AgentEvent:
     message: str = ""
     payload: dict = field(default_factory=dict)
     level: str = "info"
-    session_id: str = DEFAULT_SESSION_ID
+    workspace_id: UUID | None = None
+    session_id: UUID | None = None
     turn_index: int | None = None
     run_id: str = ""
     duration_ms: int | None = None
@@ -25,7 +24,8 @@ class AgentEvent:
 class AgentEventContext:
     """Context shared by events emitted during one agent turn."""
 
-    session_id: str = DEFAULT_SESSION_ID
+    workspace_id: UUID | None = None
+    session_id: UUID | None = None
     turn_index: int | None = None
     run_id: str = ""
 

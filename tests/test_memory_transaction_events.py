@@ -1,7 +1,10 @@
 import unittest
+from pathlib import Path
+from uuid import uuid4
 
 from src.core.hooks.events import set_event_sinks
 from src.core.memory.store import PostgresMemoryStore
+from src.core.workspace.models import SessionContext, WorkspaceContext
 
 
 class MemorySink:
@@ -63,6 +66,20 @@ class FakeConnection:
             raise RuntimeError("commit failed")
 
 
+class FakeMemoryRepository:
+    def find_similar(self, *_args):
+        return None
+
+    def insert(self, *_args):
+        return None
+
+    def update(self, *_args):
+        return None
+
+    def add_sources(self, *_args):
+        return None
+
+
 class MemoryTransactionEventsTest(unittest.TestCase):
     def tearDown(self) -> None:
         set_event_sinks(None)
@@ -71,15 +88,19 @@ class MemoryTransactionEventsTest(unittest.TestCase):
         store = PostgresMemoryStore.__new__(PostgresMemoryStore)
         store.min_importance = 1
         store.extractor = FakeExtractor()
+        store.memories = FakeMemoryRepository()
         store._Jsonb = lambda value, dumps=None: value
         store._connect = lambda: FakeConnection(fail_commit)
         return store
+
+    def _session(self) -> SessionContext:
+        return SessionContext(uuid4(), "default", WorkspaceContext(uuid4(), Path(".")))
 
     def test_memory_saved_is_emitted_after_successful_commit(self) -> None:
         sink = MemorySink()
         set_event_sinks([sink])
 
-        self._store(fail_commit=False).extract_and_save_memories("session", 1, [object()], [1])
+        self._store(fail_commit=False).extract_and_save_memories(self._session(), 1, [object()], [1])
 
         event_types = [event.event_type for event in sink.events]
         self.assertIn("memory_saved", event_types)
@@ -90,7 +111,7 @@ class MemoryTransactionEventsTest(unittest.TestCase):
         set_event_sinks([sink])
 
         with self.assertRaisesRegex(RuntimeError, "commit failed"):
-            self._store(fail_commit=True).extract_and_save_memories("session", 1, [object()], [1])
+            self._store(fail_commit=True).extract_and_save_memories(self._session(), 1, [object()], [1])
 
         event_types = [event.event_type for event in sink.events]
         self.assertNotIn("memory_saved", event_types)

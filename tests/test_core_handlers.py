@@ -20,9 +20,15 @@ class FakeRequestContext:
 
 
 class FakeAgentService:
-    def run_turn(self, session_id, message, on_event, *, run_id=None):
+    def run_turn(self, workspace_root, session_name, message, on_event, *, run_id=None):
         on_event({"event": "token", "data": {"content": "hello"}})
-        return {"status": "ok", "run_id": run_id, "session_id": session_id, "message": message}
+        return {
+            "status": "ok",
+            "run_id": run_id,
+            "workspace_root": workspace_root,
+            "session_name": session_name,
+            "message": message,
+        }
 
 
 class CoreHandlersTest(unittest.IsolatedAsyncioTestCase):
@@ -48,7 +54,7 @@ class AgentHandlersTest(unittest.IsolatedAsyncioTestCase):
         handlers = AgentHandlers(FakeAgentService())
         context = FakeRequestContext()
         result = await handlers.chat(
-            ChatParams(auth_token="token", session_id="session", message="hello"),
+            ChatParams(auth_token="token", workspace_root=".", session_name="session", message="hello"),
             context,
         )
         self.assertEqual("ok", result["status"])

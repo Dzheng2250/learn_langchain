@@ -1,4 +1,5 @@
 import unittest
+from uuid import uuid4
 
 from langchain_core.messages import AIMessage
 from langchain_core.tools import tool
@@ -45,7 +46,14 @@ class AgentHooksTest(unittest.TestCase):
     def test_emit_event_writes_to_memory_sink(self) -> None:
         sink = MemorySink()
         set_event_sinks([sink])
-        set_event_context(session_id="session-a", turn_index=7, run_id="run-a")
+        workspace_id = uuid4()
+        session_id = uuid4()
+        set_event_context(
+            workspace_id=workspace_id,
+            session_id=session_id,
+            turn_index=7,
+            run_id="run-a",
+        )
 
         event = emit_event(
             "turn_started",
@@ -56,7 +64,8 @@ class AgentHooksTest(unittest.TestCase):
 
         self.assertEqual(1, len(sink.events))
         self.assertIs(event, sink.events[0])
-        self.assertEqual("session-a", event.session_id)
+        self.assertEqual(workspace_id, event.workspace_id)
+        self.assertEqual(session_id, event.session_id)
         self.assertEqual(7, event.turn_index)
         self.assertEqual("run-a", event.run_id)
 

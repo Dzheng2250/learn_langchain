@@ -37,7 +37,7 @@ class FakeAgentService:
     def close(self):
         pass
 
-    def run_turn(self, session_id, message, on_event, *, run_id=None):
+    def run_turn(self, workspace_root, session_name, message, on_event, *, run_id=None):
         on_event({"event": "token", "data": {"content": "hello"}})
         on_event({"event": "done", "data": {"status": "ok"}})
         return {"status": "ok", "run_id": run_id}
@@ -193,7 +193,7 @@ class CoreServerIntegrationTest(unittest.IsolatedAsyncioTestCase):
     async def test_chat_streams_notifications_then_result(self):
         messages = await self._request(
             "agent.chat",
-            {"auth_token": TOKEN, "session_id": "s", "message": "hello"},
+            {"auth_token": TOKEN, "workspace_root": ".", "session_name": "s", "message": "hello"},
         )
         notifications = [message for message in messages if message.get("method") == "agent.event"]
         self.assertEqual(["token", "done"], [item["params"]["event"] for item in notifications])

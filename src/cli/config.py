@@ -5,6 +5,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from src.config import settings
+from src.config.paths import runtime_dir
 
 
 @dataclass(frozen=True)
@@ -24,7 +25,7 @@ class CliConfig:
             core_host=settings.CORE_HOST,
             core_port=settings.CORE_PORT,
             connect_timeout_seconds=settings.CORE_CONNECT_TIMEOUT_SECONDS,
-            runtime_dir=Path(settings.CORE_RUNTIME_DIR).resolve(),
+            runtime_dir=runtime_dir().resolve(),
             default_session_id=settings.DEFAULT_SESSION_ID,
         )
         config.validate()

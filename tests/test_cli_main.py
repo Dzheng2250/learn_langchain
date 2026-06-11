@@ -22,6 +22,7 @@ class CliMainTest(unittest.TestCase):
         chat_once.assert_called_once()
         self.assertEqual("default", chat_once.call_args.args[1])
         self.assertEqual("hello", chat_once.call_args.args[2])
+        self.assertIsNone(chat_once.call_args.args[3])
 
 
 if __name__ == "__main__":

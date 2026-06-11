@@ -1,6 +1,5 @@
 import os
 
-from dotenv import load_dotenv
 from langchain_core.messages import HumanMessage, SystemMessage
 from langchain_openai import ChatOpenAI
 
@@ -18,7 +17,10 @@ from src.core.context.models import AgentContextState
 
 
 SUMMARY_MESSAGE_PREFIX = "Conversation context summary:"
-MEMORY_MESSAGE_PREFIX = "Relevant long-term memory:"
+MEMORY_MESSAGE_PREFIXES = (
+    "Relevant long-term memory:",
+    "Relevant long-term memory for this workspace:",
+)
 
 class AgentContextManager:
     """Build bounded LLM inputs and compress old conversation turns."""
@@ -141,7 +143,7 @@ class AgentContextManager:
                 and isinstance(message.content, str)
                 and (
                     message.content.startswith(SUMMARY_MESSAGE_PREFIX)
-                    or message.content.startswith(MEMORY_MESSAGE_PREFIX)
+                    or message.content.startswith(MEMORY_MESSAGE_PREFIXES)
                 )
             ):
                 continue
@@ -213,7 +215,6 @@ class AgentContextManager:
 
     def _create_summary_llm(self) -> ChatOpenAI:
         """Create a non-streaming model for context summarization."""
-        load_dotenv()
         return ChatOpenAI(
             model=MODEL,
             api_key=os.getenv("ALIYUN_API_KEY"),

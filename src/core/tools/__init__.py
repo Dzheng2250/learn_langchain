@@ -1,6 +1,5 @@
-"""Agent tools and ToolNode integration."""
+"""Workspace-bound tool modules.
 
-from .observed import ObservedToolNode
-from .registry import base_tools, parent_base_tools, skill_store
-
-__all__ = ["ObservedToolNode", "base_tools", "parent_base_tools", "skill_store"]
+Concrete factories are imported from their owning modules to avoid eager
+construction dependencies during package import.
+"""

@@ -1,6 +1,5 @@
-"""Parent agent graph and application service."""
+"""Workspace-aware Agent graph and turn-service modules.
 
-from .graph import app
-from .service import AgentTurnService, SessionLockRegistry
-
-__all__ = ["AgentTurnService", "SessionLockRegistry", "app"]
+Import concrete APIs from ``agent.graph`` or ``agent.service``. Keeping this
+package initializer side-effect free prevents graph/runtime import cycles.
+"""

@@ -5,11 +5,11 @@ import os
 import secrets
 from pathlib import Path
 
-from src.config.settings import CORE_RUNTIME_DIR
+from src.config.paths import runtime_dir as default_runtime_dir
 
 
 def runtime_dir(base_dir: str | Path | None = None) -> Path:
-    return Path(base_dir or CORE_RUNTIME_DIR).resolve()
+    return Path(base_dir).resolve() if base_dir else default_runtime_dir().resolve()
 
 
 def token_path(base_dir: str | Path | None = None) -> Path:
@@ -48,3 +48,14 @@ def read_token(base_dir: str | Path | None = None) -> str:
 
 def verify_token(expected: str, received: str) -> bool:
     return hmac.compare_digest(expected, received)
+
+
+def daemon_pid_is_running(base_dir: str | Path | None = None) -> bool:
+    """Return whether the runtime PID file points to a live process."""
+    path = pid_path(base_dir)
+    try:
+        pid = int(path.read_text(encoding="ascii").strip())
+        os.kill(pid, 0)
+        return True
+    except (FileNotFoundError, ValueError, OSError):
+        return False

@@ -5,6 +5,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from src.config import settings
+from src.config.paths import runtime_dir
 
 
 @dataclass(frozen=True)
@@ -31,7 +32,7 @@ class CoreConfig:
             port=port if port is not None else settings.CORE_PORT,
             max_message_bytes=settings.CORE_MAX_MESSAGE_BYTES,
             shutdown_timeout_seconds=settings.CORE_SHUTDOWN_TIMEOUT_SECONDS,
-            runtime_dir=Path(settings.CORE_RUNTIME_DIR).resolve(),
+            runtime_dir=runtime_dir().resolve(),
             manage_runtime_files=manage_runtime_files,
         )
         config.validate()

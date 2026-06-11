@@ -29,7 +29,8 @@ class ShutdownParams(AuthenticatedParams):
 
 
 class ChatParams(AuthenticatedParams):
-    session_id: str = Field(default="default", min_length=1, max_length=200)
+    workspace_root: str = Field(min_length=1, max_length=4000)
+    session_name: str = Field(default="default", min_length=1, max_length=200)
     message: str = Field(min_length=1, max_length=200_000)
 
 

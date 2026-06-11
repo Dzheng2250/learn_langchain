@@ -1,5 +1,9 @@
 # CLI 架构优化方案
 
+> 当前 CLI 在每次 `chat` 时识别最近 Git 根目录，并将 `workspace_root` 与
+> `session_name` 发送给用户级 Core daemon。详细设计见
+> [`workspace-isolation-and-migration.md`](workspace-isolation-and-migration.md)。
+
 ## 目标
 
 CLI 是 Core daemon 的前台客户端，只负责命令解析、生命周期管理、请求发送和结果展示。CLI 不直接执行 Agent、工具、记忆或数据库业务。

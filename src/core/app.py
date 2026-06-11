@@ -13,6 +13,10 @@ from src.core.handlers.agent import AgentTurnRunner
 from src.core.hooks.events import set_event_sinks
 from src.core.transport.socket_server import SocketServer
 from src.ipc.auth import ensure_runtime_dir, pid_path
+from src.core.database.connection import create_pool
+from src.core.memory.store import PostgresMemoryStore
+from src.core.workspace.repository import WorkspaceRepository
+from src.core.workspace.runtime import WorkspaceRuntimeRegistry
 
 
 class CoreAgentService(AgentTurnRunner, Protocol):
@@ -56,7 +60,16 @@ class CoreApp:
     ) -> None:
         self.config = config
         self.shutdown_event = asyncio.Event()
-        self.agent_service = agent_service or AgentTurnService()
+        self._pool = None
+        if agent_service is None:
+            self._pool = create_pool()
+            self.agent_service = AgentTurnService(
+                workspace_repository=WorkspaceRepository(self._pool),
+                runtime_registry=WorkspaceRuntimeRegistry(),
+                memory_store_factory=lambda: PostgresMemoryStore(pool=self._pool),
+            )
+        else:
+            self.agent_service = agent_service
         self.router = RpcRouter(auth_token)
         self.core_handlers = CoreHandlers(self.shutdown_event)
         self.agent_handlers = AgentHandlers(self.agent_service)
@@ -100,6 +113,8 @@ class CoreApp:
         finally:
             self.agent_service.close()
             set_event_sinks(None)
+            if self._pool is not None:
+                self._pool.close()
             if self.config.manage_runtime_files:
                 try:
                     pid_path(self.config.runtime_dir).unlink(missing_ok=True)

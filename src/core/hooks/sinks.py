@@ -176,6 +176,7 @@ class PostgresEventSink:
     def _event_params(self, event: AgentEvent) -> tuple:
         return (
             event.run_id,
+            event.workspace_id,
             event.session_id,
             event.turn_index,
             event.event_type,

@@ -1,185 +1,182 @@
 import unittest
+from pathlib import Path
+from uuid import uuid4
 
-from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
+from langchain_core.messages import AIMessage, HumanMessage
+from psycopg.errors import ForeignKeyViolation
 
-from src.core.context.manager import AgentContextState
-from src.core.hooks.events import AgentEvent, NoopEventSink, PostgresEventSink, set_event_sinks
-from src.core.memory.store import MemoryUnavailableError, PostgresMemoryStore
-from tests.test_sql import (
-    DELETE_TEST_EVENTS,
-    DELETE_TEST_MEMORIES,
-    DELETE_TEST_MESSAGES,
-    DELETE_TEST_SESSION,
-    SELECT_TEST_ARCHIVED_MESSAGES,
-    SELECT_TEST_EVENT,
-    UPSERT_TEST_MEMORY,
-)
+from src.core.context.models import AgentContextState
+from src.core.database.connection import create_pool
+from src.core.hooks.events import NoopEventSink, set_event_sinks
+from src.core.hooks.models import AgentEvent
+from src.core.hooks.sinks import PostgresEventSink
+from src.core.memory.store import PostgresMemoryStore
+from src.core.workspace.repository import WorkspaceRepository
 
 
-TEST_MARKER = "manual_memory_test"
-TEST_SESSION_ID = "test_session_manual_memory_test"
-TEST_SCOPE = "test_scope_manual_memory_test"
-TEST_MEMORY_ID = "11111111-1111-1111-1111-111111111111"
-
-
-class PostgresMemoryStoreManualTest(unittest.TestCase):
-    """Manual database tests that can be run one by one.
-
-    Run write/read/delete separately when you want to inspect database state
-    between steps. These tests intentionally do not clean up automatically.
-    """
-
+class WorkspaceMemoryStoreTest(unittest.TestCase):
     def setUp(self) -> None:
         set_event_sinks([NoopEventSink()])
-        self.store = PostgresMemoryStore(retrieval_limit=5, min_importance=1)
+        self.pool = create_pool()
+        self.addCleanup(self.pool.close)
+        self.store = PostgresMemoryStore(pool=self.pool, retrieval_limit=5, min_importance=1)
         self.store.initialize()
+        repository = WorkspaceRepository(self.pool)
+        self.workspace_a = repository.resolve(Path("tests/fixtures/workspace_a"))
+        self.workspace_b = repository.resolve(Path("tests/fixtures/workspace_b"))
+        self.session_a, _ = repository.resolve_session(self.workspace_a, "default")
+        self.session_b, _ = repository.resolve_session(self.workspace_b, "default")
 
     def tearDown(self) -> None:
-        set_event_sinks(None)
-        self.store.close()
-
-    def test_01_write_test_data(self) -> None:
-        """Write fixed test data and leave it in the database."""
-        state = AgentContextState(
-            summary=f"summary for {TEST_MARKER}",
-            recent_messages=[
-                HumanMessage(content=f"user message {TEST_MARKER}"),
-                AIMessage(content=f"assistant message {TEST_MARKER}"),
-            ],
-        )
-        self.store.save_session(TEST_SESSION_ID, state, turn_index=3)
-
-        archived_ids = self.store.archive_turn_messages(
-            TEST_SESSION_ID,
-            turn_index=4,
-            messages=[
-                HumanMessage(content=f"archive user {TEST_MARKER}"),
-                AIMessage(content=f"archive assistant {TEST_MARKER}"),
-                ToolMessage(
-                    content=f"archive tool {TEST_MARKER}",
-                    tool_call_id=f"tool_call_{TEST_MARKER}",
-                    name="smoke_tool",
-                ),
-            ],
-        )
-
-        memory_content = f"Project prefers PostgreSQL memory smoke marker {TEST_MARKER}"
-        with self.store._connect() as conn:
+        with self.pool.connection() as conn:
             with conn.cursor() as cur:
                 cur.execute(
-                    UPSERT_TEST_MEMORY,
-                    (
-                        TEST_MEMORY_ID,
-                        TEST_SCOPE,
-                        "project_fact",
-                        memory_content,
-                        self.store._json_param(["smoke", "postgres"]),
-                        5,
-                        1.0,
-                        self.store._json_param(archived_ids),
-                    ),
+                    "DELETE FROM agent_sessions WHERE workspace_id = ANY(%s)",
+                    ([self.workspace_a.workspace_id, self.workspace_b.workspace_id],),
+                )
+                cur.execute(
+                    "DELETE FROM agent_workspaces WHERE workspace_id = ANY(%s)",
+                    ([self.workspace_a.workspace_id, self.workspace_b.workspace_id],),
+                )
+            conn.commit()
+        set_event_sinks(None)
+
+    def test_same_session_name_isolated_by_workspace(self) -> None:
+        self.assertEqual("default", self.session_a.session_name)
+        self.assertEqual("default", self.session_b.session_name)
+        self.assertNotEqual(self.session_a.session_id, self.session_b.session_id)
+
+    def test_session_context_and_messages_round_trip(self) -> None:
+        state = AgentContextState(
+            summary="workspace A summary",
+            recent_messages=[HumanMessage(content="hello"), AIMessage(content="world")],
+        )
+        self.store.save_session(self.session_a, state, 3)
+        message_ids = self.store.archive_turn_messages(
+            self.session_a,
+            4,
+            [HumanMessage(content="archived"), AIMessage(content="answer")],
+        )
+        loaded, turn = self.store.load_session(self.session_a)
+        self.assertEqual(3, turn)
+        self.assertEqual("workspace A summary", loaded.summary)
+        self.assertEqual(2, len(message_ids))
+
+    def test_memory_retrieval_is_workspace_isolated(self) -> None:
+        memory_id = uuid4()
+        marker = f"workspace-memory-{uuid4().hex}"
+        with self.pool.connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    INSERT INTO agent_memories(
+                        id, workspace_id, kind, content, tags, importance, confidence
+                    ) VALUES (%s, %s, 'project_fact', %s, '[]', 5, 1.0)
+                    """,
+                    (memory_id, self.workspace_a.workspace_id, marker),
+                )
+            conn.commit()
+        self.assertEqual(1, len(self.store.retrieve_relevant(self.workspace_a.workspace_id, marker)))
+        self.assertEqual([], self.store.retrieve_relevant(self.workspace_b.workspace_id, marker))
+
+    def test_new_session_bootstrap_only_uses_current_workspace(self) -> None:
+        with self.pool.connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    INSERT INTO agent_memories(id, workspace_id, kind, content, tags, importance, confidence)
+                    VALUES (%s, %s, 'project_fact', 'A bootstrap fact', '[]', 5, 1.0)
+                    """,
+                    (uuid4(), self.workspace_a.workspace_id),
+                )
+            conn.commit()
+        memories = self.store.retrieve_for_turn(
+            self.workspace_a.workspace_id,
+            "unrelated first question",
+            new_session=True,
+        )
+        self.assertTrue(any(memory.content == "A bootstrap fact" for memory in memories))
+        self.assertEqual(
+            [],
+            self.store.retrieve_for_turn(
+                self.workspace_b.workspace_id,
+                "unrelated first question",
+                new_session=True,
+            ),
+        )
+
+    def test_memory_source_cannot_link_a_message_from_another_workspace(self) -> None:
+        memory_id = uuid4()
+        message_id = self.store.archive_turn_messages(
+            self.session_b,
+            1,
+            [HumanMessage(content="workspace B message")],
+        )[0]
+        with self.pool.connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    INSERT INTO agent_memories(id, workspace_id, kind, content, tags, importance, confidence)
+                    VALUES (%s, %s, 'project_fact', 'Workspace A fact', '[]', 5, 1.0)
+                    """,
+                    (memory_id, self.workspace_a.workspace_id),
                 )
             conn.commit()
 
-        print(f"\nWrote test session: {TEST_SESSION_ID}")
-        print(f"Wrote test scope: {TEST_SCOPE}")
-        print(f"Wrote test memory id: {TEST_MEMORY_ID}")
-        self.assertEqual(3, len(archived_ids))
+            with self.assertRaises(ForeignKeyViolation), conn.transaction():
+                with conn.cursor() as cur:
+                    cur.execute(
+                        """
+                        INSERT INTO agent_memory_sources(workspace_id, memory_id, message_id)
+                        VALUES (%s, %s, %s)
+                        """,
+                        (self.workspace_a.workspace_id, memory_id, message_id),
+                    )
 
-    def test_02_read_test_data(self) -> None:
-        """Read fixed test data. Run test_01 first."""
-        loaded_state, loaded_turn = self.store.load_session(TEST_SESSION_ID)
-        self.assertEqual(3, loaded_turn)
-        self.assertEqual(f"summary for {TEST_MARKER}", loaded_state.summary)
-        self.assertEqual(2, len(loaded_state.recent_messages))
-        self.assertEqual(f"user message {TEST_MARKER}", loaded_state.recent_messages[0].content)
-        self.assertEqual(f"assistant message {TEST_MARKER}", loaded_state.recent_messages[1].content)
-
-        with self.store._connect() as conn:
+    def test_explicit_memory_question_falls_back_within_current_workspace(self) -> None:
+        with self.pool.connection() as conn:
             with conn.cursor() as cur:
-                cur.execute(SELECT_TEST_ARCHIVED_MESSAGES, (TEST_SESSION_ID,))
-                archived_rows = cur.fetchall()
-
-        self.assertGreaterEqual(len(archived_rows), 3)
-        self.assertIn(("user", "HumanMessage", f"archive user {TEST_MARKER}"), archived_rows)
-        self.assertIn(("assistant", "AIMessage", f"archive assistant {TEST_MARKER}"), archived_rows)
-        self.assertIn(("tool", "ToolMessage", f"archive tool {TEST_MARKER}"), archived_rows)
-
-        memories = self.store.retrieve_memories(TEST_MARKER, scope=TEST_SCOPE)
-        self.assertTrue(any(memory.id == TEST_MEMORY_ID for memory in memories))
-
-        memory_message = self.store.build_memory_message(memories)
-        self.assertIsNotNone(memory_message)
-        self.assertIn(TEST_MARKER, memory_message.content)
-
-        print(f"\nRead session turn: {loaded_turn}")
-        print(f"Read archived rows: {len(archived_rows)}")
-        print(f"Read memories: {len(memories)}")
-
-    def test_03_delete_test_data(self) -> None:
-        """Delete fixed test data and verify it is gone."""
-        with self.store._connect() as conn:
-            with conn.cursor() as cur:
-                cur.execute(DELETE_TEST_MESSAGES, (TEST_SESSION_ID,))
-                deleted_messages = cur.rowcount
-
-                cur.execute(DELETE_TEST_SESSION, (TEST_SESSION_ID,))
-                deleted_sessions = cur.rowcount
-
-                cur.execute(DELETE_TEST_MEMORIES, (TEST_MEMORY_ID, TEST_SCOPE, f"%{TEST_MARKER}%"))
-                deleted_memories = cur.rowcount
+                cur.execute(
+                    """
+                    INSERT INTO agent_memories(id, workspace_id, kind, content, tags, importance, confidence)
+                    VALUES (%s, %s, 'project_fact', 'Workspace A durable decision', '[]', 5, 1.0)
+                    """,
+                    (uuid4(), self.workspace_a.workspace_id),
+                )
             conn.commit()
-
-        loaded_state, loaded_turn = self.store.load_session(TEST_SESSION_ID)
-        memories = self.store.retrieve_memories(TEST_MARKER, scope=TEST_SCOPE)
-
-        print(f"\nDeleted messages: {deleted_messages}")
-        print(f"Deleted sessions: {deleted_sessions}")
-        print(f"Deleted memories: {deleted_memories}")
-
-        self.assertEqual(0, loaded_turn)
-        self.assertEqual("", loaded_state.summary)
-        self.assertEqual([], loaded_state.recent_messages)
-        self.assertFalse(any(memory.id == TEST_MEMORY_ID for memory in memories))
-
-    def test_04_write_and_delete_event_data(self) -> None:
-        """Write one fixed event and delete it."""
-        run_id = "test_run_manual_memory_test"
-        sink = PostgresEventSink(async_write=True, batch_size=2, flush_interval_seconds=0.1)
-        sink.emit(
-            AgentEvent(
-                event_type="test_event",
-                source="test_memory_store",
-                message="test event write",
-                payload={"marker": TEST_MARKER},
-                session_id=TEST_SESSION_ID,
-                turn_index=99,
-                run_id=run_id,
-            )
+        memories = self.store.retrieve_relevant(self.workspace_a.workspace_id, "你还记得之前的决定吗？")
+        self.assertTrue(any(memory.content == "Workspace A durable decision" for memory in memories))
+        self.assertEqual(
+            [],
+            self.store.retrieve_relevant(self.workspace_b.workspace_id, "你还记得之前的决定吗？"),
         )
-        sink.flush()
-        sink.close()
 
-        with self.store._connect() as conn:
+    def test_event_sink_persists_workspace_and_session_identity(self) -> None:
+        run_id = uuid4().hex
+        sink = PostgresEventSink(async_write=False)
+        try:
+            sink.emit(
+                AgentEvent(
+                    event_type="workspace_test",
+                    source="test",
+                    workspace_id=self.workspace_a.workspace_id,
+                    session_id=self.session_a.session_id,
+                    run_id=run_id,
+                )
+            )
+        finally:
+            sink.close()
+        with self.pool.connection() as conn:
             with conn.cursor() as cur:
-                cur.execute(SELECT_TEST_EVENT, (run_id,))
-                row = cur.fetchone()
-
-                cur.execute(DELETE_TEST_EVENTS, (run_id,))
-                deleted_events = cur.rowcount
-            conn.commit()
-
-        self.assertIsNotNone(row)
-        self.assertEqual("test_event", row[0])
-        self.assertEqual("test_memory_store", row[1])
-        self.assertEqual("test event write", row[2])
-        self.assertEqual(TEST_MARKER, row[3]["marker"])
-        self.assertEqual(1, deleted_events)
+                cur.execute(
+                    "SELECT workspace_id, session_id FROM agent_events WHERE run_id = %s",
+                    (run_id,),
+                )
+                self.assertEqual(
+                    (self.workspace_a.workspace_id, self.session_a.session_id),
+                    cur.fetchone(),
+                )
 
 
 if __name__ == "__main__":
-    try:
-        PostgresMemoryStore().initialize()
-        unittest.main(verbosity=2)
-    except MemoryUnavailableError as exc:
-        raise SystemExit(f"Memory database unavailable: {exc}") from exc
+    unittest.main()

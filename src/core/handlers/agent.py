@@ -12,7 +12,8 @@ from src.ipc.models import AgentEventNotification, ChatParams
 class AgentTurnRunner(Protocol):
     def run_turn(
         self,
-        session_id: str,
+        workspace_root: str,
+        session_name: str,
         user_input: str,
         on_event: Callable[[dict], None] | None = None,
         *,
@@ -55,7 +56,8 @@ class AgentHandlers:
 
         return await asyncio.to_thread(
             self.agent_service.run_turn,
-            params.session_id,
+            params.workspace_root,
+            params.session_name,
             params.message,
             on_event,
             run_id=run_id,

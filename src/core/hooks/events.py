@@ -7,7 +7,6 @@ from src.config.settings import (
     AGENT_EVENTS_ENABLED,
     AGENT_EVENTS_FILE_ENABLED,
     AGENT_EVENTS_POSTGRES_ENABLED,
-    DEFAULT_SESSION_ID,
 )
 from src.core.common.debug import debug_print
 from src.core.hooks.models import AgentEvent, AgentEventContext, EventSink, HookHelperSpec
@@ -22,13 +21,15 @@ _event_sinks: list[EventSink] | None = None
 
 
 def set_event_context(
-    session_id: str = DEFAULT_SESSION_ID,
+    session_id=None,
     turn_index: int | None = None,
     run_id: str = "",
+    workspace_id=None,
 ) -> None:
     """Set context used by subsequent emitted events."""
     _event_context.set(
         AgentEventContext(
+            workspace_id=workspace_id,
             session_id=session_id,
             turn_index=turn_index,
             run_id=run_id,
@@ -75,6 +76,7 @@ def emit_event(
         turn_index=context.turn_index,
         run_id=context.run_id,
         duration_ms=duration_ms,
+        workspace_id=context.workspace_id,
     )
 
     if not AGENT_EVENTS_ENABLED:
