@@ -51,104 +51,148 @@ CLI 识别 Workspace
 
 ### 完整数据流动示意图
 
-下面的时序图描述一次 `agent.chat` 从用户输入到最终响应的完整路径。实线表示调用或数据写入，
-虚线表示返回值、流式通知或执行结果。
+完整数据流按阅读层次拆为三张图。先理解进程间边界，再下钻 Core 内部 Turn，最后查看
+Agent 循环。每张图只描述一个层次，避免将所有实现细节堆叠在同一画布中。
+
+#### 1. 端到端进程总览
+
+这张图回答：用户输入如何进入 daemon，执行结果如何回到 CLI。
 
 ```mermaid
-sequenceDiagram
-    autonumber
-    actor User as 用户
-    participant CLI as CLI chat command
-    participant Client as CoreClient
-    participant Socket as SocketServer
-    participant Router as RpcRouter
-    participant Handler as AgentHandlers
-    participant Service as AgentTurnService
-    participant Pool as agent-turn executor
-    participant Workspace as WorkspaceRepository / RuntimeRegistry
-    participant Memory as MemoryStore / ContextManager
-    participant Graph as Parent LangGraph
-    participant LLM as Parent LLM
-    participant ToolNode as ObservedToolNode
-    participant Tool as Workspace Tool / Sub-agent
-    participant DB as PostgreSQL
-
-    User->>CLI: 输入消息与 session_name
-    CLI->>CLI: 识别 Git 根目录或指定 workspace_root
-    CLI->>Client: request("agent.chat", params, on_event)
-    Client->>Socket: TCP + 单行 NDJSON JSON-RPC 请求
-    Socket->>Router: dispatch(raw, RequestContext)
-    Router->>Router: 验证 envelope、params、method、auth_token
-    Router->>Handler: chat(ChatParams, RequestContext)
-    Handler->>Handler: 生成 run_id 与流式回调
-    Handler->>Service: await run_turn(workspace, session, message, callback)
-    Service->>Pool: 获取并发 slot，提交 _run_turn_sync()
-
-    Pool->>Workspace: resolve workspace / session / runtime
-    Workspace->>DB: 原子注册 Workspace，解析 Session UUID
-    DB-->>Workspace: WorkspaceContext + SessionContext
-    Workspace-->>Pool: WorkspaceRuntime + SessionContext
-    Pool->>Pool: 获取 Session UUID 锁
-
-    Pool->>Memory: load_session() + retrieve_for_turn()
-    Memory->>DB: 读取短期上下文、turn_index、Workspace 长期记忆
-    DB-->>Memory: Session state + memories
-    Memory-->>Pool: bounded input context
-    Pool->>Memory: build_input_messages(summary, memories, recent, user_input)
-    Memory-->>Pool: input_messages
-
-    Pool->>Graph: stream_graph_events(graph, input_messages, run_context)
-    loop Parent Agent 循环
-        Graph->>LLM: agent node invoke(messages + tools)
-        LLM-->>Graph: token chunks + AIMessage / tool_calls
-        Graph-->>Pool: token / step 流式事件
-        Pool-->>Handler: on_event(item)
-        Handler-->>Socket: agent.event notification
-        Socket-->>Client: NDJSON notification
-        Client-->>CLI: on_event -> render_agent_event()
-        CLI-->>User: 显示 token 或步骤
-
-        alt LLM 请求工具
-            Graph->>ToolNode: tools node
-            ToolNode->>ToolNode: 记录 tool_started
-            ToolNode->>Tool: 执行 Workspace 绑定工具
-            opt delegate_to_subagent
-                Tool->>Tool: 执行非递归 Sub-agent graph
-            end
-            Tool-->>ToolNode: ToolMessage / 错误结果
-            ToolNode->>ToolNode: 记录 tool_finished / tool_failed
-            ToolNode-->>Graph: ToolMessage，继续循环
-        else LLM 直接完成
-            Graph-->>Pool: done + final messages
-        end
+flowchart LR
+    subgraph CLI["CLI 进程"]
+        direction TB
+        User["用户"]
+        Chat["chat command<br/>识别 Workspace"]
+        Client["CoreClient"]
+        Render["终端渲染"]
+        User --> Chat --> Client
+        Render --> User
     end
 
-    Pool->>Memory: archive_turn_messages()
-    Memory->>DB: 落盘完整本轮消息
-    Pool->>Memory: update_after_turn() + save_session()
-    Memory->>DB: 保存 summary、recent_messages、turn_index
-
-    alt 记忆策略触发
-        Pool->>Memory: extract_and_save_memories()
-        Memory->>DB: 创建或更新 Workspace 长期记忆及来源关系
-    else 异步记忆提取
-        Pool->>Pool: 提交 agent-memory executor
-        Pool->>Memory: 后台提取并保存长期记忆
-        Memory->>DB: 创建或更新长期记忆
-    else 不触发
-        Pool->>Pool: 记录 memory_extract_skipped
+    subgraph IPC["IPC / socket"]
+        direction TB
+        Request["agent.chat<br/>JSON-RPC 请求"]
+        Notify["agent.event<br/>流式通知"]
+        Result["最终响应"]
     end
 
-    Pool-->>Service: result(status, run_id, stop_reason, tool_call_count)
-    Service-->>Handler: run_turn result
-    Handler-->>Router: handler result
-    Router-->>Socket: JSON-RPC success / error response
-    Socket-->>Client: 最终 NDJSON 响应
-    Client-->>CLI: result
-    CLI-->>User: 当前 turn 完成
+    subgraph Core["Core daemon"]
+        direction TB
+        Boundary["SocketServer + RpcRouter<br/>解析、验证、鉴权"]
+        Handler["AgentHandlers<br/>run_id + 协议适配"]
+        Turn["AgentTurnService<br/>执行完整 Turn"]
+        Boundary --> Handler --> Turn
+    end
+
+    Client --> Request --> Boundary
+    Turn --> Notify --> Render
+    Turn --> Result --> Client
+
+    classDef entry fill:#fff3cd,stroke:#d6a100,color:#222;
+    classDef ipc fill:#f3e8ff,stroke:#8b5fbf,color:#222;
+    classDef core fill:#dce9ff,stroke:#5b85c5,color:#222;
+    class User,Chat,Client,Render entry;
+    class Request,Notify,Result ipc;
+    class Boundary,Handler,Turn core;
 ```
 
-需要注意：
+#### 2. Core 内单轮 Turn
+
+这张图回答：一次经过验证的请求，在 Core 中如何完成准备、执行和持久化。
+
+```mermaid
+flowchart LR
+    subgraph Prepare["阶段一：准备"]
+        direction TB
+        Resolve["解析 Workspace<br/>与 Session"]
+        Lock["获取 Session UUID 锁"]
+        Load["加载短期上下文<br/>与 Workspace 记忆"]
+        Build["构造 AgentRunContext<br/>与模型输入"]
+        Resolve --> Lock --> Load --> Build
+    end
+
+    subgraph Execute["阶段二：执行"]
+        direction TB
+        Slot["获取并发 slot"]
+        Worker["agent-turn worker"]
+        Graph["执行 WorkspaceRuntime.graph"]
+        Slot --> Worker --> Graph
+    end
+
+    subgraph Persist["阶段三：持久化"]
+        direction TB
+        Messages["归档完整本轮消息"]
+        Context["更新 summary<br/>与 recent_messages"]
+        Memory["按策略提取长期记忆"]
+        Done["返回 stop_reason<br/>与 tool_call_count"]
+        Messages --> Context --> Memory --> Done
+    end
+
+    DB[("PostgreSQL")]
+    Build --> Slot
+    Graph --> Messages
+    Resolve <--> DB
+    Load <--> DB
+    Messages --> DB
+    Context --> DB
+    Memory --> DB
+
+    classDef prepare fill:#fff3cd,stroke:#d6a100,color:#222;
+    classDef execute fill:#dce9ff,stroke:#5b85c5,color:#222;
+    classDef persist fill:#dff2df,stroke:#629b62,color:#222;
+    classDef store fill:#f3e8ff,stroke:#8b5fbf,color:#222;
+    class Resolve,Lock,Load,Build prepare;
+    class Slot,Worker,Graph execute;
+    class Messages,Context,Memory,Done persist;
+    class DB store;
+```
+
+#### 3. Parent Agent 与 Sub-agent 调用链
+
+这张图回答：LangGraph 如何循环调用 LLM、工具和非递归 Sub-agent。
+
+```mermaid
+flowchart LR
+    subgraph ParentLoop["Parent Agent loop"]
+        direction TB
+        Start["模型输入"]
+        Parent["Parent Agent LLM"]
+        Decision{"是否调用工具"}
+        ToolNode["ObservedToolNode"]
+        Tools["Workspace 工具"]
+        Done["完成响应"]
+
+        Start --> Parent --> Decision
+        Decision -->|"否"| Done
+        Decision -->|"是"| ToolNode
+        ToolNode --> Tools
+        Tools -->|"ToolMessage"| Parent
+    end
+
+    subgraph SubagentLoop["Sub-agent loop"]
+        direction TB
+        Delegate["delegate_to_subagent"]
+        Subagent["非递归 Sub-agent"]
+        SubTools["Sub-agent 工具视图<br/>不包含委派工具"]
+        Delegate --> Subagent
+        Subagent --> SubTools --> Subagent
+    end
+
+    ToolNode --> Delegate
+    Subagent -->|"任务总结"| Parent
+
+    classDef input fill:#fff3cd,stroke:#d6a100,color:#222;
+    classDef agent fill:#dce9ff,stroke:#5b85c5,color:#222;
+    classDef tool fill:#dff2df,stroke:#629b62,color:#222;
+    classDef decision fill:#f3e8ff,stroke:#8b5fbf,color:#222;
+    class Start,Done input;
+    class Parent,Subagent agent;
+    class ToolNode,Tools,Delegate,SubTools tool;
+    class Decision decision;
+```
+
+三张图共同表达的关键边界：
 
 - `AgentHandlers` 和 `SocketServer` 运行在 Core asyncio 事件循环中。
 - `WorkspaceRepository`、Memory、LangGraph、LLM 和工具执行位于专用 `agent-turn` worker。
@@ -278,132 +322,102 @@ LangGraph stream
 
 ### Agent 调用链与事件通道图
 
-下图同时展示业务调用链、请求流式通道和观测事件通道。三条路径需要分别理解：
+事件通道不再与完整业务调用链画在同一张图中。请求流式事件和观测事件具有不同消费者、
+生命周期和可靠性语义，因此分别展示。
 
-- **业务调用链**决定 Agent 实际做什么，以及结果如何持久化。
-- **请求流式通道**只服务当前 `agent.chat` 请求，目标是即时显示。
-- **观测事件通道**服务日志、审计和诊断，sink 失败不得改变业务结果。
+#### 1. 请求流式事件通道
+
+这张图回答：当前 Turn 的 token 和步骤如何实时显示到 CLI。
 
 ```mermaid
 flowchart LR
+    subgraph Worker["agent-turn worker"]
+        direction TB
+        Graph["LangGraph stream"]
+        Adapter["stream_graph_events<br/>token / step / error / done"]
+        Callback["on_event callback"]
+        Graph --> Adapter --> Callback
+    end
+
+    subgraph IPC["Core asyncio / IPC"]
+        direction TB
+        Handler["AgentHandlers"]
+        Notification["agent.event<br/>携带 request_id + run_id"]
+        Socket["SocketServer"]
+        Callback --> Handler --> Notification --> Socket
+    end
+
     subgraph CLI["CLI 进程"]
-        User["用户输入"]
-        Chat["commands.chat"]
+        direction TB
         Client["CoreClient"]
         Render["render_agent_event"]
-        User --> Chat --> Client
-        Render --> User
+        User["用户终端"]
+        Client --> Render --> User
     end
 
-    subgraph Transport["Core asyncio / RPC 边界"]
-        Socket["SocketServer"]
-        Router["RpcRouter<br/>协议验证 + 鉴权 + 路由"]
-        Handler["AgentHandlers<br/>run_id + on_event callback"]
-        Client -->|"agent.chat<br/>TCP + NDJSON"| Socket
-        Socket --> Router --> Handler
-    end
+    Socket -->|"NDJSON 通知"| Client
 
-    subgraph Turn["Agent turn 应用层"]
-        Service["AgentTurnService"]
-        Slots["并发 slot + agent-turn executor"]
-        SessionLock["Session UUID 锁"]
-        RunContext["AgentRunContext + RunLimits"]
-        Context["AgentContextManager"]
-        Memory["PostgresMemoryStore"]
-        Runtime["WorkspaceRuntimeRegistry"]
-
-        Handler -->|"await run_turn()"| Service
-        Service --> Slots --> SessionLock
-        SessionLock --> RunContext
-        SessionLock --> Context
-        SessionLock --> Memory
-        SessionLock --> Runtime
-    end
-
-    subgraph Loop["Workspace 绑定的 Agent 调用链"]
-        Graph["Parent LangGraph"]
-        AgentNode["agent node"]
-        ParentLLM["ModelProvider<br/>Parent LLM"]
-        Condition{"tools_condition"}
-        Done["graph done"]
-        ToolNode["ObservedToolNode"]
-        Registry["ToolRegistry<br/>Parent tool view"]
-        WorkspaceTools["Workspace tools<br/>file / skill / command / weather"]
-        Delegate["delegate_to_subagent"]
-        SubGraph["非递归 Sub-agent graph"]
-        SubLLM["Sub-agent LLM"]
-        SubTools["Sub-agent tool view"]
-
-        Runtime --> Graph
-        Registry --> ToolNode
-        Graph --> AgentNode --> ParentLLM --> Condition
-        Condition -->|"tool_calls"| ToolNode
-        ToolNode --> WorkspaceTools
-        ToolNode --> Delegate --> SubGraph
-        SubGraph --> SubLLM
-        SubGraph --> SubTools
-        WorkspaceTools -->|"ToolMessage"| Graph
-        SubGraph -->|"总结结果"| Graph
-        Condition -->|"完成"| Done
-    end
-
-    subgraph Persistence["业务持久化"]
-        DB[("PostgreSQL<br/>workspaces / sessions / messages / memories")]
-        Memory -->|"读取与保存"| DB
-        Context -->|"summary + recent_messages"| Memory
-        Done -->|"final messages"| Memory
-    end
-
-    subgraph Stream["请求流式通道：当前客户端"]
-        StreamAdapter["stream_graph_events<br/>token / step / error / done"]
-        Callback["on_event callback"]
-        Notification["agent.event notification"]
-
-        Graph --> StreamAdapter
-        Done --> StreamAdapter
-        StreamAdapter --> Callback
-        Callback --> Handler
-        Handler --> Notification --> Socket
-        Socket -->|"当前 request_id"| Client
-        Client --> Render
-    end
-
-    subgraph Observe["观测事件通道：审计与诊断"]
-        Producers["事件生产者<br/>Service / Graph / ToolNode / Context / Memory"]
-        EventContext["AgentEventContext<br/>workspace_id / session_id / turn_index / run_id"]
-        Emit["emit_event / domain helpers<br/>sanitize + truncate"]
-        Publisher["EventPublisher"]
-        PgSink["PostgresEventSink<br/>内存队列 + 批量 writer"]
-        FileSink["JsonlFileEventSink"]
-        ConsoleSink["ConsoleEventSink"]
-        EventsDB[("PostgreSQL agent_events")]
-        Jsonl[("JSONL file")]
-        Console[("debug console")]
-
-        Producers --> Emit
-        EventContext --> Emit
-        Emit --> Publisher
-        Publisher --> PgSink --> EventsDB
-        Publisher --> FileSink --> Jsonl
-        Publisher --> ConsoleSink --> Console
-    end
-
-    Service -.->|"turn / memory 事件"| Producers
-    Handler -.->|"notification failure 事件"| Producers
-    Graph -.->|"LLM / limit / graph 事件"| Producers
-    ToolNode -.->|"tool 边界事件"| Producers
-    Context -.->|"summary 事件"| Producers
-    Memory -.->|"memory 事件"| Producers
+    classDef worker fill:#dce9ff,stroke:#5b85c5,color:#222;
+    classDef ipc fill:#f3e8ff,stroke:#8b5fbf,color:#222;
+    classDef cli fill:#fff3cd,stroke:#d6a100,color:#222;
+    class Graph,Adapter,Callback worker;
+    class Handler,Notification,Socket ipc;
+    class Client,Render,User cli;
 ```
 
-图中的关键约束：
+客户端断线时，通知发送停止并记录一次 `stream_notification_failed`；已经开始的 Turn 不会取消。
 
-1. `ToolRegistry` 负责声明和筛选工具，真正执行发生在 `ObservedToolNode`。
-2. 父 Agent 可以调用 `delegate_to_subagent`，但子 Agent 的工具视图中没有委派工具，因此不能递归创建子 Agent。
-3. `stream_graph_events()` 生成面向客户端的轻量流式事件；它不负责写入事件数据库。
-4. `emit_event()` 和领域 helper 生成观测事件，经清洗和截断后由 `EventPublisher` 广播。
-5. `PostgresEventSink` 默认可通过内存队列批量写入 `agent_events`；队列或 sink 失败只记录调试信息，不中断 Agent。
-6. 两条事件通道都携带 `run_id`，但只有请求流式通道依赖当前 TCP 连接。
+#### 2. Hook 观测事件通道
+
+这张图回答：审计和诊断事件如何从业务模块进入不同 sink。
+
+```mermaid
+flowchart LR
+    subgraph Producers["事件生产者"]
+        direction TB
+        Service["AgentTurnService"]
+        Graph["Graph / LLM"]
+        Tool["ObservedToolNode"]
+        Context["Context / Memory"]
+    end
+
+    subgraph Bus["统一观测边界"]
+        direction TB
+        Identity["AgentEventContext<br/>workspace / session / turn / run"]
+        Emit["领域 helper / emit_event<br/>清洗 + 截断"]
+        Publisher["EventPublisher"]
+        Identity --> Emit --> Publisher
+    end
+
+    subgraph Sinks["可选 sinks"]
+        direction TB
+        Pg["PostgresEventSink<br/>队列 + 批量写入"]
+        File["JsonlFileEventSink"]
+        Console["ConsoleEventSink"]
+    end
+
+    Service --> Emit
+    Graph --> Emit
+    Tool --> Emit
+    Context --> Emit
+    Publisher --> Pg
+    Publisher --> File
+    Publisher --> Console
+
+    classDef producer fill:#dce9ff,stroke:#5b85c5,color:#222;
+    classDef bus fill:#f3e8ff,stroke:#8b5fbf,color:#222;
+    classDef sink fill:#dff2df,stroke:#629b62,color:#222;
+    class Service,Graph,Tool,Context producer;
+    class Identity,Emit,Publisher bus;
+    class Pg,File,Console sink;
+```
+
+两条事件通道的关键约束：
+
+1. `stream_graph_events()` 生成面向当前客户端的轻量流式事件；它不负责写入事件数据库。
+2. `emit_event()` 和领域 helper 生成观测事件，经清洗和截断后由 `EventPublisher` 广播。
+3. `PostgresEventSink` 默认可通过内存队列批量写入 `agent_events`；队列或 sink 失败只记录调试信息，不中断 Agent。
+4. 两条事件通道都携带 `run_id`，但只有请求流式通道依赖当前 TCP 连接。
 
 ### 图中组件与代码位置
 
