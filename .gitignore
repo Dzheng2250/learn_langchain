@@ -1,6 +1,9 @@
 .env
 __pycache__/
 *.py[cod]
+*.egg-info/
 .ipynb_checkpoints/
 .vscode/
+.agent_runtime/
+.test_tmp/
 面试答辩文档.md

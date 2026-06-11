@@ -1,0 +1,17 @@
+"""CLI command registration."""
+
+from .chat import register as register_chat
+from .start import register as register_start
+from .status import register as register_status
+from .stop import register as register_stop
+
+
+def register_commands(subparsers, config) -> None:
+    """Register all public CLI commands."""
+    register_start(subparsers, config)
+    register_stop(subparsers, config)
+    register_status(subparsers, config)
+    register_chat(subparsers, config)
+
+
+__all__ = ["register_commands"]

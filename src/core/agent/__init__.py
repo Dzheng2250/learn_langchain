@@ -1,6 +1,5 @@
-"""Parent agent graph and runtime loop."""
+"""Workspace-aware Agent graph and turn-service modules.
 
-from .graph import app
-from .runtime import run_agent_loop
-
-__all__ = ["app", "run_agent_loop"]
+Import concrete APIs from ``agent.graph`` or ``agent.service``. Keeping this
+package initializer side-effect free prevents graph/runtime import cycles.
+"""

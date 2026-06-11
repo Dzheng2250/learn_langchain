@@ -1,4 +1,4 @@
-from src.core.config.settings import (
+from src.config.settings import (
     MEMORY_EXTRACTION_ENABLED,
     MEMORY_EXTRACTION_HINT_KEYWORDS,
     MEMORY_EXTRACTION_INTERVAL_TURNS,

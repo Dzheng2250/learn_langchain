@@ -1,34 +1,36 @@
 import time
 from contextlib import contextmanager
-from contextvars import ContextVar
+from contextvars import ContextVar, Token
 
-from src.core.config.settings import (
+from src.config.settings import (
     AGENT_EVENTS_CONSOLE_ENABLED,
     AGENT_EVENTS_ENABLED,
     AGENT_EVENTS_FILE_ENABLED,
     AGENT_EVENTS_POSTGRES_ENABLED,
-    DEFAULT_SESSION_ID,
 )
-from src.core.common.debug import debug_print
+from src.core.agent.models import AgentRunContext
 from src.core.hooks.models import AgentEvent, AgentEventContext, EventSink, HookHelperSpec
-from src.core.hooks.serialization import event_to_dict, sanitize_payload
+from src.core.hooks.publisher import EventPublisher, SinkEventPublisher
+from src.core.hooks.serialization import sanitize_payload
 from src.core.hooks.sinks import ConsoleEventSink, JsonlFileEventSink, NoopEventSink, PostgresEventSink
 
 _event_context: ContextVar[AgentEventContext] = ContextVar(
     "agent_event_context",
     default=AgentEventContext(),
 )
-_event_sinks: list[EventSink] | None = None
+_event_publisher: EventPublisher | None = None
 
 
 def set_event_context(
-    session_id: str = DEFAULT_SESSION_ID,
+    session_id=None,
     turn_index: int | None = None,
     run_id: str = "",
-) -> None:
+    workspace_id=None,
+) -> Token:
     """Set context used by subsequent emitted events."""
-    _event_context.set(
+    return _event_context.set(
         AgentEventContext(
+            workspace_id=workspace_id,
             session_id=session_id,
             turn_index=turn_index,
             run_id=run_id,
@@ -36,23 +38,37 @@ def set_event_context(
     )
 
 
+def reset_event_context(token: Token) -> None:
+    """Restore the event context that existed before a scoped operation."""
+    _event_context.reset(token)
+
+
 def get_event_context() -> AgentEventContext:
     """Return the current event context."""
     return _event_context.get()
 
 
+def set_run_event_context(run_context: AgentRunContext) -> Token:
+    """Set observation identity from the canonical Agent run context."""
+    return set_event_context(
+        workspace_id=run_context.workspace.workspace_id,
+        session_id=run_context.session.session_id,
+        turn_index=run_context.turn_index,
+        run_id=run_context.run_id,
+    )
+
+
 def set_event_sinks(sinks: list[EventSink] | None) -> None:
-    """Override sinks, mainly for tests."""
-    global _event_sinks
-    if _event_sinks:
-        for sink in _event_sinks:
-            close = getattr(sink, "close", None)
-            if callable(close):
-                try:
-                    close()
-                except Exception as exc:
-                    debug_print("AGENT EVENT SINK CLOSE ERROR", f"{sink.__class__.__name__}: {exc}")
-    _event_sinks = sinks
+    """Compatibility helper that installs a sink-backed publisher."""
+    set_event_publisher(SinkEventPublisher(sinks) if sinks is not None else None)
+
+
+def set_event_publisher(publisher: EventPublisher | None) -> None:
+    """Install the process-wide observation publisher."""
+    global _event_publisher
+    if _event_publisher is not None:
+        _event_publisher.close()
+    _event_publisher = publisher
 
 
 def emit_event(
@@ -75,16 +91,13 @@ def emit_event(
         turn_index=context.turn_index,
         run_id=context.run_id,
         duration_ms=duration_ms,
+        workspace_id=context.workspace_id,
     )
 
     if not AGENT_EVENTS_ENABLED:
         return event
 
-    for sink in _get_event_sinks():
-        try:
-            sink.emit(event)
-        except Exception as exc:
-            debug_print("AGENT EVENT SINK ERROR", f"{sink.__class__.__name__}: {exc}")
+    _get_event_publisher().publish(event)
 
     return event
 
@@ -380,19 +393,14 @@ def event_span(
 
 
 def flush_event_sinks() -> None:
-    """Flush sinks that support flushing."""
-    for sink in _get_event_sinks():
-        flush = getattr(sink, "flush", None)
-        if callable(flush):
-            try:
-                flush()
-            except Exception as exc:
-                debug_print("AGENT EVENT SINK FLUSH ERROR", f"{sink.__class__.__name__}: {exc}")
+    """Flush the configured observation publisher."""
+    _get_event_publisher().flush()
 
-def _get_event_sinks() -> list[EventSink]:
-    global _event_sinks
-    if _event_sinks is not None:
-        return _event_sinks
+
+def _get_event_publisher() -> EventPublisher:
+    global _event_publisher
+    if _event_publisher is not None:
+        return _event_publisher
 
     sinks: list[EventSink] = []
     if AGENT_EVENTS_CONSOLE_ENABLED:
@@ -404,7 +412,7 @@ def _get_event_sinks() -> list[EventSink]:
     if not sinks:
         sinks.append(NoopEventSink())
 
-    _event_sinks = sinks
-    return sinks
+    _event_publisher = SinkEventPublisher(sinks)
+    return _event_publisher
 
 

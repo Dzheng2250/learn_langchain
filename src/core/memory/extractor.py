@@ -1,18 +1,19 @@
 import json
-import os
 import re
 
-from dotenv import load_dotenv
 from langchain_core.messages import HumanMessage, SystemMessage
-from langchain_openai import ChatOpenAI
 
 from src.core.common.debug import debug_print, format_message
-from src.core.config.settings import MEMORY_EXTRACT_SOURCE_CHAR_LIMIT, MODEL
+from src.config.settings import MEMORY_EXTRACT_SOURCE_CHAR_LIMIT
 from src.core.hooks.events import event_span
+from src.core.llm.provider import LlmPurpose, ModelProvider, OpenAICompatibleProvider
 
 
 class MemoryCandidateExtractor:
     """Extract durable memory candidates from completed conversation turns."""
+
+    def __init__(self, model_provider: ModelProvider | None = None) -> None:
+        self.model_provider = model_provider or OpenAICompatibleProvider()
 
     def format_messages(self, messages: list) -> str:
         """Format and bound source messages before sending them to the LLM."""
@@ -91,12 +92,9 @@ class MemoryCandidateExtractor:
             content = re.sub(r"\s*```$", "", content)
         return content.strip()
 
-    def _create_llm(self) -> ChatOpenAI:
-        load_dotenv()
-        return ChatOpenAI(
-            model=MODEL,
-            api_key=os.getenv("ALIYUN_API_KEY"),
-            base_url=os.getenv("ALIYUN_BASE_URL"),
+    def _create_llm(self):
+        return self.model_provider.create_chat_model(
+            LlmPurpose.MEMORY_EXTRACTION,
             temperature=0,
             streaming=False,
         )

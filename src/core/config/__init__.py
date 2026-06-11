@@ -1,3 +1,5 @@
-"""Application configuration."""
+"""Core-specific configuration."""
 
-from .settings import *
+from .models import CoreConfig
+
+__all__ = ["CoreConfig"]

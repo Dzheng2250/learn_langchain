@@ -2,7 +2,7 @@ from langchain_core.messages import AIMessageChunk
 from langchain_core.messages import HumanMessage
 from langgraph.errors import GraphRecursionError
 
-from src.core.config.settings import MAX_GRAPH_STEPS
+from src.core.agent.models import AgentRunContext, RunLimits, StopReason
 from src.core.hooks.events import emit_event, record_error
 
 
@@ -68,11 +68,17 @@ def _step_events_from_message(message) -> list[dict]:
     return []
 
 
-def stream_graph_events(app, input_messages: list):
+def stream_graph_events(
+    app,
+    input_messages: list,
+    run_context: AgentRunContext | None = None,
+):
     """Yield step/token/done/error events for one prepared graph input."""
+    limits = run_context.limits if run_context else RunLimits()
     inputs = {"messages": input_messages}
     final_state = None
     seen_message_count = len(inputs["messages"])
+    tool_call_count = 0
 
     yield {
         "event": "step",
@@ -85,7 +91,7 @@ def stream_graph_events(app, input_messages: list):
     try:
         for stream_mode, chunk in app.stream(
             inputs,
-            config={"recursion_limit": MAX_GRAPH_STEPS},
+            config={"recursion_limit": limits.max_graph_steps},
             stream_mode=["messages", "values"],
         ):
             if stream_mode == "messages":
@@ -104,20 +110,46 @@ def stream_graph_events(app, input_messages: list):
                 seen_message_count = len(state_messages)
 
                 for message in new_messages:
+                    tool_calls = getattr(message, "tool_calls", None) or []
+                    tool_call_count += len(tool_calls)
+                    if tool_call_count > limits.max_tool_calls:
+                        emit_event(
+                            "tool_call_limit",
+                            "agent_stream",
+                            "Agent exceeded the per-turn tool call limit.",
+                            {
+                                "tool_call_count": tool_call_count,
+                                "max_tool_calls": limits.max_tool_calls,
+                            },
+                            level="error",
+                        )
+                        yield {
+                            "event": "error",
+                            "data": {
+                                "type": StopReason.TOOL_CALL_LIMIT.value,
+                                "stop_reason": StopReason.TOOL_CALL_LIMIT.value,
+                                "message": (
+                                    "Agent exceeded the per-turn tool call limit "
+                                    f"({limits.max_tool_calls})."
+                                ),
+                            },
+                        }
+                        return
                     yield from _step_events_from_message(message)
     except GraphRecursionError:
         emit_event(
             "recursion_limit",
             "agent_stream",
-            f"Graph exceeded recursion_limit={MAX_GRAPH_STEPS}.",
-            {"recursion_limit": MAX_GRAPH_STEPS},
+            f"Graph exceeded recursion_limit={limits.max_graph_steps}.",
+            {"recursion_limit": limits.max_graph_steps},
             level="error",
         )
         yield {
             "event": "error",
             "data": {
-                "type": "recursion_limit",
-                "message": f"Graph exceeded recursion_limit={MAX_GRAPH_STEPS}.",
+                "type": StopReason.GRAPH_STEP_LIMIT.value,
+                "stop_reason": StopReason.GRAPH_STEP_LIMIT.value,
+                "message": f"Graph exceeded recursion_limit={limits.max_graph_steps}.",
             },
         }
         return
@@ -133,6 +165,7 @@ def stream_graph_events(app, input_messages: list):
             "event": "error",
             "data": {
                 "type": "graph_execution_error",
+                "stop_reason": StopReason.GRAPH_ERROR.value,
                 "message": str(exc),
             },
         }
@@ -142,6 +175,8 @@ def stream_graph_events(app, input_messages: list):
         "event": "done",
         "data": {
             "messages": final_state["messages"] if final_state is not None else input_messages,
+            "stop_reason": StopReason.COMPLETED.value,
+            "tool_call_count": tool_call_count,
         },
     }
 

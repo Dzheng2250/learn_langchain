@@ -1,6 +1,7 @@
 import os
+from pathlib import Path
 
-from src.core.config.settings import SKILL_FILE_NAME, SKILL_READ_OUTPUT_LIMIT, SKILLS_DIR
+from src.config.settings import SKILL_FILE_NAME, SKILL_READ_OUTPUT_LIMIT, SKILLS_DIR
 from src.core.skills.models import SkillDocument, SkillManifest
 from src.core.skills.parser import SkillMetadataParser
 
@@ -15,11 +16,17 @@ class LocalSkillStore:
         skill_file_name: str = SKILL_FILE_NAME,
         output_limit: int = SKILL_READ_OUTPUT_LIMIT,
     ) -> None:
-        self.workspace_dir = os.path.abspath(workspace_dir)
+        self.workspace_path = Path(workspace_dir).resolve(strict=True)
+        self.workspace_dir = str(self.workspace_path)
         self.skills_dir = skills_dir
         self.skill_file_name = skill_file_name
         self.output_limit = output_limit
-        self.skills_root = os.path.abspath(os.path.join(self.workspace_dir, self.skills_dir))
+        self.skills_root_path = (self.workspace_path / self.skills_dir).resolve()
+        try:
+            self.skills_root_path.relative_to(self.workspace_path)
+        except ValueError as exc:
+            raise ValueError("skills directory escapes the workspace") from exc
+        self.skills_root = str(self.skills_root_path)
         self.metadata_parser = SkillMetadataParser()
 
     def list_skill_names(self) -> list[str]:
@@ -29,8 +36,12 @@ class LocalSkillStore:
 
         skill_names = []
         for name in sorted(os.listdir(self.skills_root)):
-            skill_file = os.path.join(self.skills_root, name, self.skill_file_name)
-            if os.path.isfile(skill_file):
+            skill_file = (self.skills_root_path / name / self.skill_file_name).resolve()
+            try:
+                skill_file.relative_to(self.skills_root_path)
+            except ValueError:
+                continue
+            if skill_file.is_file():
                 skill_names.append(name)
 
         return skill_names
@@ -112,18 +123,23 @@ class LocalSkillStore:
         if not normalized or "/" in normalized or normalized == ".." or ".." in normalized.split("/"):
             raise ValueError("skill_name must be one directory name under the skills directory.")
 
-        candidate = os.path.abspath(
-            os.path.join(self.skills_root, normalized, self.skill_file_name)
-        )
+        candidate = (self.skills_root_path / normalized / self.skill_file_name).resolve()
+        try:
+            candidate.relative_to(self.skills_root_path)
+        except ValueError as exc:
+            raise ValueError("skill path escapes the workspace") from exc
 
-        if candidate.startswith(self.skills_root + os.sep) and os.path.isfile(candidate):
-            return candidate
+        if candidate.is_file():
+            return str(candidate)
 
         matched_directory = self._find_directory_by_skill_name(normalized)
         if matched_directory:
-            return os.path.abspath(
-                os.path.join(self.skills_root, matched_directory, self.skill_file_name)
-            )
+            matched = (self.skills_root_path / matched_directory / self.skill_file_name).resolve()
+            try:
+                matched.relative_to(self.skills_root_path)
+            except ValueError as exc:
+                raise ValueError("skill path escapes the workspace") from exc
+            return str(matched)
 
         raise ValueError(f"Skill not found: {skill_name}")
 

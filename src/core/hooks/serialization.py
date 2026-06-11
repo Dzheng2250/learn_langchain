@@ -1,6 +1,6 @@
 from dataclasses import asdict
 
-from src.core.config.settings import AGENT_EVENTS_PAYLOAD_PREVIEW_LIMIT
+from src.config.settings import AGENT_EVENTS_PAYLOAD_PREVIEW_LIMIT
 from src.core.hooks.models import AgentEvent
 
 
@@ -19,6 +19,8 @@ def event_to_dict(event: AgentEvent) -> dict:
     """Convert an event to a JSON-serializable dictionary."""
     data = asdict(event)
     data["created_at"] = event.created_at.isoformat()
+    data["workspace_id"] = str(event.workspace_id) if event.workspace_id else None
+    data["session_id"] = str(event.session_id) if event.session_id else None
     return data
 
 

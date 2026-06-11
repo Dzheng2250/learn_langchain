@@ -6,7 +6,6 @@ class RetrievedMemory:
     """One long-term memory selected for the current user turn."""
 
     id: str
-    scope: str
     kind: str
     content: str
     tags: list[str] = field(default_factory=list)

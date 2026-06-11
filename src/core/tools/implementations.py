@@ -1,23 +1,15 @@
-"""Compatibility exports for tool implementations.
+"""Compatibility exports for workspace-bound tool factories."""
 
-New code should import tools from their domain modules or from ``registry``.
-"""
-
-from src.core.tools.commands import run_bash_command, run_command_in_container
-from src.core.tools.skills import list_skills, read_skill, skill_store
-from src.core.tools.summarization import summarize_large_file
-from src.core.tools.weather import get_weather
-from src.core.tools.workspace import read_entire_file, read_workspace_file, read_workspace_file_lite
+from src.core.tools.commands import create_run_command_in_container
+from src.core.tools.registry import create_workspace_toolset
+from src.core.tools.skills import create_skill_tools
+from src.core.tools.summarization import create_summarize_large_file
+from src.core.tools.workspace import create_workspace_file_tools
 
 __all__ = [
-    "get_weather",
-    "list_skills",
-    "read_entire_file",
-    "read_skill",
-    "read_workspace_file",
-    "read_workspace_file_lite",
-    "run_bash_command",
-    "run_command_in_container",
-    "skill_store",
-    "summarize_large_file",
+    "create_run_command_in_container",
+    "create_skill_tools",
+    "create_summarize_large_file",
+    "create_workspace_file_tools",
+    "create_workspace_toolset",
 ]

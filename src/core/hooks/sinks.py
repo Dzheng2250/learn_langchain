@@ -6,7 +6,7 @@ import threading
 import time
 
 from src.core.common.debug import debug_print
-from src.core.config.settings import (
+from src.config.settings import (
     AGENT_EVENTS_ASYNC_WRITE,
     AGENT_EVENTS_BATCH_SIZE,
     AGENT_EVENTS_FILE_PATH,
@@ -176,6 +176,7 @@ class PostgresEventSink:
     def _event_params(self, event: AgentEvent) -> tuple:
         return (
             event.run_id,
+            event.workspace_id,
             event.session_id,
             event.turn_index,
             event.event_type,
