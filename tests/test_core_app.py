@@ -1,5 +1,6 @@
 import asyncio
 import unittest
+from unittest.mock import call, patch
 
 from src.core.app import CoreApp
 from src.core.config.models import CoreConfig
@@ -96,6 +97,42 @@ class CoreAppTest(unittest.IsolatedAsyncioTestCase):
         await app.close()
         self.assertEqual(1, events.count("transport.close"))
         self.assertEqual(1, events.count("agent.close"))
+
+    async def test_event_publisher_is_installed_only_during_app_lifecycle(self):
+        events = []
+        publisher = object()
+        with patch("src.core.app.set_event_publisher") as set_publisher:
+            app = CoreApp(
+                self._config(),
+                "token",
+                agent_service=FakeAgentService(events),
+                transport_factory=lambda _config, _router: FakeTransport(events),
+                event_publisher=publisher,
+            )
+            set_publisher.assert_not_called()
+
+            await app.start()
+            set_publisher.assert_called_once_with(publisher)
+
+            await app.close()
+            self.assertEqual(
+                [call(publisher), call(None)],
+                set_publisher.call_args_list,
+            )
+
+    async def test_close_releases_lazily_created_default_event_publisher(self):
+        events = []
+        with patch("src.core.app.set_event_publisher") as set_publisher:
+            app = CoreApp(
+                self._config(),
+                "token",
+                agent_service=FakeAgentService(events),
+                transport_factory=lambda _config, _router: FakeTransport(events),
+            )
+            await app.start()
+            await app.close()
+
+            set_publisher.assert_called_once_with(None)
 
     def test_core_config_rejects_non_loopback_host(self):
         with self.assertRaises(ValueError):

@@ -6,6 +6,7 @@ development settings that are safe to commit.
 
 DEBUG_AGENT = False
 MAX_GRAPH_STEPS = 20
+MAX_TOOL_CALLS_PER_TURN = 12
 BASH_PATH = "bash"
 MODEL = "deepseek-v4-flash"
 

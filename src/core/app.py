@@ -6,17 +6,21 @@ from collections.abc import Callable
 from typing import Protocol
 
 from src.core.agent.service import AgentTurnService
+from src.core.agent.models import RunLimits
 from src.core.bus.router import RpcRouter
 from src.core.config.models import CoreConfig
 from src.core.handlers import AgentHandlers, CoreHandlers
 from src.core.handlers.agent import AgentTurnRunner
-from src.core.hooks.events import set_event_sinks
+from src.core.hooks.events import set_event_publisher
+from src.core.hooks.publisher import EventPublisher
 from src.core.transport.socket_server import SocketServer
 from src.ipc.auth import ensure_runtime_dir, pid_path
 from src.core.database.connection import create_pool
 from src.core.memory.store import PostgresMemoryStore
+from src.core.context.manager import AgentContextManager
+from src.core.llm.provider import OpenAICompatibleProvider
 from src.core.workspace.repository import WorkspaceRepository
-from src.core.workspace.runtime import WorkspaceRuntimeRegistry
+from src.core.workspace.runtime import WorkspaceRuntimeFactory, WorkspaceRuntimeRegistry
 
 
 class CoreAgentService(AgentTurnRunner, Protocol):
@@ -57,16 +61,27 @@ class CoreApp:
         *,
         agent_service: CoreAgentService | None = None,
         transport_factory: TransportFactory = create_socket_transport,
+        event_publisher: EventPublisher | None = None,
     ) -> None:
         self.config = config
         self.shutdown_event = asyncio.Event()
         self._pool = None
+        self._event_publisher = event_publisher
         if agent_service is None:
             self._pool = create_pool()
+            model_provider = OpenAICompatibleProvider()
+            run_limits = RunLimits()
             self.agent_service = AgentTurnService(
                 workspace_repository=WorkspaceRepository(self._pool),
-                runtime_registry=WorkspaceRuntimeRegistry(),
-                memory_store_factory=lambda: PostgresMemoryStore(pool=self._pool),
+                runtime_registry=WorkspaceRuntimeRegistry(
+                    factory=WorkspaceRuntimeFactory(model_provider, run_limits),
+                ),
+                memory_store_factory=lambda: PostgresMemoryStore(
+                    pool=self._pool,
+                    model_provider=model_provider,
+                ),
+                context_manager=AgentContextManager(model_provider=model_provider),
+                run_limits=run_limits,
             )
         else:
             self.agent_service = agent_service
@@ -84,6 +99,8 @@ class CoreApp:
         if self._started:
             return
         try:
+            if self._event_publisher is not None:
+                set_event_publisher(self._event_publisher)
             self.agent_service.initialize()
             if self.config.manage_runtime_files:
                 ensure_runtime_dir(self.config.runtime_dir)
@@ -112,7 +129,7 @@ class CoreApp:
             await self.transport.close(self.config.shutdown_timeout_seconds)
         finally:
             self.agent_service.close()
-            set_event_sinks(None)
+            set_event_publisher(None)
             if self._pool is not None:
                 self._pool.close()
             if self.config.manage_runtime_files:

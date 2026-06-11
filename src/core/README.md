@@ -24,3 +24,4 @@ CoreApp
 - [`docs/core-architecture.md`](../../docs/core-architecture.md)
 - [`docs/workspace-isolation-and-migration.md`](../../docs/workspace-isolation-and-migration.md)
 - [`docs/workspace-isolation-review.md`](../../docs/workspace-isolation-review.md)
+- [`docs/agent-execution-architecture.md`](../../docs/agent-execution-architecture.md)

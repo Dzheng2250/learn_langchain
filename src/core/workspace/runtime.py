@@ -4,7 +4,9 @@ from dataclasses import dataclass
 from threading import Lock
 from uuid import UUID
 
+from src.core.agent.models import RunLimits
 from src.core.agent.graph import create_parent_graph
+from src.core.llm.provider import ModelProvider, OpenAICompatibleProvider
 from src.core.tools.registry import WorkspaceToolset, create_workspace_toolset
 from src.core.workspace.models import WorkspaceContext
 
@@ -17,9 +19,26 @@ class WorkspaceRuntime:
 
 
 class WorkspaceRuntimeFactory:
+    def __init__(
+        self,
+        model_provider: ModelProvider | None = None,
+        run_limits: RunLimits | None = None,
+    ) -> None:
+        self.model_provider = model_provider or OpenAICompatibleProvider()
+        self.run_limits = run_limits or RunLimits()
+
     def create(self, workspace: WorkspaceContext) -> WorkspaceRuntime:
-        toolset = create_workspace_toolset(workspace)
-        return WorkspaceRuntime(workspace, toolset, create_parent_graph(toolset.parent_tools, toolset.skill_manifest))
+        toolset = create_workspace_toolset(
+            workspace,
+            self.model_provider,
+            subagent_max_steps=self.run_limits.max_subagent_steps,
+        )
+        graph = create_parent_graph(
+            toolset.parent_tools,
+            toolset.skill_manifest,
+            self.model_provider,
+        )
+        return WorkspaceRuntime(workspace, toolset, graph)
 
 
 class WorkspaceRuntimeRegistry:

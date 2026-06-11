@@ -20,6 +20,7 @@ from src.core.hooks.events import emit_event, record_error, record_memory_saved
 from src.core.memory.extractor import MemoryCandidateExtractor
 from src.core.memory.models import RetrievedMemory
 from src.core.memory.repositories import MemoryRepository, MessageRepository, SessionRepository
+from src.core.llm.provider import ModelProvider
 from src.core.workspace.models import SessionContext
 
 
@@ -35,12 +36,13 @@ class PostgresMemoryStore:
         pool=None,
         retrieval_limit: int = MEMORY_RETRIEVAL_LIMIT,
         min_importance: int = MEMORY_MIN_IMPORTANCE,
+        model_provider: ModelProvider | None = None,
     ) -> None:
         self._pool = pool or create_pool()
         self._owns_pool = pool is None
         self.retrieval_limit = retrieval_limit
         self.min_importance = min_importance
-        self.extractor = MemoryCandidateExtractor()
+        self.extractor = MemoryCandidateExtractor(model_provider)
         self.sessions = SessionRepository(self._pool)
         self.messages = MessageRepository(self._pool)
         self.memories = MemoryRepository(self._pool)

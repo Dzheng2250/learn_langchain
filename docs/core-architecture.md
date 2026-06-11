@@ -2,6 +2,9 @@
 
 > Workspace 隔离、用户级 daemon、数据库迁移和最新依赖边界见
 > [`workspace-isolation-and-migration.md`](workspace-isolation-and-migration.md)。
+>
+> 单次 Agent 执行、ModelProvider、RunContext、ToolRegistry 与事件通道见
+> [`agent-execution-architecture.md`](agent-execution-architecture.md)。
 
 ## 重构目标
 

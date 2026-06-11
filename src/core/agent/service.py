@@ -6,8 +6,15 @@ from threading import Lock, RLock
 from uuid import UUID, uuid4
 
 from src.config.settings import MEMORY_ENABLED, MEMORY_EXTRACTION_ASYNC
+from src.core.agent.models import AgentRunContext, RunLimits, StopReason
 from src.core.context.manager import AgentContextManager
-from src.core.hooks.events import emit_event, record_error, set_event_context
+from src.core.hooks.events import (
+    emit_event,
+    record_error,
+    reset_event_context,
+    set_event_context,
+    set_run_event_context,
+)
 from src.core.memory.policy import has_explicit_memory_request, memory_extraction_reason, turn_message_chars
 from src.core.memory.store import PostgresMemoryStore
 from src.core.streaming.events import stream_graph_events
@@ -41,6 +48,7 @@ class AgentTurnService:
         context_manager: AgentContextManager | None = None,
         memory_enabled: bool = MEMORY_ENABLED,
         lock_registry: SessionLockRegistry | None = None,
+        run_limits: RunLimits | None = None,
     ) -> None:
         self.workspace_repository = workspace_repository
         self.runtime_registry = runtime_registry
@@ -48,6 +56,7 @@ class AgentTurnService:
         self.context_manager = context_manager or AgentContextManager()
         self.memory_enabled = memory_enabled
         self.lock_registry = lock_registry or SessionLockRegistry()
+        self.run_limits = run_limits or RunLimits()
         self._memory_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="agent-memory")
 
     def initialize(self) -> None:
@@ -75,6 +84,10 @@ class AgentTurnService:
                 result.update(item["data"])
             elif item["event"] == "error":
                 result["error"] = item["data"].get("message", "Agent turn failed.")
+                result["stop_reason"] = item["data"].get(
+                    "stop_reason",
+                    StopReason.TURN_ERROR.value,
+                )
         return result
 
     def stream_turn(
@@ -105,30 +118,43 @@ class AgentTurnService:
         run_id: str,
     ) -> Iterator[dict]:
         store = self.memory_store_factory()
+        context_token = set_event_context(
+            workspace_id=session.workspace.workspace_id,
+            session_id=session.session_id,
+            run_id=run_id,
+        )
+        run_context_token = None
         try:
-            set_event_context(
-                workspace_id=session.workspace.workspace_id,
-                session_id=session.session_id,
-                run_id=run_id,
-            )
             state, turn_index = store.load_session(session)
             current_turn = turn_index + 1
-            set_event_context(
-                workspace_id=session.workspace.workspace_id,
-                session_id=session.session_id,
-                turn_index=current_turn,
+            run_context = AgentRunContext(
                 run_id=run_id,
+                session=session,
+                turn_index=current_turn,
+                limits=self.run_limits,
             )
+            run_context_token = set_run_event_context(run_context)
             emit_event(
                 "turn_started",
                 "agent_service",
                 "Started workspace Agent turn.",
-                {"session_name": session.session_name, "user_input_preview": user_input[:300]},
+                {
+                    "session_name": session.session_name,
+                    "user_input_preview": user_input[:300],
+                    "limits": {
+                        "max_graph_steps": run_context.limits.max_graph_steps,
+                        "max_tool_calls": run_context.limits.max_tool_calls,
+                    },
+                },
             )
-            memories = store.retrieve_for_turn(
-                session.workspace.workspace_id,
-                user_input,
-                new_session=turn_index == 0,
+            memories = (
+                store.retrieve_for_turn(
+                    session.workspace.workspace_id,
+                    user_input,
+                    new_session=turn_index == 0,
+                )
+                if self.memory_enabled
+                else []
             )
             memory_message = store.build_memory_message(memories)
             extras = [memory_message] if memory_message else []
@@ -138,7 +164,23 @@ class AgentTurnService:
                 user_input,
                 extra_system_messages=extras,
             )
-            for item in stream_graph_events(graph, input_messages):
+            for item in stream_graph_events(graph, input_messages, run_context):
+                if item["event"] == "error":
+                    emit_event(
+                        "turn_failed",
+                        "agent_service",
+                        "Workspace Agent turn stopped before completion.",
+                        {
+                            "stop_reason": item["data"].get(
+                                "stop_reason",
+                                StopReason.TURN_ERROR.value,
+                            ),
+                            "error_type": item["data"].get("type", "unknown"),
+                        },
+                        level="error",
+                    )
+                    yield item
+                    return
                 if item["event"] != "done":
                     yield item
                     continue
@@ -148,7 +190,18 @@ class AgentTurnService:
                 state = self.context_manager.update_after_turn(state, final_messages, memory_context=memory_text)
                 store.save_session(session, state, current_turn)
                 self._handle_extraction(store, session, current_turn, run_id, user_input, turn_messages, source_ids)
-                emit_event("turn_finished", "agent_service", "Finished workspace Agent turn.")
+                emit_event(
+                    "turn_finished",
+                    "agent_service",
+                    "Finished workspace Agent turn.",
+                    {
+                        "stop_reason": item["data"].get(
+                            "stop_reason",
+                            StopReason.COMPLETED.value,
+                        ),
+                        "tool_call_count": item["data"].get("tool_call_count", 0),
+                    },
+                )
                 yield {
                     "event": "done",
                     "data": {
@@ -157,12 +210,28 @@ class AgentTurnService:
                         "workspace_id": str(session.workspace.workspace_id),
                         "session_id": str(session.session_id),
                         "session_name": session.session_name,
+                        "stop_reason": item["data"].get(
+                            "stop_reason",
+                            StopReason.COMPLETED.value,
+                        ),
+                        "tool_call_count": item["data"].get("tool_call_count", 0),
                     },
                 }
         except Exception as exc:
             record_error("agent_service", "turn", exc, "Agent turn failed.", event_type="turn_failed")
-            yield {"event": "error", "data": {"type": "turn_failed", "message": str(exc), "run_id": run_id}}
+            yield {
+                "event": "error",
+                "data": {
+                    "type": "turn_failed",
+                    "stop_reason": StopReason.TURN_ERROR.value,
+                    "message": str(exc),
+                    "run_id": run_id,
+                },
+            }
         finally:
+            if run_context_token is not None:
+                reset_event_context(run_context_token)
+            reset_event_context(context_token)
             store.close()
 
     def _handle_extraction(
@@ -175,6 +244,14 @@ class AgentTurnService:
         messages: list,
         source_ids: list[int],
     ) -> None:
+        if not self.memory_enabled:
+            emit_event(
+                "memory_extract_skipped",
+                "agent_service",
+                "Long-term memory extraction skipped.",
+                {"reason": "disabled_by_service"},
+            )
+            return
         reason = memory_extraction_reason(user_input, turn_index, messages)
         if reason in {"not_triggered", "disabled"}:
             emit_event(
@@ -204,7 +281,7 @@ class AgentTurnService:
         messages: list,
         source_ids: list[int],
     ) -> None:
-        set_event_context(
+        context_token = set_event_context(
             workspace_id=session.workspace.workspace_id,
             session_id=session.session_id,
             turn_index=turn_index,
@@ -222,4 +299,5 @@ class AgentTurnService:
                 event_type="memory_failed",
             )
         finally:
+            reset_event_context(context_token)
             store.close()

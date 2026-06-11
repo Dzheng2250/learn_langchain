@@ -1,29 +1,33 @@
 """Factory for non-recursive workspace-bound sub-agents."""
 
-import os
 from typing import Annotated
 
 from langchain_core.messages import HumanMessage, SystemMessage
 from langchain_core.tools import tool
-from langchain_openai import ChatOpenAI
 from langgraph.errors import GraphRecursionError
 from langgraph.graph import END, START, MessagesState, StateGraph
 from langgraph.prebuilt import InjectedState, tools_condition
 
-from src.config.settings import MODEL, SUBAGENT_CONTEXT_MESSAGE_LIMIT, SUBAGENT_MAX_STEPS, SUBAGENT_RESULT_LIMIT
+from src.config.settings import SUBAGENT_CONTEXT_MESSAGE_LIMIT, SUBAGENT_MAX_STEPS, SUBAGENT_RESULT_LIMIT
 from src.core.common.debug import format_message
+from src.core.llm.provider import LlmPurpose, ModelProvider, OpenAICompatibleProvider
 from src.core.tools.observed import ObservedToolNode
 
 
-def create_delegate_tool(base_tools: list):
+def create_delegate_tool(
+    base_tools: list,
+    model_provider: ModelProvider | None = None,
+    *,
+    max_steps: int = SUBAGENT_MAX_STEPS,
+):
     """Create a delegate tool whose sub-agent cannot recursively delegate."""
-    llm = ChatOpenAI(
-        model=MODEL,
-        api_key=os.getenv("ALIYUN_API_KEY"),
-        base_url=os.getenv("ALIYUN_BASE_URL"),
+    provider = model_provider or OpenAICompatibleProvider()
+    llm = provider.create_chat_model(
+        LlmPurpose.SUBAGENT,
         temperature=0,
         streaming=False,
-    ).bind_tools(base_tools)
+        tools=base_tools,
+    )
 
     def subagent_node(state: MessagesState) -> dict:
         response = llm.invoke(
@@ -64,10 +68,10 @@ def create_delegate_tool(base_tools: list):
         try:
             result = graph.invoke(
                 {"messages": [HumanMessage(content=prompt)]},
-                config={"recursion_limit": SUBAGENT_MAX_STEPS},
+                config={"recursion_limit": max_steps},
             )
         except GraphRecursionError:
-            return f"Sub-agent exceeded its {SUBAGENT_MAX_STEPS}-step limit."
+            return f"Sub-agent exceeded its {max_steps}-step limit."
         return str(result["messages"][-1].content)[:SUBAGENT_RESULT_LIMIT]
 
     return delegate_to_subagent

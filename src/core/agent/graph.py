@@ -1,28 +1,29 @@
 """Factory for workspace-bound parent Agent graphs."""
 
-import os
-
 from langchain_core.messages import SystemMessage
-from langchain_openai import ChatOpenAI
 from langgraph.graph import END, START, MessagesState, StateGraph
 from langgraph.prebuilt import tools_condition
 
-from src.config.settings import FILE_READ_CHUNK_LINES, MODEL
+from src.config.settings import FILE_READ_CHUNK_LINES
 from src.core.common.debug import debug_print, format_message, format_messages
 from src.core.hooks.events import emit_event, record_error
+from src.core.llm.provider import LlmPurpose, ModelProvider, OpenAICompatibleProvider
 from src.core.tools.observed import ObservedToolNode
 
 
-def create_parent_graph(parent_tools: list, skill_manifest: str):
+def create_parent_graph(
+    parent_tools: list,
+    skill_manifest: str,
+    model_provider: ModelProvider | None = None,
+):
     """Create one compiled graph permanently bound to a WorkspaceRuntime."""
-    llm = ChatOpenAI(
-        model=MODEL,
-        api_key=os.getenv("ALIYUN_API_KEY"),
-        base_url=os.getenv("ALIYUN_BASE_URL"),
+    provider = model_provider or OpenAICompatibleProvider()
+    llm_with_tools = provider.create_chat_model(
+        LlmPurpose.PARENT_AGENT,
         temperature=0.7,
         streaming=True,
+        tools=parent_tools,
     )
-    llm_with_tools = llm.bind_tools(parent_tools)
 
     def agent_node(state: MessagesState) -> dict:
         llm_messages = [
@@ -40,7 +41,12 @@ def create_parent_graph(parent_tools: list, skill_manifest: str):
             *state["messages"],
         ]
         debug_print("LLM INPUT MESSAGES", format_messages(llm_messages))
-        emit_event("llm_started", "agent_loop", "Calling parent LLM.", {"model": MODEL})
+        emit_event(
+            "llm_started",
+            "agent_loop",
+            "Calling parent LLM.",
+            {"purpose": LlmPurpose.PARENT_AGENT.value},
+        )
         try:
             response = llm_with_tools.invoke(llm_messages)
         except Exception as exc:

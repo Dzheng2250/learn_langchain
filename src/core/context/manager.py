@@ -1,10 +1,6 @@
-import os
-
 from langchain_core.messages import HumanMessage, SystemMessage
-from langchain_openai import ChatOpenAI
 
 from src.config.settings import (
-    MODEL,
     RECENT_MESSAGE_LIMIT,
     SESSION_SUMMARY_MAX_CHARS,
     SUMMARY_TRIGGER_CHAR_LIMIT,
@@ -14,6 +10,7 @@ from src.config.settings import (
 from src.core.common.debug import debug_print, format_message
 from src.core.hooks.events import emit_event, event_span, record_error
 from src.core.context.models import AgentContextState
+from src.core.llm.provider import LlmPurpose, ModelProvider, OpenAICompatibleProvider
 
 
 SUMMARY_MESSAGE_PREFIX = "Conversation context summary:"
@@ -32,12 +29,14 @@ class AgentContextManager:
         summary_trigger_char_limit: int = SUMMARY_TRIGGER_CHAR_LIMIT,
         summary_max_chars: int = SESSION_SUMMARY_MAX_CHARS,
         summary_source_char_limit: int = SUMMARY_SOURCE_CHAR_LIMIT,
+        model_provider: ModelProvider | None = None,
     ) -> None:
         self.recent_message_limit = recent_message_limit
         self.summary_trigger_message_limit = summary_trigger_message_limit
         self.summary_trigger_char_limit = summary_trigger_char_limit
         self.summary_max_chars = summary_max_chars
         self.summary_source_char_limit = summary_source_char_limit
+        self.model_provider = model_provider or OpenAICompatibleProvider()
 
     def build_input_messages(
         self,
@@ -213,12 +212,10 @@ class AgentContextManager:
             formatted.append(f"[{index}]\n{text}")
         return "\n\n".join(formatted)
 
-    def _create_summary_llm(self) -> ChatOpenAI:
+    def _create_summary_llm(self):
         """Create a non-streaming model for context summarization."""
-        return ChatOpenAI(
-            model=MODEL,
-            api_key=os.getenv("ALIYUN_API_KEY"),
-            base_url=os.getenv("ALIYUN_BASE_URL"),
+        return self.model_provider.create_chat_model(
+            LlmPurpose.CONTEXT_SUMMARY,
             temperature=0,
             streaming=False,
         )
