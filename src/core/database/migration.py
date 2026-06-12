@@ -210,7 +210,7 @@ def create_database_backup() -> Path:
     port = str(config.get("port", 5432))
     user = str(config.get("user", "postgres"))
     dbname = str(config.get("dbname", "learn_agent"))
-    password = str(config.get("password", ""))
+    password = str(config.get("password") or "")
     native = PG_DUMP_PATH or shutil.which("pg_dump")
     if native:
         command = [
