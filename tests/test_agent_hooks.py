@@ -1,4 +1,5 @@
 import unittest
+from unittest.mock import Mock, patch
 from uuid import uuid4
 
 from langchain_core.messages import AIMessage
@@ -23,6 +24,7 @@ from src.core.hooks.events import (
     set_event_sinks,
 )
 from src.core.tools.observed import ObservedToolNode
+from src.core.hooks.sinks import PostgresEventSink
 
 
 class MemorySink:
@@ -253,6 +255,18 @@ class AgentHooksTest(unittest.TestCase):
         self.assertEqual("echo", sink.events[0].payload["tool"])
         self.assertEqual("call-1", sink.events[0].payload["tool_call_id"])
         self.assertEqual("hello", output["messages"][-1].content)
+
+    def test_postgres_sink_preserves_explicit_empty_password(self) -> None:
+        pool = Mock()
+        with (
+            patch.object(PostgresEventSink, "_load_pool", return_value=pool),
+            patch.object(PostgresEventSink, "_load_jsonb_adapter", return_value=Mock()),
+        ):
+            sink = PostgresEventSink(password="", async_write=False)
+
+        self.assertEqual("", sink.password)
+        self.assertFalse(sink._use_default_connection)
+        sink.close()
 
 
 if __name__ == "__main__":

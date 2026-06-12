@@ -9,6 +9,7 @@ from src.core.workspace.models import SessionContext
 
 class StopReason(StrEnum):
     COMPLETED = "completed"
+    LLM_NOT_CONFIGURED = "llm_not_configured"
     GRAPH_STEP_LIMIT = "graph_step_limit"
     TOOL_CALL_LIMIT = "tool_call_limit"
     GRAPH_ERROR = "graph_error"

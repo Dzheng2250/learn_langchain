@@ -20,6 +20,7 @@ from src.core.hooks.events import (
 )
 from src.core.memory.policy import has_explicit_memory_request, memory_extraction_reason, turn_message_chars
 from src.core.memory.store import PostgresMemoryStore
+from src.core.llm.provider import ModelConfiguration, OpenAICompatibleProvider
 from src.core.streaming.events import stream_graph_events
 from src.core.workspace.models import SessionContext
 from src.core.workspace.repository import WorkspaceRepository
@@ -51,6 +52,7 @@ class AgentTurnService:
         runtime_registry: WorkspaceRuntimeRegistry,
         memory_store_factory: Callable[[], PostgresMemoryStore],
         context_manager: AgentContextManager | None = None,
+        model_configuration: ModelConfiguration | None = None,
         memory_enabled: bool = MEMORY_ENABLED,
         lock_registry: SessionLockRegistry | None = None,
         run_limits: RunLimits | None = None,
@@ -63,6 +65,7 @@ class AgentTurnService:
         self.runtime_registry = runtime_registry
         self.memory_store_factory = memory_store_factory
         self.context_manager = context_manager or AgentContextManager()
+        self.model_configuration = model_configuration or OpenAICompatibleProvider()
         self.memory_enabled = memory_enabled
         self.lock_registry = lock_registry or SessionLockRegistry()
         self.run_limits = run_limits or RunLimits()
@@ -154,8 +157,12 @@ class AgentTurnService:
             raise ValueError("message must not be empty")
         workspace = self.workspace_repository.resolve(workspace_root)
         session, _new_session = self.workspace_repository.resolve_session(workspace, session_name)
-        runtime = self.runtime_registry.get(workspace)
         with self.lock_registry.get(session.session_id):
+            status = self.model_configuration.configuration_status()
+            if not status.configured:
+                yield from self._stream_unconfigured_turn(session, run_id, status.missing)
+                return
+            runtime = self.runtime_registry.get(workspace)
             yield from self._stream_locked_turn(session, runtime.graph, normalized, run_id)
 
     def close(self) -> None:
@@ -276,6 +283,95 @@ class AgentTurnService:
                 "event": "error",
                 "data": {
                     "type": "turn_failed",
+                    "stop_reason": StopReason.TURN_ERROR.value,
+                    "message": str(exc),
+                    "run_id": run_id,
+                },
+            }
+        finally:
+            if run_context_token is not None:
+                reset_event_context(run_context_token)
+            reset_event_context(context_token)
+            store.close()
+
+    def _stream_unconfigured_turn(
+        self,
+        session: SessionContext,
+        run_id: str,
+        missing: tuple[str, ...],
+    ) -> Iterator[dict]:
+        """Validate infrastructure without mutating conversation state."""
+        store = self.memory_store_factory()
+        context_token = set_event_context(
+            workspace_id=session.workspace.workspace_id,
+            session_id=session.session_id,
+            run_id=run_id,
+        )
+        run_context_token = None
+        try:
+            _state, turn_index = store.load_session(session)
+            run_context = AgentRunContext(
+                run_id=run_id,
+                session=session,
+                turn_index=turn_index,
+                limits=self.run_limits,
+            )
+            run_context_token = set_run_event_context(run_context)
+            emit_event(
+                "diagnostic_started",
+                "agent_service",
+                "Started infrastructure diagnostic without LLM configuration.",
+                {"session_name": session.session_name, "mode": "diagnostic"},
+            )
+            emit_event(
+                "llm_configuration_missing",
+                "agent_service",
+                "LLM configuration is missing; returning a diagnostic response.",
+                {"missing": list(missing)},
+                level="warning",
+            )
+            response = (
+                "Core 基础服务运行正常：CLI 与 daemon 已成功通信，Workspace 和 Session 已解析，"
+                "数据库可正常创建并读取会话。\n\n"
+                "当前未配置模型 API 密钥，因此本次请求不会写入对话历史、递增 turn_index，"
+                "也不会调用 LLM 或工具。请设置 `LEARN_AGENT_LLM_API_KEY`；使用 OpenAI 兼容服务时可同时设置 "
+                "`LEARN_AGENT_LLM_BASE_URL`，然后重新初始化用户配置并重启 Core。"
+            )
+            yield {"event": "token", "data": {"content": response}}
+            emit_event(
+                "diagnostic_finished",
+                "agent_service",
+                "Finished infrastructure diagnostic without LLM configuration.",
+                {
+                    "stop_reason": StopReason.LLM_NOT_CONFIGURED.value,
+                    "tool_call_count": 0,
+                    "mode": "diagnostic",
+                },
+            )
+            yield {
+                "event": "done",
+                "data": {
+                    "run_id": run_id,
+                    "status": "ok",
+                    "workspace_id": str(session.workspace.workspace_id),
+                    "session_id": str(session.session_id),
+                    "session_name": session.session_name,
+                    "stop_reason": StopReason.LLM_NOT_CONFIGURED.value,
+                    "tool_call_count": 0,
+                },
+            }
+        except Exception as exc:
+            record_error(
+                "agent_service",
+                "diagnostic_turn",
+                exc,
+                "Diagnostic turn failed.",
+                event_type="turn_failed",
+            )
+            yield {
+                "event": "error",
+                "data": {
+                    "type": "diagnostic_turn_failed",
                     "stop_reason": StopReason.TURN_ERROR.value,
                     "message": str(exc),
                     "run_id": run_id,

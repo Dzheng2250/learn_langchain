@@ -3,11 +3,15 @@ import threading
 import time
 import unittest
 from concurrent.futures import ThreadPoolExecutor
-from unittest.mock import Mock
+from pathlib import Path
+from unittest.mock import Mock, patch
 from uuid import uuid4
 
+from src.core.context.models import AgentContextState
+from src.core.llm.provider import LlmConfigurationStatus
 from src.config.settings import CORE_AGENT_WORKERS
 from src.core.agent.service import AgentTurnService, SessionLockRegistry
+from src.core.workspace.models import SessionContext, WorkspaceContext
 
 
 class SessionLockRegistryTest(unittest.TestCase):
@@ -150,6 +154,70 @@ class AgentTurnExecutorTest(unittest.IsolatedAsyncioTestCase):
 
         service.close()
         executor.shutdown()
+
+
+class DiagnosticTurnTest(unittest.TestCase):
+    def test_missing_api_key_does_not_mutate_conversation_or_create_runtime(self):
+        workspace = WorkspaceContext(uuid4(), Path(".").resolve())
+        session = SessionContext(uuid4(), "default", workspace)
+
+        class MissingConfiguration:
+            def configuration_status(self):
+                return LlmConfigurationStatus(False, ("LEARN_AGENT_LLM_API_KEY",))
+
+        class Repository:
+            def resolve(self, _root):
+                return workspace
+
+            def resolve_session(self, _workspace, _name):
+                return session, True
+
+        class Store:
+            def __init__(self):
+                self.loaded = 0
+                self.closed = False
+
+            def load_session(self, _session):
+                self.loaded += 1
+                return AgentContextState(), 0
+
+            def archive_turn_messages(self, _session, turn_index, messages):
+                raise AssertionError("diagnostic requests must not archive messages")
+
+            def save_session(self, _session, state, turn_index):
+                raise AssertionError("diagnostic requests must not update session state")
+
+            def close(self):
+                self.closed = True
+
+        store = Store()
+        runtime_registry = Mock()
+        service = AgentTurnService(
+            workspace_repository=Repository(),
+            runtime_registry=runtime_registry,
+            memory_store_factory=lambda: store,
+            model_configuration=MissingConfiguration(),
+        )
+        try:
+            with patch("src.core.agent.service.emit_event") as emit:
+                first = list(service.stream_turn(".", "default", "检查连接", run_id="run-1"))
+                second = list(service.stream_turn(".", "default", "再次检查", run_id="run-2"))
+        finally:
+            service.close()
+
+        event_types = [call.args[0] for call in emit.call_args_list]
+        self.assertEqual(["token", "done"], [event["event"] for event in first])
+        self.assertEqual(["token", "done"], [event["event"] for event in second])
+        self.assertEqual("llm_not_configured", first[-1]["data"]["stop_reason"])
+        self.assertIn("LEARN_AGENT_LLM_API_KEY", first[0]["data"]["content"])
+        self.assertEqual(first[-1]["data"]["session_id"], second[-1]["data"]["session_id"])
+        self.assertEqual(2, event_types.count("diagnostic_started"))
+        self.assertEqual(2, event_types.count("diagnostic_finished"))
+        self.assertNotIn("turn_started", event_types)
+        self.assertNotIn("turn_finished", event_types)
+        runtime_registry.get.assert_not_called()
+        self.assertEqual(2, store.loaded)
+        self.assertTrue(store.closed)
 
 
 if __name__ == "__main__":

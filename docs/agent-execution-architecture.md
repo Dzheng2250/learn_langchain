@@ -1,5 +1,8 @@
 # Agent 执行架构与扩展指南
 
+> Session 短期上下文、完整消息归档、长期记忆提取与加载机制见
+> [`memory-management.md`](memory-management.md)。
+
 ## 目标
 
 本项目使用 LangGraph 作为循环引擎，同时在循环外建立稳定的应用层边界：
@@ -244,6 +247,30 @@ file_summary
 ```
 
 当前实现为 `OpenAICompatibleProvider`，底层使用 `ChatOpenAI` 连接兼容接口。
+
+### 无 LLM 配置诊断路径
+
+`OpenAICompatibleProvider.configuration_status()` 只检查本地配置，不发起网络请求。
+`AgentTurnService` 在创建 Workspace Runtime 和 LangGraph 前检查该状态：
+
+```text
+agent.chat
+  -> 解析 Workspace / Session
+  -> 获取 Session 锁
+  -> 检查 LLM 配置
+       ├── 已配置：创建/复用 Workspace Runtime，进入 LangGraph
+       └── 未配置：执行 diagnostic turn
+             -> 读取 Session，验证数据库链路
+             -> 不归档消息，不更新 Session 对话状态
+             -> 不递增 turn_index
+             -> 流式返回 token + done(llm_not_configured)
+```
+
+诊断路径故意不创建 Graph、不调用工具、不提取长期记忆，也不触发需要 LLM 的上下文总结。重复
+调用不会消耗业务轮次，首次真实 LLM Turn 仍会加载 bootstrap memory。它用于在没有模型密钥时
+验证 CLI/Core、RPC、Workspace、Session、数据库和事件通道。诊断请求发布
+`diagnostic_started/diagnostic_finished`，不会发布会被业务 Turn 统计消费的
+`turn_started/turn_finished`。
 
 维护规则：
 

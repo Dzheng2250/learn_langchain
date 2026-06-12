@@ -2,17 +2,20 @@ import shutil
 import unittest
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
+from unittest.mock import Mock
 from uuid import uuid4
 
 from langchain_core.messages import AIMessage, HumanMessage
 from psycopg.errors import ForeignKeyViolation
 
 from src.core.context.models import AgentContextState
+from src.core.agent.service import AgentTurnService
 from src.core.database.connection import create_pool
 from src.core.hooks.events import NoopEventSink, set_event_sinks
 from src.core.hooks.models import AgentEvent
 from src.core.hooks.sinks import PostgresEventSink
 from src.core.memory.store import PostgresMemoryStore
+from src.core.llm.provider import LlmConfigurationStatus
 from src.core.workspace.repository import WorkspaceRepository
 
 
@@ -85,6 +88,54 @@ class WorkspaceMemoryStoreTest(unittest.TestCase):
         self.assertEqual(3, turn)
         self.assertEqual("workspace A summary", loaded.summary)
         self.assertEqual(2, len(message_ids))
+
+    def test_repeated_diagnostic_turns_leave_session_ready_for_bootstrap(self) -> None:
+        session_name = f"diagnostic-{uuid4().hex}"
+
+        class MissingConfiguration:
+            def configuration_status(self):
+                return LlmConfigurationStatus(False, ("LEARN_AGENT_LLM_API_KEY",))
+
+        runtime_registry = Mock()
+        service = AgentTurnService(
+            workspace_repository=WorkspaceRepository(self.pool),
+            runtime_registry=runtime_registry,
+            memory_store_factory=lambda: PostgresMemoryStore(pool=self.pool),
+            model_configuration=MissingConfiguration(),
+        )
+        try:
+            events = []
+            for _index in range(3):
+                events = list(
+                    service.stream_turn(
+                        str(self.workspace_a.root),
+                        session_name,
+                        "verify infrastructure",
+                        run_id=uuid4().hex,
+                    )
+                )
+        finally:
+            service.close()
+
+        runtime_registry.get.assert_not_called()
+        self.assertEqual("llm_not_configured", events[-1]["data"]["stop_reason"])
+        with self.pool.connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT s.turn_index, count(m.id)
+                    FROM agent_sessions s
+                    LEFT JOIN agent_messages m
+                      ON m.workspace_id = s.workspace_id AND m.session_id = s.session_id
+                    WHERE s.workspace_id = %s AND s.session_name = %s
+                    GROUP BY s.turn_index
+                    """,
+                    (self.workspace_a.workspace_id, session_name),
+                )
+                turn_index, message_count = cur.fetchone()
+
+        self.assertEqual(0, turn_index)
+        self.assertEqual(0, message_count)
 
     def test_memory_retrieval_is_workspace_isolated(self) -> None:
         memory_id = uuid4()

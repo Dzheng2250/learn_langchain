@@ -1,8 +1,10 @@
 import unittest
 from pathlib import Path
+import shutil
 from unittest.mock import patch
+from uuid import uuid4
 
-from src.core.database.migration import MigrationReport, WorkspaceMigration
+from src.core.database.migration import MigrationReport, WorkspaceMigration, create_database_backup
 from src.core.database.schema import LegacySchemaError, SchemaManager
 
 
@@ -150,6 +152,35 @@ class DatabaseMigrationTest(unittest.TestCase):
             migration.apply(ROOT, "default")
 
         self.assertEqual([RuntimeError], connection.transaction_errors)
+
+    def test_backup_supports_connection_url_without_password(self):
+        target_dir = ROOT / ".test_tmp" / f"backup-{uuid4().hex}"
+        target_dir.mkdir(parents=True)
+        self.addCleanup(shutil.rmtree, target_dir, True)
+
+        def fake_run(command, *, check, env, capture_output):
+            self.assertTrue(check)
+            self.assertTrue(capture_output)
+            self.assertNotIn("PGPASSWORD", env)
+            Path(command[-1]).write_bytes(b"backup")
+
+        with (
+            patch("src.core.database.migration.backup_dir", return_value=target_dir),
+            patch(
+                "src.core.database.migration.connection_kwargs",
+                return_value={
+                    "host": "db.example",
+                    "port": "5434",
+                    "user": "agent",
+                    "dbname": "learn_agent",
+                },
+            ),
+            patch("src.core.database.migration.shutil.which", return_value="pg_dump"),
+            patch("src.core.database.migration.subprocess.run", side_effect=fake_run),
+        ):
+            backup = create_database_backup()
+
+        self.assertEqual(b"backup", backup.read_bytes())
 
 
 if __name__ == "__main__":

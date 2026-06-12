@@ -1,5 +1,8 @@
 # Workspace 隔离与数据库迁移设计
 
+> 当前记忆数据分层、每轮加载顺序、提取策略与一致性边界见
+> [`memory-management.md`](memory-management.md)。
+
 ## 设计目标
 
 系统采用“用户级后台服务 + Workspace 级业务隔离”：
