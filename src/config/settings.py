@@ -4,11 +4,13 @@ API keys and provider endpoints stay in .env. This file keeps ordinary
 development settings that are safe to commit.
 """
 
+import os
+
 DEBUG_AGENT = False
 MAX_GRAPH_STEPS = 20
 MAX_TOOL_CALLS_PER_TURN = 12
 BASH_PATH = "bash"
-MODEL = "deepseek-v4-flash"
+MODEL = os.getenv("LEARN_AGENT_MODEL", "deepseek-v4-flash")
 
 DOCKER_IMAGE = "python:3.12-slim"
 DOCKER_TIMEOUT_SECONDS = 10
@@ -44,12 +46,12 @@ SUMMARY_TRIGGER_CHAR_LIMIT = 24000
 SESSION_SUMMARY_MAX_CHARS = 4000
 SUMMARY_SOURCE_CHAR_LIMIT = 12000
 
-MEMORY_ENABLED = True
-MEMORY_DB_HOST = "localhost"
-MEMORY_DB_PORT = 5432
-MEMORY_DB_NAME = "learn_agent"
-MEMORY_DB_USER = "postgres"
-MEMORY_DB_PASSWORD = "postgres"
+MEMORY_ENABLED = os.getenv("LEARN_AGENT_MEMORY_ENABLED", "true").lower() == "true"
+MEMORY_DB_HOST = os.getenv("LEARN_AGENT_DB_HOST", "localhost")
+MEMORY_DB_PORT = int(os.getenv("LEARN_AGENT_DB_PORT", "5432"))
+MEMORY_DB_NAME = os.getenv("LEARN_AGENT_DB_NAME", "learn_agent")
+MEMORY_DB_USER = os.getenv("LEARN_AGENT_DB_USER", "postgres")
+MEMORY_DB_PASSWORD = os.getenv("LEARN_AGENT_DB_PASSWORD", "postgres")
 DEFAULT_SESSION_ID = "default"
 MEMORY_RETRIEVAL_LIMIT = 6
 MEMORY_BOOTSTRAP_LIMIT = 4
@@ -94,13 +96,15 @@ CORE_DAEMON_STOP_TIMEOUT_SECONDS = 15
 CORE_AGENT_WORKERS = 4
 CORE_RUNTIME_DIR = ""
 PG_DUMP_PATH = ""
-POSTGRES_DOCKER_CONTAINER = "pgvector2"
+POSTGRES_DOCKER_CONTAINER = os.getenv("LEARN_AGENT_DB_CONTAINER", "learn_agent_pg")
 
+# Reference docker-compose command for starting the database.
+# Prefer `docker compose up -d` with the project's docker-compose.yml instead.
 START_DB = (
-    r"docker run -d -p 5432:5432 "
-    r"-e POSTGRES_USER=postgres "
-    r"-e POSTGRES_PASSWORD=postgres "
-    r"-e POSTGRES_DB=learn_agent "
-    r"-v E:\docker\pgvector2\data:/var/lib/postgresql/data "
-    r"--name pgvector2 pgvector/pgvector:pg17"
+    "docker run -d -p 5432:5432 "
+    "-e POSTGRES_USER=postgres "
+    "-e POSTGRES_PASSWORD=postgres "
+    "-e POSTGRES_DB=learn_agent "
+    "-v learn_agent_pgdata:/var/lib/postgresql/data "
+    "--name learn_agent_pg pgvector/pgvector:pg17"
 )
