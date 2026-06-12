@@ -31,7 +31,7 @@
 - Python 3.11 或更高版本。
 - Docker Engine 或 Docker Desktop。
 - Docker Compose v2，即 `docker compose` 命令。
-- 可用的 OpenAI 兼容模型 API。
+- OpenAI 兼容模型 API。仅验证基础设施时可以暂不配置。
 
 ### 创建配置
 
@@ -41,8 +41,9 @@
 python -c "from shutil import copyfile; copyfile('.env.example', '.env')"
 ```
 
-修改模型配置和数据库密码。`.env.example` 中的数据库默认值与 `compose.yaml` 一致，因此本地
-开发可以直接启动。
+需要真实 Agent 回答时配置 `LEARN_AGENT_LLM_API_KEY`，并按服务需要设置
+`LEARN_AGENT_LLM_BASE_URL`。仅验证基础设施时可以保持两者为空。`.env.example` 中的数据库
+默认值与 `compose.yaml` 一致，因此本地开发可以直接启动。
 
 项目根目录的 `.env` 会被 Docker Compose 自动读取，用于创建数据库容器；执行
 `init-user-config` 后，同一份配置会被复制到用户级目录，供任意工作目录启动的 CLI 与 Core
@@ -80,6 +81,38 @@ learn-agent status
 ```
 
 `init-user-config` 将 `.env` 复制到用户级配置目录。之后可从任意工作目录管理同一个 daemon。
+
+### 无 LLM 配置诊断模式
+
+未设置 `LEARN_AGENT_LLM_API_KEY` 时，`learn-agent chat` 不会尝试构造或调用模型。Core 会：
+
+1. 接收并验证 JSON-RPC 请求。
+2. 解析或创建当前 Workspace 与 Session。
+3. 加载 Session 上下文并写入本轮用户消息和统一诊断回答。
+4. 发送流式 token 与完成事件。
+5. 返回 `stop_reason=llm_not_configured`。
+
+这条路径用于确认 CLI/Core 通信、daemon、数据库 Schema、Workspace 隔离、Session 和事件链路
+正常工作。它不验证模型网络连接、工具调用、长期记忆提取或上下文总结。
+
+配置模型后重新同步用户配置并重启 Core：
+
+```shell
+learn-agent stop
+learn-agent-core init-user-config --from-env .env --force
+learn-agent start
+```
+
+通用变量：
+
+```dotenv
+LEARN_AGENT_LLM_API_KEY=your-api-key
+LEARN_AGENT_LLM_BASE_URL=https://your-openai-compatible-endpoint/v1
+LEARN_AGENT_MODEL=your-model
+```
+
+旧 `ALIYUN_API_KEY` 与 `ALIYUN_BASE_URL` 仅作为兼容回退，已弃用。若新旧变量同时存在，通用变量
+优先。
 
 ## 数据库配置
 

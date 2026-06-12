@@ -102,6 +102,18 @@ class AgentExecutionArchitectureTest(unittest.TestCase):
         )
         model.bind_tools.assert_called_once_with(["tool"])
 
+    def test_provider_reports_missing_api_key_without_network_request(self):
+        status = OpenAICompatibleProvider(api_key="", base_url="https://example.test").configuration_status()
+
+        self.assertFalse(status.configured)
+        self.assertEqual(("LEARN_AGENT_LLM_API_KEY",), status.missing)
+
+    def test_provider_reports_configured_with_generic_api_key(self):
+        status = OpenAICompatibleProvider(api_key="configured").configuration_status()
+
+        self.assertTrue(status.configured)
+        self.assertEqual((), status.missing)
+
     def test_tool_registry_derives_audience_specific_views(self):
         registry = ToolRegistry()
 

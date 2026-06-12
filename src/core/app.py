@@ -73,6 +73,7 @@ class CoreApp:
                     model_provider=model_provider,
                 ),
                 context_manager=AgentContextManager(model_provider=model_provider),
+                model_configuration=model_provider,
                 run_limits=run_limits,
             )
         else:

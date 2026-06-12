@@ -47,6 +47,70 @@ class EnvironmentValueTest(unittest.TestCase):
     def test_cli_entry_module_loads_user_env_before_settings(self):
         self._assert_entry_loads_user_env("src.cli.main", "CORE_PORT", "LEARN_AGENT_CORE_PORT", "19876")
 
+    def test_generic_llm_variables_take_precedence_over_legacy_aliases(self):
+        root = Path(__file__).resolve().parents[1]
+        process_env = dict(os.environ)
+        process_env.update(
+            {
+                "LEARN_AGENT_LLM_API_KEY": "generic-key",
+                "LEARN_AGENT_LLM_BASE_URL": "https://generic.example/v1",
+                "ALIYUN_API_KEY": "legacy-key",
+                "ALIYUN_BASE_URL": "https://legacy.example/v1",
+            }
+        )
+        result = subprocess.run(
+            [
+                sys.executable,
+                "-c",
+                (
+                    "from src.config.settings import LLM_API_KEY, LLM_BASE_URL; "
+                    "print(LLM_API_KEY); print(LLM_BASE_URL)"
+                ),
+            ],
+            cwd=root,
+            env=process_env,
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+
+        self.assertEqual(
+            ["generic-key", "https://generic.example/v1"],
+            result.stdout.strip().splitlines(),
+        )
+
+    def test_legacy_llm_variables_remain_compatible(self):
+        root = Path(__file__).resolve().parents[1]
+        process_env = dict(os.environ)
+        process_env.pop("LEARN_AGENT_LLM_API_KEY", None)
+        process_env.pop("LEARN_AGENT_LLM_BASE_URL", None)
+        process_env.update(
+            {
+                "ALIYUN_API_KEY": "legacy-key",
+                "ALIYUN_BASE_URL": "https://legacy.example/v1",
+            }
+        )
+        result = subprocess.run(
+            [
+                sys.executable,
+                "-c",
+                (
+                    "from src.config.settings import LLM_API_KEY, LLM_BASE_URL; "
+                    "print(LLM_API_KEY); print(LLM_BASE_URL)"
+                ),
+            ],
+            cwd=root,
+            env=process_env,
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+
+        self.assertEqual(
+            ["legacy-key", "https://legacy.example/v1"],
+            result.stdout.strip().splitlines(),
+        )
+
     def _assert_entry_loads_user_env(
         self,
         module: str,

@@ -118,6 +118,27 @@ class AgentContextManager:
 
         return AgentContextState(summary=summary, recent_messages=recent_messages)
 
+    def update_without_llm(
+        self,
+        state: AgentContextState,
+        turn_messages: list,
+        *,
+        reason: str,
+    ) -> AgentContextState:
+        """Persist a bounded fallback turn without invoking context summarization."""
+        recent_messages = [*state.recent_messages, *turn_messages][-self.recent_message_limit:]
+        emit_event(
+            "context_summary_skipped",
+            "agent_context",
+            "Context summary skipped because the LLM is not configured.",
+            {
+                "reason": reason,
+                "message_count": len(recent_messages),
+                "recent_message_limit": self.recent_message_limit,
+            },
+        )
+        return AgentContextState(summary=state.summary, recent_messages=recent_messages)
+
     def _should_summarize(self, messages: list) -> bool:
         """Return whether message volume is large enough to compress."""
         if len(messages) > self.summary_trigger_message_limit:
