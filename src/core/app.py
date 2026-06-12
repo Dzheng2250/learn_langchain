@@ -24,6 +24,8 @@ from src.core.workspace.runtime import WorkspaceRuntimeFactory, WorkspaceRuntime
 
 
 class CoreTransport(Protocol):
+    """Transport lifecycle required by the Core composition root."""
+
     async def start(self) -> int:
         """Start accepting requests and return the bound port."""
 
@@ -35,6 +37,7 @@ TransportFactory = Callable[[CoreConfig, RpcRouter], CoreTransport]
 
 
 def create_socket_transport(config: CoreConfig, router: RpcRouter) -> SocketServer:
+    """Create the default TCP/NDJSON transport from validated Core config."""
     return SocketServer(
         config.host,
         config.port,
@@ -60,6 +63,9 @@ class CoreApp:
         self._pool = None
         self._event_publisher = event_publisher
         if agent_service is None:
+            # CoreApp is the process-level composition root. These objects are
+            # intentionally shared across requests; workspace-specific graphs
+            # and tools are created lazily by WorkspaceRuntimeRegistry.
             self._pool = create_pool()
             model_provider = OpenAICompatibleProvider()
             run_limits = RunLimits()
@@ -83,6 +89,8 @@ class CoreApp:
         self.agent_handlers = AgentHandlers(self.agent_service)
         self.core_handlers.register(self.router)
         self.agent_handlers.register(self.router)
+        # Transport depends only on the validated router. It never imports or
+        # invokes Agent internals directly.
         self.transport = transport_factory(config, self.router)
         self._started = False
         self._closed = False

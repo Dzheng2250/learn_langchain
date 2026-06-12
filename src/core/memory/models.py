@@ -1,3 +1,5 @@
+"""Typed long-term memory values returned by retrieval strategies."""
+
 from dataclasses import dataclass, field
 
 

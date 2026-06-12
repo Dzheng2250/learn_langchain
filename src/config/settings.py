@@ -8,13 +8,21 @@ from src.config.env import env_bool, env_float, env_int, env_str
 
 
 DEBUG_AGENT = env_bool("LEARN_AGENT_DEBUG", False)
+
+# Per-Turn execution limits. Graph steps count LangGraph node transitions;
+# tool calls count individual calls requested by the parent Agent.
 MAX_GRAPH_STEPS = 20
 MAX_TOOL_CALLS_PER_TURN = 12
 BASH_PATH = "bash"
+
+# Shared OpenAI-compatible model configuration. The generic LEARN_AGENT names
+# take precedence; ALIYUN aliases remain only for backward compatibility.
 MODEL = env_str("LEARN_AGENT_MODEL", "deepseek-v4-flash")
 LLM_API_KEY = env_str("LEARN_AGENT_LLM_API_KEY", env_str("ALIYUN_API_KEY", ""))
 LLM_BASE_URL = env_str("LEARN_AGENT_LLM_BASE_URL", env_str("ALIYUN_BASE_URL", ""))
 
+# Container command sandbox limits. The Workspace is copied into a temporary
+# directory and mounted read-only; command output is truncated before LLM input.
 DOCKER_IMAGE = "python:3.12-slim"
 DOCKER_TIMEOUT_SECONDS = 10
 DOCKER_MEMORY = "256m"
@@ -39,17 +47,22 @@ SUBAGENT_MAX_STEPS = 32
 SUBAGENT_CONTEXT_MESSAGE_LIMIT = 8
 SUBAGENT_RESULT_LIMIT = 6000
 
+# Local skills are discovered only under the active Workspace.
 SKILLS_DIR = "skills"
 SKILL_FILE_NAME = "SKILL.md"
 SKILL_READ_OUTPUT_LIMIT = 8000
 
 RECENT_MESSAGE_LIMIT = 12
+# Compression starts when either message count or character count crosses its
+# trigger; old messages are summarized while recent messages remain verbatim.
 SUMMARY_TRIGGER_MESSAGE_LIMIT = 40
 SUMMARY_TRIGGER_CHAR_LIMIT = 24000
 SESSION_SUMMARY_MAX_CHARS = 4000
 SUMMARY_SOURCE_CHAR_LIMIT = 12000
 
 MEMORY_ENABLED = True
+# LEARN_AGENT_DATABASE_URL overrides the split host/port/name/user/password
+# settings. All Session, memory, and observation data share this PostgreSQL.
 MEMORY_DB_URL = env_str("LEARN_AGENT_DATABASE_URL", "")
 MEMORY_DB_HOST = env_str("LEARN_AGENT_DB_HOST", "127.0.0.1")
 MEMORY_DB_PORT = env_int("LEARN_AGENT_DB_PORT", 5432)
@@ -58,9 +71,12 @@ MEMORY_DB_USER = env_str("LEARN_AGENT_DB_USER", "postgres")
 MEMORY_DB_PASSWORD = env_str("LEARN_AGENT_DB_PASSWORD", "postgres")
 DEFAULT_SESSION_ID = "default"
 MEMORY_RETRIEVAL_LIMIT = 6
+# Bootstrap memories are injected only on the first real Turn of a Session.
 MEMORY_BOOTSTRAP_LIMIT = 4
 MEMORY_CONTEXT_CHAR_LIMIT = 6000
 MEMORY_EXTRACTION_ENABLED = True
+# Non-explicit extraction may run after the Turn on a dedicated worker. An
+# explicit "remember" request remains synchronous so its outcome is known.
 MEMORY_EXTRACTION_ASYNC = True
 MEMORY_EXTRACTION_INTERVAL_TURNS = 5
 MEMORY_EXTRACTION_MIN_CHARS = 1200
@@ -80,23 +96,28 @@ MEMORY_MIN_IMPORTANCE = 3
 MEMORY_EXTRACT_SOURCE_CHAR_LIMIT = 12000
 
 AGENT_EVENTS_ENABLED = True
+# Event sinks observe business behavior and must never determine its result.
 AGENT_EVENTS_POSTGRES_ENABLED = True
 AGENT_EVENTS_CONSOLE_ENABLED = False
 AGENT_EVENTS_FILE_ENABLED = False
 AGENT_EVENTS_FILE_PATH = "logs/agent_events.jsonl"
 AGENT_EVENTS_PAYLOAD_PREVIEW_LIMIT = 1000
 AGENT_EVENTS_ASYNC_WRITE = True
+# PostgreSQL event writes are queued and flushed by size or elapsed interval.
 AGENT_EVENTS_BATCH_SIZE = 50
 AGENT_EVENTS_FLUSH_INTERVAL_SECONDS = 1.0
 AGENT_EVENTS_QUEUE_MAX_SIZE = 1000
 
 CORE_HOST = env_str("LEARN_AGENT_CORE_HOST", "127.0.0.1")
 CORE_PORT = env_int("LEARN_AGENT_CORE_PORT", 18765)
+# Maximum size of one JSON-RPC NDJSON frame, not the complete conversation.
 CORE_MAX_MESSAGE_BYTES = 1_048_576
 CORE_SHUTDOWN_TIMEOUT_SECONDS = env_float("LEARN_AGENT_CORE_SHUTDOWN_TIMEOUT_SECONDS", 10)
 CORE_CONNECT_TIMEOUT_SECONDS = env_float("LEARN_AGENT_CORE_CONNECT_TIMEOUT_SECONDS", 3)
 CORE_DAEMON_STARTUP_TIMEOUT_SECONDS = env_float("LEARN_AGENT_DAEMON_STARTUP_TIMEOUT_SECONDS", 15)
 CORE_DAEMON_STOP_TIMEOUT_SECONDS = env_float("LEARN_AGENT_DAEMON_STOP_TIMEOUT_SECONDS", 15)
+# Maximum number of different Session Turns executing concurrently. The same
+# Session remains serialized by its UUID lock regardless of this value.
 CORE_AGENT_WORKERS = env_int("LEARN_AGENT_CORE_AGENT_WORKERS", 4)
 CORE_RUNTIME_DIR = ""
 PG_DUMP_PATH = env_str("LEARN_AGENT_PG_DUMP_PATH", "")

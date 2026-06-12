@@ -8,10 +8,13 @@ from src.core.workspace.resolver import canonical_path_key, canonicalize_workspa
 
 
 class WorkspaceRepository:
+    """Atomically resolve durable Workspace and Session identities."""
+
     def __init__(self, pool) -> None:
         self.pool = pool
 
     def resolve(self, path: str) -> WorkspaceContext:
+        """Canonicalize and atomically register or retrieve one Workspace."""
         root = canonicalize_workspace(path)
         with self.pool.connection() as conn:
             with conn.cursor() as cur:
@@ -24,6 +27,7 @@ class WorkspaceRepository:
         return WorkspaceContext(workspace_id=UUID(str(workspace_id)), root=root)
 
     def resolve_session(self, workspace: WorkspaceContext, session_name: str) -> tuple[SessionContext, bool]:
+        """Resolve a Workspace-local Session name and report zero-turn state."""
         normalized = session_name.strip()
         if not normalized:
             raise ValueError("session_name must not be empty")

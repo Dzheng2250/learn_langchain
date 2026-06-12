@@ -1,3 +1,5 @@
+"""Adapt LangGraph streams into stable request-level Agent events."""
+
 from langchain_core.messages import AIMessageChunk
 from langchain_core.messages import HumanMessage
 from langgraph.errors import GraphRecursionError
@@ -77,6 +79,8 @@ def stream_graph_events(
     limits = run_context.limits if run_context else RunLimits()
     inputs = {"messages": input_messages}
     final_state = None
+    # Values snapshots contain the whole message state. Track the previous
+    # length so each completed message emits a step event exactly once.
     seen_message_count = len(inputs["messages"])
     tool_call_count = 0
 

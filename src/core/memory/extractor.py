@@ -1,3 +1,5 @@
+"""LLM-backed extraction of durable memory candidates from completed Turns."""
+
 import json
 import re
 
@@ -87,12 +89,14 @@ class MemoryCandidateExtractor:
         return any(term in lower for term in sensitive_terms)
 
     def _strip_json_fence(self, content: str) -> str:
+        """Remove an optional Markdown JSON fence before parsing model output."""
         if content.startswith("```"):
             content = re.sub(r"^```(?:json)?\s*", "", content)
             content = re.sub(r"\s*```$", "", content)
         return content.strip()
 
     def _create_llm(self):
+        """Create the deterministic model used only for memory extraction."""
         return self.model_provider.create_chat_model(
             LlmPurpose.MEMORY_EXTRACTION,
             temperature=0,

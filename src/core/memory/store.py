@@ -51,9 +51,11 @@ class PostgresMemoryStore:
         self._Jsonb = Jsonb
 
     def initialize(self) -> None:
+        """Create or upgrade the database schema required by the memory facade."""
         SchemaManager(self._pool).initialize()
 
     def load_session(self, session: SessionContext) -> tuple[AgentContextState, int]:
+        """Load compact context and the last completed Turn index."""
         row = self.sessions.load(session)
         if not row:
             raise RuntimeError("Resolved session disappeared before it could be loaded.")
@@ -61,6 +63,7 @@ class PostgresMemoryStore:
         return AgentContextState(summary=summary or "", recent_messages=self._messages_from_json(recent)), turn_index
 
     def save_session(self, session: SessionContext, state: AgentContextState, turn_index: int) -> None:
+        """Persist compact context after a successfully completed Turn."""
         self.sessions.update(
             session,
             state.summary,
@@ -69,6 +72,7 @@ class PostgresMemoryStore:
         )
 
     def archive_turn_messages(self, session: SessionContext, turn_index: int, messages: list) -> list[int]:
+        """Append full Turn messages and return IDs for memory-source tracking."""
         rows = [
             (
                 self._message_role(message),
@@ -81,6 +85,7 @@ class PostgresMemoryStore:
         return self.messages.append(session, turn_index, rows)
 
     def retrieve_relevant(self, workspace_id: UUID, query: str, limit: int | None = None) -> list[RetrievedMemory]:
+        """Retrieve query-related memories without crossing Workspace boundaries."""
         normalized = self._normalize_search_query(query)
         if not normalized:
             return []
@@ -92,12 +97,14 @@ class PostgresMemoryStore:
         return memories
 
     def retrieve_bootstrap(self, workspace_id: UUID, limit: int = MEMORY_BOOTSTRAP_LIMIT) -> list[RetrievedMemory]:
+        """Retrieve important recent memories for the first real Session Turn."""
         rows = self.memories.recent_important(workspace_id, limit)
         memories = [self._memory_from_row(row) for row in rows]
         self._record_retrieval(workspace_id, "", memories, "bootstrap")
         return memories
 
     def retrieve_for_turn(self, workspace_id: UUID, query: str, *, new_session: bool) -> list[RetrievedMemory]:
+        """Return bounded, deduplicated memory input for one workspace turn."""
         combined = []
         if new_session:
             combined.extend(self.retrieve_bootstrap(workspace_id))
@@ -122,6 +129,7 @@ class PostgresMemoryStore:
         messages: list,
         source_message_ids: list[int],
     ) -> list[str]:
+        """Extract, deduplicate, persist, and source-link durable memories."""
         if not MEMORY_EXTRACTION_ENABLED:
             return []
         source = self.extractor.format_messages(messages)
@@ -177,6 +185,8 @@ class PostgresMemoryStore:
                                 confidence,
                             )
                             action = "created"
+                        # Sources describe the deterministic message set supplied
+                        # to this extraction run, not LLM-selected evidence.
                         self.memories.add_sources(
                             cur,
                             session.workspace.workspace_id,
@@ -209,26 +219,32 @@ class PostgresMemoryStore:
         return saved
 
     def build_memory_message(self, memories: list[RetrievedMemory]) -> SystemMessage | None:
+        """Convert retrieved memories into one synthetic input-only message."""
         if not memories:
             return None
         return SystemMessage(content=f"{MEMORY_MESSAGE_PREFIX}\n{self.format_memories(memories)}")
 
     def format_memories(self, memories: list[RetrievedMemory]) -> str:
+        """Format memories for model input while retaining kind and importance."""
         return "\n".join(
             f"- [{memory.kind} | importance={memory.importance}] {memory.content}" for memory in memories
         ) or "(none)"
 
     def close(self) -> None:
+        """Close only a connection pool owned by this facade instance."""
         if self._owns_pool:
             self._pool.close()
 
     def _connect(self):
+        """Return a pooled connection context manager."""
         return self._pool.connection()
 
     def _json_param(self, value):
+        """Adapt Python values to JSONB without escaping non-ASCII text."""
         return self._Jsonb(value, dumps=lambda obj: json.dumps(obj, ensure_ascii=False, default=str))
 
     def _messages_from_json(self, value) -> list:
+        """Restore LangChain messages from stored JSONB or JSON text."""
         if not value:
             return []
         if isinstance(value, str):
@@ -236,6 +252,7 @@ class PostgresMemoryStore:
         return messages_from_dict(value)
 
     def _message_role(self, message) -> str:
+        """Map LangChain message classes to stable database role names."""
         return {
             "HumanMessage": "user",
             "AIMessage": "assistant",
@@ -244,10 +261,12 @@ class PostgresMemoryStore:
         }.get(message.__class__.__name__, "unknown")
 
     def _message_content(self, message) -> str:
+        """Return searchable text while preserving structured content as JSON."""
         content = getattr(message, "content", "")
         return content if isinstance(content, str) else json.dumps(content, ensure_ascii=False, default=str)
 
     def _memory_from_row(self, row) -> RetrievedMemory:
+        """Convert one repository row into a typed retrieved memory."""
         memory_id, kind, content, tags, importance, confidence = row
         if isinstance(tags, str):
             tags = json.loads(tags)
@@ -261,9 +280,11 @@ class PostgresMemoryStore:
         )
 
     def _normalize_search_query(self, query: str) -> str:
+        """Build a bounded simple-text query for PostgreSQL full-text search."""
         return " ".join(re.findall(r"[\w\u4e00-\u9fff]+", query)[:20])
 
     def _is_memory_recall_query(self, query: str) -> bool:
+        """Detect explicit recall wording that enables important-memory fallback."""
         lowered = query.casefold()
         return any(term in lowered for term in ("记得", "记忆", "之前", "以前", "remember", "memory"))
 
@@ -274,6 +295,7 @@ class PostgresMemoryStore:
         memories: list[RetrievedMemory],
         retrieval_type: str,
     ) -> None:
+        """Emit bounded observation metadata for one retrieval operation."""
         emit_event(
             "memory_retrieved",
             "agent_memory",

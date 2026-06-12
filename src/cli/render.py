@@ -4,6 +4,7 @@ from src.cli.errors import CliError
 
 
 def render_agent_event(params: dict) -> None:
+    """Render one ``agent.event`` notification without changing business state."""
     event = params.get("event")
     data = params.get("data", {})
     if event == "token":

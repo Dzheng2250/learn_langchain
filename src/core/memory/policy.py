@@ -1,3 +1,5 @@
+"""Deterministic policy for deciding when memory extraction is worthwhile."""
+
 from src.config.settings import (
     MEMORY_EXTRACTION_ENABLED,
     MEMORY_EXTRACTION_HINT_KEYWORDS,

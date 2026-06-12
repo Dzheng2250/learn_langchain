@@ -44,6 +44,7 @@ class CoreClient:
         params: dict | None = None,
         on_event: Callable[[dict], None] | None = None,
     ):
+        """Send one JSON-RPC request and consume its notifications synchronously."""
         request_id = uuid4().hex
         try:
             auth_token = read_token(self.runtime_dir)
@@ -65,6 +66,8 @@ class CoreClient:
             "params": {"auth_token": auth_token, **(params or {})},
         }
         try:
+            # The CLI deliberately opens one connection per request. Notifications
+            # and the final response share that connection and request_id.
             with socket.create_connection((self.host, self.port), timeout=self.timeout) as sock:
                 sock.settimeout(None)
                 stream = sock.makefile("rwb")
@@ -81,6 +84,8 @@ class CoreClient:
                     if not isinstance(raw, dict):
                         raise CoreProtocolError("Core returned a non-object JSON-RPC message.")
                     if raw.get("method") == "agent.event":
+                        # run_id identifies the Agent turn; request_id ensures
+                        # this client renders only notifications for this RPC.
                         notification = AgentEventNotification.model_validate(raw)
                         if notification.params.get("request_id") == request_id and on_event is not None:
                             try:

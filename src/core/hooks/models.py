@@ -1,3 +1,5 @@
+"""Typed observation events, ambient identity, and sink contracts."""
+
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Protocol

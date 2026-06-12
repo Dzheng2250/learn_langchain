@@ -4,10 +4,12 @@ import os
 
 
 def env_str(name: str, default: str) -> str:
+    """Read a string environment variable or return ``default``."""
     return os.getenv(name, default)
 
 
 def env_int(name: str, default: int) -> int:
+    """Read an integer environment variable with a descriptive parse error."""
     raw = os.getenv(name)
     if raw is None:
         return default
@@ -18,6 +20,7 @@ def env_int(name: str, default: int) -> int:
 
 
 def env_float(name: str, default: float) -> float:
+    """Read a floating-point environment variable with validation."""
     raw = os.getenv(name)
     if raw is None:
         return default
@@ -28,6 +31,7 @@ def env_float(name: str, default: float) -> float:
 
 
 def env_bool(name: str, default: bool) -> bool:
+    """Read common boolean spellings such as true/false, yes/no, and 1/0."""
     raw = os.getenv(name)
     if raw is None:
         return default

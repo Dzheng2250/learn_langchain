@@ -17,16 +17,20 @@ from src.core.workspace.models import SessionContext
 
 
 class SessionRepository:
+    """Persist compact Session context and completed Turn index."""
+
     def __init__(self, pool) -> None:
         self.pool = pool
 
     def load(self, session: SessionContext):
+        """Load summary, recent messages, and completed Turn index."""
         with self.pool.connection() as conn:
             with conn.cursor() as cur:
                 cur.execute(SELECT_SESSION_CONTEXT, (session.workspace.workspace_id, session.session_id))
                 return cur.fetchone()
 
     def update(self, session: SessionContext, summary: str, recent_messages, turn_index: int) -> None:
+        """Replace compact Session state after a successfully completed Turn."""
         with self.pool.connection() as conn:
             with conn.cursor() as cur:
                 cur.execute(
@@ -45,10 +49,13 @@ class SessionRepository:
 
 
 class MessageRepository:
+    """Append immutable full-fidelity messages for completed Turns."""
+
     def __init__(self, pool) -> None:
         self.pool = pool
 
     def append(self, session: SessionContext, turn_index: int, rows: list[tuple]) -> list[int]:
+        """Insert ordered message rows and return their generated IDs."""
         ids = []
         with self.pool.connection() as conn:
             with conn.cursor() as cur:
@@ -71,10 +78,13 @@ class MessageRepository:
 
 
 class MemoryRepository:
+    """Execute Workspace-scoped long-term memory queries and mutations."""
+
     def __init__(self, pool) -> None:
         self.pool = pool
 
     def relevant(self, workspace_id: UUID, normalized: str, raw_query: str, limit: int):
+        """Return keyword-ranked memories from exactly one Workspace."""
         with self.pool.connection() as conn:
             with conn.cursor() as cur:
                 cur.execute(
@@ -84,28 +94,33 @@ class MemoryRepository:
                 return cur.fetchall()
 
     def recent_important(self, workspace_id: UUID, limit: int):
+        """Return recent high-importance memories for bootstrap injection."""
         with self.pool.connection() as conn:
             with conn.cursor() as cur:
                 cur.execute(SELECT_RECENT_IMPORTANT_MEMORIES, (workspace_id, limit))
                 return cur.fetchall()
 
     def find_similar(self, cur, workspace_id: UUID, kind: str, content: str) -> str | None:
+        """Find an exact or prefix-similar memory inside the transaction."""
         cur.execute(SELECT_SIMILAR_MEMORY_ID, (workspace_id, kind, content, content[:160]))
         row = cur.fetchone()
         return row[0] if row else None
 
     def update(self, cur, workspace_id: UUID, memory_id: str, content: str, tags, importance: int, confidence: float):
+        """Update an existing memory while retaining strongest metadata."""
         cur.execute(
             UPDATE_AGENT_MEMORY,
             (content, tags, importance, confidence, workspace_id, memory_id),
         )
 
     def insert(self, cur, memory_id: str, workspace_id: UUID, kind: str, content: str, tags, importance: int, confidence: float):
+        """Insert one new Workspace-owned long-term memory."""
         cur.execute(
             INSERT_AGENT_MEMORY,
             (memory_id, workspace_id, kind, content, tags, importance, confidence),
         )
 
     def add_sources(self, cur, workspace_id: UUID, memory_id: str, message_ids: list[int]) -> None:
+        """Associate a memory with the deterministic extraction message set."""
         for message_id in message_ids:
             cur.execute(INSERT_MEMORY_SOURCE, (workspace_id, memory_id, message_id))

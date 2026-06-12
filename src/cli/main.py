@@ -15,6 +15,7 @@ from src.cli.render import render_cli_error
 
 
 def main(argv: list[str] | None = None) -> int:
+    """Parse CLI arguments, dispatch one command, and normalize user errors."""
     try:
         config = CliConfig.load()
     except ValueError as exc:

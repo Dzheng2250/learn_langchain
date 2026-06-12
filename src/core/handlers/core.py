@@ -22,10 +22,12 @@ class CoreHandlers:
         self.started_at = time.monotonic()
 
     def register(self, router: RpcRouter) -> None:
+        """Expose health and graceful-shutdown lifecycle methods."""
         router.register("core.ping", PingParams, self.ping)
         router.register("core.shutdown", ShutdownParams, self.shutdown)
 
     async def ping(self, _params: PingParams, _context: RequestContext) -> dict:
+        """Return daemon version and uptime without touching Agent services."""
         return {
             "status": "ok",
             "server_version": self.server_version,
@@ -33,6 +35,7 @@ class CoreHandlers:
         }
 
     async def shutdown(self, _params: ShutdownParams, context: RequestContext) -> dict:
+        """Request graceful app shutdown after the final RPC response."""
         context.request_close()
         asyncio.get_running_loop().call_soon(self.shutdown_event.set)
         return {"status": "shutting_down"}

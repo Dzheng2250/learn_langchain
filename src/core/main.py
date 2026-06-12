@@ -24,6 +24,7 @@ from src.ipc.auth import create_token, daemon_pid_is_running, read_token, token_
 
 
 async def serve(host: str = CORE_HOST, port: int = CORE_PORT) -> None:
+    """Compose and run one Core daemon until a shutdown RPC is received."""
     config = CoreConfig.load(host=host, port=port)
     token = (
         read_token(config.runtime_dir)
@@ -35,6 +36,7 @@ async def serve(host: str = CORE_HOST, port: int = CORE_PORT) -> None:
 
 
 def main(argv: list[str] | None = None) -> int:
+    """Dispatch Core-only lifecycle, configuration, and migration commands."""
     parser = argparse.ArgumentParser(prog="learn-agent-core")
     subparsers = parser.add_subparsers(dest="command", required=True)
     serve_parser = subparsers.add_parser("serve", help="run the Core daemon")

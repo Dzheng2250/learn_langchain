@@ -28,11 +28,14 @@ from src.core.workspace.runtime import WorkspaceRuntimeRegistry
 
 
 class SessionLockRegistry:
+    """Create and retain one reentrant consistency lock per Session UUID."""
+
     def __init__(self) -> None:
         self._guard = Lock()
         self._locks: dict[UUID, RLock] = {}
 
     def get(self, session_id: UUID) -> RLock:
+        """Return the stable lock that serializes the given Session."""
         with self._guard:
             return self._locks.setdefault(session_id, RLock())
 
@@ -78,6 +81,7 @@ class AgentTurnService:
         self._memory_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="agent-memory")
 
     def initialize(self) -> None:
+        """Initialize durable schema dependencies before accepting requests."""
         store = self.memory_store_factory()
         try:
             store.initialize()
@@ -93,7 +97,14 @@ class AgentTurnService:
         *,
         run_id: str | None = None,
     ) -> dict:
+        """Schedule one synchronous turn on the bounded Agent executor.
+
+        ``on_event`` is invoked from the worker thread. RPC adapters must marshal
+        socket writes back to their owning event loop.
+        """
         loop = asyncio.get_running_loop()
+        # The semaphore bounds submitted and running turns together, preventing
+        # an unbounded queue from accumulating in ThreadPoolExecutor.
         await self._turn_slots.acquire()
         try:
             worker_future = self._turn_executor.submit(
@@ -111,6 +122,7 @@ class AgentTurnService:
             raise
 
         def release_slot(_future) -> None:
+            """Release concurrency capacity after the worker actually finishes."""
             try:
                 loop.call_soon_threadsafe(self._turn_slots.release)
             except RuntimeError:
@@ -129,6 +141,7 @@ class AgentTurnService:
         *,
         run_id: str | None = None,
     ) -> dict:
+        """Consume one synchronous event stream and aggregate its final result."""
         result = {"status": "error", "run_id": run_id or uuid4().hex}
         for item in self.stream_turn(workspace_root, session_name, user_input, run_id=result["run_id"]):
             if on_event:
@@ -152,11 +165,14 @@ class AgentTurnService:
         *,
         run_id: str,
     ) -> Iterator[dict]:
+        """Resolve request identity, serialize the Session, and stream one turn."""
         normalized = user_input.strip()
         if not normalized:
             raise ValueError("message must not be empty")
         workspace = self.workspace_repository.resolve(workspace_root)
         session, _new_session = self.workspace_repository.resolve_session(workspace, session_name)
+        # The UUID lock is the consistency boundary for loading and saving one
+        # Session. Different Session UUIDs may execute concurrently.
         with self.lock_registry.get(session.session_id):
             status = self.model_configuration.configuration_status()
             if not status.configured:
@@ -166,6 +182,7 @@ class AgentTurnService:
             yield from self._stream_locked_turn(session, runtime.graph, normalized, run_id)
 
     def close(self) -> None:
+        """Wait for service-owned Turn and memory executors to finish."""
         if self._owns_turn_executor:
             self._turn_executor.shutdown(wait=True, cancel_futures=False)
         self._memory_executor.shutdown(wait=True, cancel_futures=False)
@@ -177,6 +194,7 @@ class AgentTurnService:
         user_input: str,
         run_id: str,
     ) -> Iterator[dict]:
+        """Execute and persist one configured-LLM Turn while its Session is locked."""
         store = self.memory_store_factory()
         context_token = set_event_context(
             workspace_id=session.workspace.workspace_id,
@@ -185,6 +203,8 @@ class AgentTurnService:
         )
         run_context_token = None
         try:
+            # Persisted turn_index identifies the last completed turn. The
+            # current turn is assigned only after the Session lock is held.
             state, turn_index = store.load_session(session)
             current_turn = turn_index + 1
             run_context = AgentRunContext(
@@ -224,6 +244,8 @@ class AgentTurnService:
                 user_input,
                 extra_system_messages=extras,
             )
+            # stream_graph_events adapts LangGraph's messages/values stream into
+            # the stable token/step/error/done contract consumed by RPC.
             for item in stream_graph_events(graph, input_messages, run_context):
                 if item["event"] == "error":
                     emit_event(
@@ -245,10 +267,15 @@ class AgentTurnService:
                     yield item
                     continue
                 final_messages = item["data"]["messages"]
+                # input_messages already contains old context and the new user
+                # message. Persist only the current user message and messages
+                # appended by the graph, never synthetic summary/memory input.
                 turn_messages = final_messages[len(input_messages) - 1:]
                 source_ids = store.archive_turn_messages(session, current_turn, turn_messages)
                 state = self.context_manager.update_after_turn(state, final_messages, memory_context=memory_text)
                 store.save_session(session, state, current_turn)
+                # Extraction runs after message and Session persistence so its
+                # source_message_ids always refer to committed message rows.
                 self._handle_extraction(store, session, current_turn, run_id, user_input, turn_messages, source_ids)
                 emit_event(
                     "turn_finished",
@@ -393,6 +420,7 @@ class AgentTurnService:
         messages: list,
         source_ids: list[int],
     ) -> None:
+        """Apply memory extraction policy and choose sync or background execution."""
         if not self.memory_enabled:
             emit_event(
                 "memory_extract_skipped",
@@ -430,6 +458,7 @@ class AgentTurnService:
         messages: list,
         source_ids: list[int],
     ) -> None:
+        """Run memory extraction with restored Turn event identity."""
         context_token = set_event_context(
             workspace_id=session.workspace.workspace_id,
             session_id=session.session_id,

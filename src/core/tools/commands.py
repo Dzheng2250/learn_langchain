@@ -22,6 +22,7 @@ def _copy_workspace(root: Path, target: Path) -> None:
     """Copy regular workspace files without following links at any depth."""
 
     def copy_entry(source: Path, destination: Path) -> None:
+        """Recursively copy regular non-sensitive entries without following links."""
         if source.is_symlink() or is_sandbox_name_excluded(source.name):
             return
         if source.is_dir():
@@ -37,6 +38,7 @@ def _copy_workspace(root: Path, target: Path) -> None:
 
 
 def create_run_command_in_container(root: Path):
+    """Create a Docker command tool bound to a read-only Workspace copy."""
     @tool
     def run_command_in_container(command: str) -> str:
         """Run a command in an isolated read-only copy of the current workspace."""

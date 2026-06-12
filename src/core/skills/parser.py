@@ -1,11 +1,15 @@
+"""Small parser for skill name and description metadata."""
+
 class SkillMetadataParser:
     """Parse name and description metadata from local skill documents."""
 
     def parse(self, content: str) -> dict[str, str]:
+        """Parse frontmatter first, then fall back to leading key-value lines."""
         metadata = self._parse_frontmatter(content)
         return metadata or self._parse_plain(content)
 
     def _parse_frontmatter(self, content: str) -> dict[str, str]:
+        """Parse metadata enclosed by the first pair of YAML-style fences."""
         lines = content.splitlines()
         if not lines or lines[0].strip() != "---":
             return {}
@@ -19,9 +23,11 @@ class SkillMetadataParser:
         return self._parse_key_value_lines(lines[1:end_index])
 
     def _parse_plain(self, content: str) -> dict[str, str]:
+        """Parse metadata from the first bounded block of a plain document."""
         return self._parse_key_value_lines(content.splitlines()[:80])
 
     def _parse_key_value_lines(self, lines: list[str]) -> dict[str, str]:
+        """Extract only supported scalar or indented-block metadata fields."""
         metadata: dict[str, str] = {}
         index = 0
         while index < len(lines):

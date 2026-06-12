@@ -1,3 +1,5 @@
+"""Workspace-bound discovery and safe loading of local skill documents."""
+
 import os
 from pathlib import Path
 

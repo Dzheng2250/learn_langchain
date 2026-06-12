@@ -16,6 +16,7 @@ from src.core.workspace.models import WorkspaceContext
 
 @dataclass(frozen=True)
 class WorkspaceToolset:
+    """Audience-specific tool views and manifest bound to one Workspace."""
     registry: ToolRegistry
     base_tools: list
     parent_tools: list
@@ -28,6 +29,7 @@ def create_workspace_toolset(
     *,
     subagent_max_steps: int = SUBAGENT_MAX_STEPS,
 ) -> WorkspaceToolset:
+    """Create, classify, and freeze all tools available in one Workspace."""
     provider = model_provider or OpenAICompatibleProvider()
     read_file, read_entire, read_lite = create_workspace_file_tools(workspace.root)
     list_skills, read_skill, skill_store = create_skill_tools(workspace.root)
@@ -36,6 +38,7 @@ def create_workspace_toolset(
     registry = ToolRegistry()
 
     def register(tool, audiences, risk, description=""):
+        """Register one LangChain tool with audience and risk metadata."""
         registry.register(
             ToolSpec(
                 name=tool.name,

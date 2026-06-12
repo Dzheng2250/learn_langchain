@@ -1,3 +1,5 @@
+"""Optional bounded debug rendering for model messages and internal values."""
+
 from src.config.settings import DEBUG_AGENT
 
 
