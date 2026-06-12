@@ -62,7 +62,9 @@ Core 内部的 `bus` 继续负责路由与 server，但协议模型不属于 Cor
 
 ### 配置加载
 
-CLI 每次启动时首先调用 `CliConfig.load()`，读取并验证通信配置。验证完成后，同一个不可变配置对象传递给命令、RPC client 和 daemon 管理器。
+CLI 入口会先调用 `load_user_environment()`，加载 `LEARN_AGENT_ENV_FILE` 指定的文件或用户级
+`.env`；随后才导入 `settings.py` 并调用 `CliConfig.load()` 验证通信配置。验证完成后，同一个
+不可变配置对象传递给命令、RPC client 和 daemon 管理器。
 
 CLI 只读取：
 
@@ -247,17 +249,18 @@ CLI 与 Core 不再是普通函数调用，而是两个独立进程。
 - 未来 CLI 与 daemon 版本不一致时，需要协议版本协商或兼容策略。
 - 流式事件结构若缺少约束，会逐渐退化为不透明的 `dict`。
 
-#### 4. 当前配置仍是代码配置
+#### 4. 当前配置采用环境覆盖与代码默认值
 
-目前 `src/config/settings.py` 是统一来源，但它仍然是 Python 文件。
+部署参数和密钥可由操作系统环境变量或用户级 `.env` 提供，`src/config/settings.py` 保存可提交的
+开发默认值与尚未开放覆盖的内部策略常量。
 
 代价：
 
-- 用户修改配置需要编辑项目源码。
-- 不同环境之间的配置切换不够方便。
-- 非敏感配置与业务常量仍集中在同一个文件中。
+- 环境变量缺少 TOML 一类配置文件的层次结构。
+- 配置在模块导入时解析，运行中的 daemon 不支持热更新。
+- 内部策略常量仍集中在 `settings.py`，尚未全部转换为严格配置模型。
 
-后续应考虑增加 TOML 配置和环境变量覆盖，但需要明确优先级，避免配置来源过多。
+加载优先级和数据库部署方式见 [`deployment.md`](deployment.md)。
 
 #### 5. daemon 管理仍是应用自行实现
 
@@ -446,7 +449,8 @@ Docker 沙盒配置
 
 这些业务配置由 Core daemon 使用。
 
-当前配置来源只有 `src/config/settings.py`。CLI 尚不支持命令行覆盖、TOML 配置文件或环境变量覆盖。
+配置优先级为“进程环境变量 > 用户级 `.env` > `src/config/settings.py` 默认值”。CLI 不支持
+TOML 或任意命令行配置覆盖；仅由明确的命令参数覆盖对应操作参数。
 
 ### RPC Client 当前支持
 
@@ -647,6 +651,6 @@ CliRenderError
 ## 后续方向
 
 - 将项目包名从通用的 `src` 调整为正式包名，例如 `learn_agent`。
-- 增加配置文件与环境变量覆盖机制。
+- 将内部策略常量逐步收敛为严格配置模型；仅在确有层次化配置需求时引入 TOML。
 - 为 TUI 复用 `ipc` 模型和 RPC client。
 - Core 已拆分 `bus`、`handlers` 与 `transport`，并由 `CoreApp` 统一组装和管理生命周期。详见 `docs/core-architecture.md`。

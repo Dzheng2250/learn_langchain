@@ -26,3 +26,4 @@ CoreApp
 - [`docs/workspace-isolation-review.md`](../../docs/workspace-isolation-review.md)
 - [`docs/agent-execution-architecture.md`](../../docs/agent-execution-architecture.md)
 - [`docs/pr-3-review-hardening.md`](../../docs/pr-3-review-hardening.md)
+- [`docs/deployment.md`](../../docs/deployment.md)

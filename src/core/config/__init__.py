@@ -1,5 +1,1 @@
-"""Core-specific configuration."""
-
-from .models import CoreConfig
-
-__all__ = ["CoreConfig"]
+"""Core-specific configuration modules without eager settings imports."""

@@ -2,6 +2,12 @@
 
 import argparse
 
+from src.config.environment import load_user_environment
+
+# Keep CLI transport settings aligned with the daemon before importing modules
+# that read committed defaults and environment overrides.
+load_user_environment()
+
 from src.cli.commands import register_commands
 from src.cli.config import CliConfig
 from src.cli.errors import CliError, ConfigurationError

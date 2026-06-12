@@ -18,6 +18,7 @@ from src.config.settings import (
     MEMORY_DB_PORT,
     MEMORY_DB_USER,
 )
+from src.core.database.connection import connection_info
 from src.core.database.queries import INSERT_AGENT_EVENT
 from src.core.hooks.models import AgentEvent
 from src.core.hooks.serialization import event_to_dict
@@ -59,21 +60,26 @@ class PostgresEventSink:
 
     def __init__(
         self,
-        host: str = MEMORY_DB_HOST,
-        port: int = MEMORY_DB_PORT,
-        dbname: str = MEMORY_DB_NAME,
-        user: str = MEMORY_DB_USER,
-        password: str = MEMORY_DB_PASSWORD,
+        host: str | None = None,
+        port: int | None = None,
+        dbname: str | None = None,
+        user: str | None = None,
+        password: str | None = None,
+        conninfo: str | None = None,
         async_write: bool = AGENT_EVENTS_ASYNC_WRITE,
         batch_size: int = AGENT_EVENTS_BATCH_SIZE,
         flush_interval_seconds: float = AGENT_EVENTS_FLUSH_INTERVAL_SECONDS,
         queue_max_size: int = AGENT_EVENTS_QUEUE_MAX_SIZE,
     ) -> None:
-        self.host = host
-        self.port = port
-        self.dbname = dbname
-        self.user = user
-        self.password = password
+        self.host = host or MEMORY_DB_HOST
+        self.port = port or MEMORY_DB_PORT
+        self.dbname = dbname or MEMORY_DB_NAME
+        self.user = user or MEMORY_DB_USER
+        self.password = password if password is not None else MEMORY_DB_PASSWORD
+        self.conninfo = conninfo
+        self._use_shared_connection = all(
+            value is None for value in (host, port, dbname, user, password, conninfo)
+        )
         self.async_write = async_write
         self.batch_size = max(1, int(batch_size))
         self.flush_interval_seconds = max(0.05, float(flush_interval_seconds))
@@ -197,15 +203,21 @@ class PostgresEventSink:
         from psycopg.conninfo import make_conninfo
         from psycopg_pool import ConnectionPool
 
-        return ConnectionPool(
-            conninfo=make_conninfo(
+        conninfo = (
+            connection_info()
+            if self._use_shared_connection
+            else self.conninfo
+            or make_conninfo(
                 "",
                 host=self.host,
                 port=self.port,
                 dbname=self.dbname,
                 user=self.user,
                 password=self.password,
-            ),
+            )
+        )
+        return ConnectionPool(
+            conninfo=conninfo,
             min_size=1,
             max_size=2,
             open=True,

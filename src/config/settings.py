@@ -1,14 +1,17 @@
 """Non-secret runtime configuration.
 
-API keys and provider endpoints stay in .env. This file keeps ordinary
-development settings that are safe to commit.
+Committed defaults live here. Deployment-specific values and secrets can be
+overridden with environment variables or the Core user-level .env file.
 """
 
-DEBUG_AGENT = False
+from src.config.env import env_bool, env_float, env_int, env_str
+
+
+DEBUG_AGENT = env_bool("LEARN_AGENT_DEBUG", False)
 MAX_GRAPH_STEPS = 20
 MAX_TOOL_CALLS_PER_TURN = 12
 BASH_PATH = "bash"
-MODEL = "deepseek-v4-flash"
+MODEL = env_str("LEARN_AGENT_MODEL", "deepseek-v4-flash")
 
 DOCKER_IMAGE = "python:3.12-slim"
 DOCKER_TIMEOUT_SECONDS = 10
@@ -45,11 +48,12 @@ SESSION_SUMMARY_MAX_CHARS = 4000
 SUMMARY_SOURCE_CHAR_LIMIT = 12000
 
 MEMORY_ENABLED = True
-MEMORY_DB_HOST = "localhost"
-MEMORY_DB_PORT = 5432
-MEMORY_DB_NAME = "learn_agent"
-MEMORY_DB_USER = "postgres"
-MEMORY_DB_PASSWORD = "postgres"
+MEMORY_DB_URL = env_str("LEARN_AGENT_DATABASE_URL", "")
+MEMORY_DB_HOST = env_str("LEARN_AGENT_DB_HOST", "127.0.0.1")
+MEMORY_DB_PORT = env_int("LEARN_AGENT_DB_PORT", 5432)
+MEMORY_DB_NAME = env_str("LEARN_AGENT_DB_NAME", "learn_agent")
+MEMORY_DB_USER = env_str("LEARN_AGENT_DB_USER", "postgres")
+MEMORY_DB_PASSWORD = env_str("LEARN_AGENT_DB_PASSWORD", "postgres")
 DEFAULT_SESSION_ID = "default"
 MEMORY_RETRIEVAL_LIMIT = 6
 MEMORY_BOOTSTRAP_LIMIT = 4
@@ -84,23 +88,14 @@ AGENT_EVENTS_BATCH_SIZE = 50
 AGENT_EVENTS_FLUSH_INTERVAL_SECONDS = 1.0
 AGENT_EVENTS_QUEUE_MAX_SIZE = 1000
 
-CORE_HOST = "127.0.0.1"
-CORE_PORT = 18765
+CORE_HOST = env_str("LEARN_AGENT_CORE_HOST", "127.0.0.1")
+CORE_PORT = env_int("LEARN_AGENT_CORE_PORT", 18765)
 CORE_MAX_MESSAGE_BYTES = 1_048_576
-CORE_SHUTDOWN_TIMEOUT_SECONDS = 10
-CORE_CONNECT_TIMEOUT_SECONDS = 3
-CORE_DAEMON_STARTUP_TIMEOUT_SECONDS = 15
-CORE_DAEMON_STOP_TIMEOUT_SECONDS = 15
-CORE_AGENT_WORKERS = 4
+CORE_SHUTDOWN_TIMEOUT_SECONDS = env_float("LEARN_AGENT_CORE_SHUTDOWN_TIMEOUT_SECONDS", 10)
+CORE_CONNECT_TIMEOUT_SECONDS = env_float("LEARN_AGENT_CORE_CONNECT_TIMEOUT_SECONDS", 3)
+CORE_DAEMON_STARTUP_TIMEOUT_SECONDS = env_float("LEARN_AGENT_DAEMON_STARTUP_TIMEOUT_SECONDS", 15)
+CORE_DAEMON_STOP_TIMEOUT_SECONDS = env_float("LEARN_AGENT_DAEMON_STOP_TIMEOUT_SECONDS", 15)
+CORE_AGENT_WORKERS = env_int("LEARN_AGENT_CORE_AGENT_WORKERS", 4)
 CORE_RUNTIME_DIR = ""
-PG_DUMP_PATH = ""
-POSTGRES_DOCKER_CONTAINER = "pgvector2"
-
-START_DB = (
-    r"docker run -d -p 5432:5432 "
-    r"-e POSTGRES_USER=postgres "
-    r"-e POSTGRES_PASSWORD=postgres "
-    r"-e POSTGRES_DB=learn_agent "
-    r"-v E:\docker\pgvector2\data:/var/lib/postgresql/data "
-    r"--name pgvector2 pgvector/pgvector:pg17"
-)
+PG_DUMP_PATH = env_str("LEARN_AGENT_PG_DUMP_PATH", "")
+POSTGRES_DOCKER_CONTAINER = env_str("LEARN_AGENT_DB_CONTAINER", "learn-agent-postgres")

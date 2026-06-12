@@ -10,6 +10,9 @@
 >
 > PR #3 review 整改与可靠性决策见
 > [`pr-3-review-hardening.md`](pr-3-review-hardening.md)。
+>
+> PostgreSQL Compose 部署、用户级配置与环境覆盖规则见
+> [`deployment.md`](deployment.md)。
 
 ## 重构目标
 
@@ -257,5 +260,6 @@ Handler 只获得最小 `RequestContext`，不能访问底层 TCP writer。Agent
 
 1. 顶层 Python 包仍命名为 `src`，长期应迁移为正式包名。
 2. `memory/store.py` 和 `hooks/events.py` 体积较大，未来可按查询、事务和 sink registry 进一步拆分。
-3. 当前配置仍为 Python 常量，尚未支持 TOML 与环境覆盖。
+3. 部署参数已支持用户级 `.env` 与进程环境覆盖，但内部策略常量仍集中在 Python 配置模块，
+   尚未形成完整的严格配置模型，也不支持热更新。
 4. Agent 流式事件内部 `data` 仍是通用字典，未来可增加严格事件模型。

@@ -1,0 +1,26 @@
+name: learn-agent
+
+services:
+  postgres:
+    image: pgvector/pgvector:pg17
+    container_name: ${LEARN_AGENT_DB_CONTAINER:-learn-agent-postgres}
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${LEARN_AGENT_DB_NAME:-learn_agent}
+      POSTGRES_USER: ${LEARN_AGENT_DB_USER:-postgres}
+      POSTGRES_PASSWORD: ${LEARN_AGENT_DB_PASSWORD:-postgres}
+    ports:
+      - "127.0.0.1:${LEARN_AGENT_DB_PORT:-5432}:5432"
+    volumes:
+      - learn_agent_postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - pg_isready -U ${LEARN_AGENT_DB_USER:-postgres} -d ${LEARN_AGENT_DB_NAME:-learn_agent}
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+
+volumes:
+  learn_agent_postgres_data:

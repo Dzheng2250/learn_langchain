@@ -8,11 +8,16 @@ from pathlib import Path
 
 import psycopg
 
+from src.config.environment import load_user_environment
+
+# Console-script entry points import this module directly. Load the user-level
+# environment before importing settings-backed Core components.
+load_user_environment()
+
 from src.config.paths import env_file
-from src.core.config.environment import load_core_environment
 from src.core.app import CoreApp
 from src.core.config.models import CoreConfig
-from src.core.database.connection import connection_kwargs
+from src.core.database.connection import connection_info
 from src.core.database.migration import WorkspaceMigration
 from src.config.settings import CORE_HOST, CORE_PORT
 from src.ipc.auth import create_token, daemon_pid_is_running, read_token, token_path
@@ -30,7 +35,6 @@ async def serve(host: str = CORE_HOST, port: int = CORE_PORT) -> None:
 
 
 def main(argv: list[str] | None = None) -> int:
-    load_core_environment()
     parser = argparse.ArgumentParser(prog="learn-agent-core")
     subparsers = parser.add_subparsers(dest="command", required=True)
     serve_parser = subparsers.add_parser("serve", help="run the Core daemon")
@@ -65,7 +69,7 @@ def main(argv: list[str] | None = None) -> int:
         runtime = CoreConfig.load().runtime_dir
         if daemon_pid_is_running(runtime):
             raise RuntimeError("Core daemon is running. Stop the daemon before migration.")
-        migration = WorkspaceMigration(lambda: psycopg.connect(**connection_kwargs()))
+        migration = WorkspaceMigration(lambda: psycopg.connect(connection_info()))
         report = (
             migration.apply(args.workspace, args.keep_session)
             if args.apply

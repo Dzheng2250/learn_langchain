@@ -206,41 +206,49 @@ def create_database_backup() -> Path:
     target_dir.mkdir(parents=True, exist_ok=True)
     target = target_dir / f"learn_agent_{datetime.now():%Y%m%d_%H%M%S}.dump"
     config = connection_kwargs()
+    host = str(config.get("host", "127.0.0.1"))
+    port = str(config.get("port", 5432))
+    user = str(config.get("user", "postgres"))
+    dbname = str(config.get("dbname", "learn_agent"))
+    password = str(config.get("password", ""))
     native = PG_DUMP_PATH or shutil.which("pg_dump")
     if native:
         command = [
             native,
             "-Fc",
             "-h",
-            str(config["host"]),
+            host,
             "-p",
-            str(config["port"]),
+            port,
             "-U",
-            str(config["user"]),
+            user,
             "-d",
-            str(config["dbname"]),
+            dbname,
             "-f",
             str(target),
         ]
         env = dict(__import__("os").environ)
-        env["PGPASSWORD"] = str(config["password"])
+        if password:
+            env["PGPASSWORD"] = password
         subprocess.run(command, check=True, env=env, capture_output=True)
     elif shutil.which("docker"):
+        docker_command = ["docker", "exec"]
+        if password:
+            docker_command.extend(["-e", f"PGPASSWORD={password}"])
+        docker_command.extend(
+            [
+                POSTGRES_DOCKER_CONTAINER,
+                "pg_dump",
+                "-Fc",
+                "-U",
+                user,
+                "-d",
+                dbname,
+            ]
+        )
         with target.open("wb") as output:
             subprocess.run(
-                [
-                    "docker",
-                    "exec",
-                    "-e",
-                    f"PGPASSWORD={config['password']}",
-                    POSTGRES_DOCKER_CONTAINER,
-                    "pg_dump",
-                    "-Fc",
-                    "-U",
-                    str(config["user"]),
-                    "-d",
-                    str(config["dbname"]),
-                ],
+                docker_command,
                 check=True,
                 stdout=output,
                 stderr=subprocess.PIPE,
