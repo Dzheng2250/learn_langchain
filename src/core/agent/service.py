@@ -7,8 +7,6 @@ from functools import partial
 from threading import Lock, RLock
 from uuid import UUID, uuid4
 
-from langchain_core.messages import AIMessage, HumanMessage
-
 from src.config.settings import CORE_AGENT_WORKERS, MEMORY_ENABLED, MEMORY_EXTRACTION_ASYNC
 from src.core.agent.contracts import EventCallback
 from src.core.agent.models import AgentRunContext, RunLimits, StopReason
@@ -162,7 +160,7 @@ class AgentTurnService:
         with self.lock_registry.get(session.session_id):
             status = self.model_configuration.configuration_status()
             if not status.configured:
-                yield from self._stream_unconfigured_turn(session, normalized, run_id, status.missing)
+                yield from self._stream_unconfigured_turn(session, run_id, status.missing)
                 return
             runtime = self.runtime_registry.get(workspace)
             yield from self._stream_locked_turn(session, runtime.graph, normalized, run_id)
@@ -299,11 +297,10 @@ class AgentTurnService:
     def _stream_unconfigured_turn(
         self,
         session: SessionContext,
-        user_input: str,
         run_id: str,
         missing: tuple[str, ...],
     ) -> Iterator[dict]:
-        """Persist and stream a diagnostic turn without constructing an Agent graph."""
+        """Validate infrastructure without mutating conversation state."""
         store = self.memory_store_factory()
         context_token = set_event_context(
             workspace_id=session.workspace.workspace_id,
@@ -312,19 +309,18 @@ class AgentTurnService:
         )
         run_context_token = None
         try:
-            state, turn_index = store.load_session(session)
-            current_turn = turn_index + 1
+            _state, turn_index = store.load_session(session)
             run_context = AgentRunContext(
                 run_id=run_id,
                 session=session,
-                turn_index=current_turn,
+                turn_index=turn_index,
                 limits=self.run_limits,
             )
             run_context_token = set_run_event_context(run_context)
             emit_event(
-                "turn_started",
+                "diagnostic_started",
                 "agent_service",
-                "Started diagnostic turn without LLM configuration.",
+                "Started infrastructure diagnostic without LLM configuration.",
                 {"session_name": session.session_name, "mode": "diagnostic"},
             )
             emit_event(
@@ -336,24 +332,16 @@ class AgentTurnService:
             )
             response = (
                 "Core 基础服务运行正常：CLI 与 daemon 已成功通信，Workspace 和 Session 已解析，"
-                "数据库也可正常读写。\n\n"
-                "当前未配置模型 API 密钥，因此本轮未调用 LLM 或工具。请设置 "
-                "`LEARN_AGENT_LLM_API_KEY`；使用 OpenAI 兼容服务时可同时设置 "
+                "数据库可正常创建并读取会话。\n\n"
+                "当前未配置模型 API 密钥，因此本次请求不会写入对话历史、递增 turn_index，"
+                "也不会调用 LLM 或工具。请设置 `LEARN_AGENT_LLM_API_KEY`；使用 OpenAI 兼容服务时可同时设置 "
                 "`LEARN_AGENT_LLM_BASE_URL`，然后重新初始化用户配置并重启 Core。"
             )
-            turn_messages = [HumanMessage(content=user_input), AIMessage(content=response)]
-            store.archive_turn_messages(session, current_turn, turn_messages)
-            state = self.context_manager.update_without_llm(
-                state,
-                turn_messages,
-                reason=StopReason.LLM_NOT_CONFIGURED.value,
-            )
-            store.save_session(session, state, current_turn)
             yield {"event": "token", "data": {"content": response}}
             emit_event(
-                "turn_finished",
+                "diagnostic_finished",
                 "agent_service",
-                "Finished diagnostic turn without LLM configuration.",
+                "Finished infrastructure diagnostic without LLM configuration.",
                 {
                     "stop_reason": StopReason.LLM_NOT_CONFIGURED.value,
                     "tool_call_count": 0,

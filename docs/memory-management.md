@@ -78,7 +78,7 @@ flowchart LR
 上下文压缩只修改 `agent_sessions` 中的有限上下文，不会删除 `agent_messages` 中的完整历史。
 
 当前普通 Agent Turn 只有在 LangGraph 返回 `done` 后才归档消息。如果 Graph 在完成前返回错误，
-该失败轮次不会写入完整消息归档。无 LLM 诊断 Turn 则在数据库保存成功后才返回诊断成功回答。
+该失败轮次不会写入完整消息归档。无 LLM 诊断请求不会写入消息归档。
 
 ### `agent_memories`
 
@@ -145,13 +145,16 @@ flowchart TB
 结果按记忆 ID 去重，并受 `MEMORY_CONTEXT_CHAR_LIMIT=6000` 总字符限制。后续轮次只检索与当前
 问题相关的记忆，不再加载 bootstrap 集合。
 
-当前实现通过 `turn_index == 0` 判断新 Session。无 LLM 诊断 Turn 也会保存并递增
-`turn_index`，因此诊断后首次真实 LLM Turn 不会再触发 bootstrap memory。
+当前实现通过 `turn_index == 0` 判断新 Session。无 LLM 诊断请求不会递增 `turn_index`，因此
+无论重复诊断多少次，首次真实 LLM Turn 仍会触发 bootstrap memory。
 
 ### 无 LLM 配置诊断 Turn
 
-没有配置模型 API 密钥时，系统仍会解析 Workspace 和 Session、加载短期上下文、归档用户消息
-与统一诊断回答，并更新 Session。该路径不检索或提取长期记忆，也不执行上下文总结。
+没有配置模型 API 密钥时，系统仍会解析或创建 Workspace 和 Session，并读取 Session 来验证
+数据库链路。该路径允许首次访问时创建 Workspace/Session 行并记录诊断事件，但不会归档诊断
+消息、更新 Session 对话状态、递增 `turn_index`、检索或提取长期记忆，也不会执行上下文总结。
+诊断事件使用独立的 `diagnostic_started/diagnostic_finished` 类型，不会污染真实 Agent Turn
+的事件统计。
 
 ## 短期上下文管理
 
@@ -273,7 +276,7 @@ archive_turn_messages()
 ```
 
 如果消息归档成功但 Session 保存失败，可能出现消息已存在、`turn_index` 和短期上下文未更新的
-部分提交状态。正常 Agent Turn 与无 LLM 诊断 Turn 都存在该架构债务。
+部分提交状态。该架构债务只影响会持久化消息的正常 Agent Turn；无状态诊断请求不受影响。
 
 正确的后续方案是引入统一 Turn Unit of Work：
 
@@ -318,6 +321,6 @@ commit
 关键测试：
 
 - `tests/test_agent_context.py`：合成长记忆消息不会污染短期历史。
-- `tests/test_memory_store.py`：Workspace 隔离、bootstrap、来源外键和诊断持久化。
+- `tests/test_memory_store.py`：Workspace 隔离、bootstrap、来源外键和重复诊断无状态行为。
 - `tests/test_memory_extraction_policy.py`：长期记忆提取触发策略。
 - `tests/test_memory_transaction_events.py`：记忆提交成功后才发布保存事件。

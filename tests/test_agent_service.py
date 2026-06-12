@@ -4,7 +4,7 @@ import time
 import unittest
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
-from unittest.mock import Mock
+from unittest.mock import Mock, patch
 from uuid import uuid4
 
 from src.core.context.models import AgentContextState
@@ -157,7 +157,7 @@ class AgentTurnExecutorTest(unittest.IsolatedAsyncioTestCase):
 
 
 class DiagnosticTurnTest(unittest.TestCase):
-    def test_missing_api_key_persists_fallback_without_creating_runtime(self):
+    def test_missing_api_key_does_not_mutate_conversation_or_create_runtime(self):
         workspace = WorkspaceContext(uuid4(), Path(".").resolve())
         session = SessionContext(uuid4(), "default", workspace)
 
@@ -174,19 +174,18 @@ class DiagnosticTurnTest(unittest.TestCase):
 
         class Store:
             def __init__(self):
-                self.archived = []
-                self.saved = []
+                self.loaded = 0
                 self.closed = False
 
             def load_session(self, _session):
+                self.loaded += 1
                 return AgentContextState(), 0
 
             def archive_turn_messages(self, _session, turn_index, messages):
-                self.archived.append((turn_index, messages))
-                return [1, 2]
+                raise AssertionError("diagnostic requests must not archive messages")
 
             def save_session(self, _session, state, turn_index):
-                self.saved.append((state, turn_index))
+                raise AssertionError("diagnostic requests must not update session state")
 
             def close(self):
                 self.closed = True
@@ -200,17 +199,24 @@ class DiagnosticTurnTest(unittest.TestCase):
             model_configuration=MissingConfiguration(),
         )
         try:
-            events = list(service.stream_turn(".", "default", "检查连接", run_id="run-1"))
+            with patch("src.core.agent.service.emit_event") as emit:
+                first = list(service.stream_turn(".", "default", "检查连接", run_id="run-1"))
+                second = list(service.stream_turn(".", "default", "再次检查", run_id="run-2"))
         finally:
             service.close()
 
-        self.assertEqual(["token", "done"], [event["event"] for event in events])
-        self.assertEqual("llm_not_configured", events[-1]["data"]["stop_reason"])
-        self.assertIn("LEARN_AGENT_LLM_API_KEY", events[0]["data"]["content"])
+        event_types = [call.args[0] for call in emit.call_args_list]
+        self.assertEqual(["token", "done"], [event["event"] for event in first])
+        self.assertEqual(["token", "done"], [event["event"] for event in second])
+        self.assertEqual("llm_not_configured", first[-1]["data"]["stop_reason"])
+        self.assertIn("LEARN_AGENT_LLM_API_KEY", first[0]["data"]["content"])
+        self.assertEqual(first[-1]["data"]["session_id"], second[-1]["data"]["session_id"])
+        self.assertEqual(2, event_types.count("diagnostic_started"))
+        self.assertEqual(2, event_types.count("diagnostic_finished"))
+        self.assertNotIn("turn_started", event_types)
+        self.assertNotIn("turn_finished", event_types)
         runtime_registry.get.assert_not_called()
-        self.assertEqual(1, len(store.archived))
-        self.assertEqual("检查连接", store.archived[0][1][0].content)
-        self.assertEqual(1, store.saved[0][1])
+        self.assertEqual(2, store.loaded)
         self.assertTrue(store.closed)
 
 

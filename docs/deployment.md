@@ -88,12 +88,13 @@ learn-agent status
 
 1. 接收并验证 JSON-RPC 请求。
 2. 解析或创建当前 Workspace 与 Session。
-3. 加载 Session 上下文并写入本轮用户消息和统一诊断回答。
+3. 读取 Session，验证数据库创建与读取链路。
 4. 发送流式 token 与完成事件。
 5. 返回 `stop_reason=llm_not_configured`。
 
 这条路径用于确认 CLI/Core 通信、daemon、数据库 Schema、Workspace 隔离、Session 和事件链路
-正常工作。它不验证模型网络连接、工具调用、长期记忆提取或上下文总结。
+正常工作。它不会写入对话历史或递增 `turn_index`，因此重复诊断不会影响首次真实 LLM Turn 的
+bootstrap memory。它不验证模型网络连接、工具调用、长期记忆提取或上下文总结。
 
 配置模型后重新同步用户配置并重启 Core：
 

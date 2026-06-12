@@ -260,14 +260,17 @@ agent.chat
   -> 检查 LLM 配置
        ├── 已配置：创建/复用 Workspace Runtime，进入 LangGraph
        └── 未配置：执行 diagnostic turn
-             -> 加载 Session
-             -> 归档 HumanMessage + 统一 AIMessage
-             -> 保存有限 recent_messages
+             -> 读取 Session，验证数据库链路
+             -> 不归档消息，不更新 Session 对话状态
+             -> 不递增 turn_index
              -> 流式返回 token + done(llm_not_configured)
 ```
 
-诊断路径故意不创建 Graph、不调用工具、不提取长期记忆，也不触发需要 LLM 的上下文总结。它用于
-在没有模型密钥时验证 CLI/Core、RPC、Workspace、Session、数据库和事件通道。
+诊断路径故意不创建 Graph、不调用工具、不提取长期记忆，也不触发需要 LLM 的上下文总结。重复
+调用不会消耗业务轮次，首次真实 LLM Turn 仍会加载 bootstrap memory。它用于在没有模型密钥时
+验证 CLI/Core、RPC、Workspace、Session、数据库和事件通道。诊断请求发布
+`diagnostic_started/diagnostic_finished`，不会发布会被业务 Turn 统计消费的
+`turn_started/turn_finished`。
 
 维护规则：
 

@@ -38,7 +38,8 @@ LEARN_AGENT_LLM_BASE_URL=https://your-openai-compatible-endpoint/v1
 ```
 
 未配置 API 密钥时，仍可启动 Core 并发起会话。请求会完整经过 CLI、JSON-RPC、Workspace、
-Session 和数据库持久化链路，随后返回统一诊断提示，但不会调用 LLM 或工具。
+Session 和数据库创建/读取链路，随后返回统一诊断提示，但不会调用 LLM 或工具，也不会写入
+对话历史或消耗业务轮次。
 
 开发环境默认数据库账号和密码均为 `postgres`。非本地环境必须修改密码。
 

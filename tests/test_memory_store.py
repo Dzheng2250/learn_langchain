@@ -89,7 +89,7 @@ class WorkspaceMemoryStoreTest(unittest.TestCase):
         self.assertEqual("workspace A summary", loaded.summary)
         self.assertEqual(2, len(message_ids))
 
-    def test_diagnostic_turn_persists_messages_without_llm_configuration(self) -> None:
+    def test_repeated_diagnostic_turns_leave_session_ready_for_bootstrap(self) -> None:
         session_name = f"diagnostic-{uuid4().hex}"
 
         class MissingConfiguration:
@@ -104,14 +104,16 @@ class WorkspaceMemoryStoreTest(unittest.TestCase):
             model_configuration=MissingConfiguration(),
         )
         try:
-            events = list(
-                service.stream_turn(
-                    str(self.workspace_a.root),
-                    session_name,
-                    "verify infrastructure",
-                    run_id=uuid4().hex,
+            events = []
+            for _index in range(3):
+                events = list(
+                    service.stream_turn(
+                        str(self.workspace_a.root),
+                        session_name,
+                        "verify infrastructure",
+                        run_id=uuid4().hex,
+                    )
                 )
-            )
         finally:
             service.close()
 
@@ -121,19 +123,19 @@ class WorkspaceMemoryStoreTest(unittest.TestCase):
             with conn.cursor() as cur:
                 cur.execute(
                     """
-                    SELECT s.turn_index, array_agg(m.role ORDER BY m.id)
+                    SELECT s.turn_index, count(m.id)
                     FROM agent_sessions s
-                    JOIN agent_messages m
+                    LEFT JOIN agent_messages m
                       ON m.workspace_id = s.workspace_id AND m.session_id = s.session_id
                     WHERE s.workspace_id = %s AND s.session_name = %s
                     GROUP BY s.turn_index
                     """,
                     (self.workspace_a.workspace_id, session_name),
                 )
-                turn_index, roles = cur.fetchone()
+                turn_index, message_count = cur.fetchone()
 
-        self.assertEqual(1, turn_index)
-        self.assertEqual(["user", "assistant"], roles)
+        self.assertEqual(0, turn_index)
+        self.assertEqual(0, message_count)
 
     def test_memory_retrieval_is_workspace_isolated(self) -> None:
         memory_id = uuid4()
