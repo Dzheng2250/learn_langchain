@@ -31,4 +31,4 @@ jobs:
           ANTHROPIC_BASE_URL: "https://dashscope.aliyuncs.com/apps/anthropic"
         with:
           anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
-          claude_args: "--model deepseek-v4-pro"
+          claude_args: "--model deepseek-v4-flash"
