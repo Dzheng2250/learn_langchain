@@ -146,6 +146,7 @@ src/
 - [CLI 架构](docs/cli-architecture.md)
 - [Core 架构](docs/core-architecture.md)
 - [Agent 执行架构](docs/agent-execution-architecture.md)
+- [记忆管理与加载机制](docs/memory-management.md)
 - [Workspace 隔离与数据库迁移](docs/workspace-isolation-and-migration.md)
 
 ## 测试

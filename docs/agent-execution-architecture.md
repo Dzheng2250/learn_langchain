@@ -1,5 +1,8 @@
 # Agent 执行架构与扩展指南
 
+> Session 短期上下文、完整消息归档、长期记忆提取与加载机制见
+> [`memory-management.md`](memory-management.md)。
+
 ## 目标
 
 本项目使用 LangGraph 作为循环引擎，同时在循环外建立稳定的应用层边界：
