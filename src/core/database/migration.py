@@ -1,5 +1,6 @@
 """Explicit legacy-to-workspace database migration."""
 
+import os
 import shutil
 import subprocess
 from dataclasses import dataclass
@@ -227,7 +228,7 @@ def create_database_backup() -> Path:
             "-f",
             str(target),
         ]
-        env = dict(__import__("os").environ)
+        env = os.environ.copy()
         if password:
             env["PGPASSWORD"] = password
         subprocess.run(command, check=True, env=env, capture_output=True)

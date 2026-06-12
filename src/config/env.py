@@ -32,8 +32,8 @@ def env_bool(name: str, default: bool) -> bool:
     if raw is None:
         return default
     normalized = raw.strip().casefold()
-    if normalized in {"1", "true", "yes", "on"}:
+    if normalized in {"1", "true", "yes", "y", "on"}:
         return True
-    if normalized in {"0", "false", "no", "off"}:
+    if normalized in {"0", "false", "no", "n", "off"}:
         return False
     raise ValueError(f"{name} must be a boolean value, got {raw!r}")

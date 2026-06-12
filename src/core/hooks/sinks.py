@@ -75,9 +75,11 @@ class PostgresEventSink:
         self.port = port or MEMORY_DB_PORT
         self.dbname = dbname or MEMORY_DB_NAME
         self.user = user or MEMORY_DB_USER
+        # None means "use the shared default"; an explicit empty string means
+        # "connect without a password" and must not silently fall back.
         self.password = password if password is not None else MEMORY_DB_PASSWORD
         self.conninfo = conninfo
-        self._use_shared_connection = all(
+        self._use_default_connection = all(
             value is None for value in (host, port, dbname, user, password, conninfo)
         )
         self.async_write = async_write
@@ -205,7 +207,7 @@ class PostgresEventSink:
 
         conninfo = (
             connection_info()
-            if self._use_shared_connection
+            if self._use_default_connection
             else self.conninfo
             or make_conninfo(
                 "",

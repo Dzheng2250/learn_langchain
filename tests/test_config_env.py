@@ -34,6 +34,12 @@ class EnvironmentValueTest(unittest.TestCase):
             self.assertEqual(2.5, env_float("DEMO_FLOAT", 1.5))
             self.assertFalse(env_bool("DEMO_BOOL", True))
 
+    def test_parses_short_boolean_values(self):
+        with patch.dict(os.environ, {"DEMO_BOOL": "y"}, clear=True):
+            self.assertTrue(env_bool("DEMO_BOOL", False))
+        with patch.dict(os.environ, {"DEMO_BOOL": "n"}, clear=True):
+            self.assertFalse(env_bool("DEMO_BOOL", True))
+
     def test_rejects_invalid_typed_environment_values(self):
         with patch.dict(os.environ, {"DEMO_INT": "many", "DEMO_BOOL": "maybe"}, clear=True):
             with self.assertRaisesRegex(ValueError, "DEMO_INT"):
