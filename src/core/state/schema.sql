@@ -1,0 +1,197 @@
+PRAGMA foreign_keys = ON;
+
+CREATE TABLE IF NOT EXISTS local_schema_migrations (
+    version INTEGER PRIMARY KEY,
+    name TEXT NOT NULL,
+    applied_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS workspaces (
+    workspace_id TEXT PRIMARY KEY,
+    canonical_path TEXT NOT NULL UNIQUE,
+    display_path TEXT NOT NULL,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS sessions (
+    session_id TEXT PRIMARY KEY,
+    workspace_id TEXT NOT NULL REFERENCES workspaces(workspace_id) ON DELETE CASCADE,
+    session_name TEXT NOT NULL,
+    summary TEXT NOT NULL DEFAULT '',
+    recent_messages TEXT NOT NULL DEFAULT '[]',
+    turn_index INTEGER NOT NULL DEFAULT 0,
+    version INTEGER NOT NULL DEFAULT 0,
+    active_branch_id TEXT,
+    pending_execution_id TEXT,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE(workspace_id, session_name),
+    UNIQUE(workspace_id, session_id)
+);
+
+CREATE TABLE IF NOT EXISTS branches (
+    branch_id TEXT PRIMARY KEY,
+    workspace_id TEXT NOT NULL,
+    session_id TEXT NOT NULL,
+    branch_name TEXT NOT NULL,
+    head_message_id TEXT,
+    created_from_message_id TEXT,
+    version INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY(workspace_id, session_id)
+        REFERENCES sessions(workspace_id, session_id) ON DELETE CASCADE,
+    UNIQUE(session_id, branch_name)
+);
+
+CREATE TABLE IF NOT EXISTS messages (
+    message_id TEXT PRIMARY KEY,
+    legacy_message_id INTEGER,
+    workspace_id TEXT NOT NULL,
+    session_id TEXT NOT NULL,
+    branch_id TEXT,
+    parent_message_id TEXT,
+    execution_id TEXT,
+    role TEXT NOT NULL,
+    content TEXT NOT NULL DEFAULT '',
+    message_type TEXT NOT NULL,
+    raw TEXT NOT NULL DEFAULT '{}',
+    artifact_id TEXT,
+    turn_index INTEGER NOT NULL,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY(workspace_id, session_id)
+        REFERENCES sessions(workspace_id, session_id) ON DELETE CASCADE,
+    FOREIGN KEY(branch_id) REFERENCES branches(branch_id) ON DELETE SET NULL,
+    FOREIGN KEY(parent_message_id) REFERENCES messages(message_id) ON DELETE SET NULL
+);
+
+CREATE TABLE IF NOT EXISTS executions (
+    execution_id TEXT PRIMARY KEY,
+    workspace_id TEXT NOT NULL,
+    session_id TEXT NOT NULL,
+    checkpoint_thread_id TEXT NOT NULL UNIQUE,
+    status TEXT NOT NULL,
+    stop_reason TEXT NOT NULL DEFAULT '',
+    original_input TEXT NOT NULL,
+    progress_summary TEXT NOT NULL DEFAULT '',
+    grant_index INTEGER NOT NULL DEFAULT 1,
+    slice_index INTEGER NOT NULL DEFAULT 0,
+    graph_steps_used INTEGER NOT NULL DEFAULT 0,
+    controlled_executions_used INTEGER NOT NULL DEFAULT 0,
+    delegations_used INTEGER NOT NULL DEFAULT 0,
+    tool_calls_used INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY(workspace_id, session_id)
+        REFERENCES sessions(workspace_id, session_id) ON DELETE CASCADE
+);
+
+CREATE TABLE IF NOT EXISTS execution_slices (
+    slice_id TEXT PRIMARY KEY,
+    execution_id TEXT NOT NULL REFERENCES executions(execution_id) ON DELETE CASCADE,
+    grant_index INTEGER NOT NULL,
+    slice_index INTEGER NOT NULL,
+    status TEXT NOT NULL,
+    stop_reason TEXT NOT NULL DEFAULT '',
+    graph_steps_used INTEGER NOT NULL DEFAULT 0,
+    started_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    finished_at TEXT,
+    UNIQUE(execution_id, grant_index, slice_index)
+);
+
+CREATE TABLE IF NOT EXISTS tool_ledger (
+    tool_call_id TEXT PRIMARY KEY,
+    execution_id TEXT NOT NULL REFERENCES executions(execution_id) ON DELETE CASCADE,
+    tool_name TEXT NOT NULL,
+    risk TEXT NOT NULL,
+    status TEXT NOT NULL,
+    args_preview TEXT NOT NULL DEFAULT '',
+    result_preview TEXT NOT NULL DEFAULT '',
+    artifact_id TEXT,
+    started_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    finished_at TEXT
+);
+
+CREATE TABLE IF NOT EXISTS memories (
+    memory_id TEXT PRIMARY KEY,
+    workspace_id TEXT NOT NULL REFERENCES workspaces(workspace_id) ON DELETE CASCADE,
+    kind TEXT NOT NULL,
+    content TEXT NOT NULL,
+    tags TEXT NOT NULL DEFAULT '[]',
+    importance INTEGER NOT NULL DEFAULT 3,
+    confidence REAL NOT NULL DEFAULT 1.0,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    archived_at TEXT,
+    UNIQUE(workspace_id, memory_id)
+);
+
+CREATE TABLE IF NOT EXISTS memory_sources (
+    workspace_id TEXT NOT NULL,
+    memory_id TEXT NOT NULL,
+    message_id TEXT NOT NULL,
+    FOREIGN KEY(workspace_id, memory_id)
+        REFERENCES memories(workspace_id, memory_id) ON DELETE CASCADE,
+    FOREIGN KEY(message_id) REFERENCES messages(message_id) ON DELETE CASCADE,
+    PRIMARY KEY(memory_id, message_id)
+);
+
+CREATE TABLE IF NOT EXISTS artifacts (
+    artifact_id TEXT PRIMARY KEY,
+    sha256 TEXT NOT NULL UNIQUE,
+    content_type TEXT NOT NULL,
+    byte_size INTEGER NOT NULL,
+    relative_path TEXT NOT NULL,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS artifact_references (
+    artifact_id TEXT NOT NULL REFERENCES artifacts(artifact_id) ON DELETE CASCADE,
+    owner_type TEXT NOT NULL,
+    owner_id TEXT NOT NULL,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY(artifact_id, owner_type, owner_id)
+);
+
+CREATE TABLE IF NOT EXISTS projection_outbox (
+    outbox_id INTEGER PRIMARY KEY AUTOINCREMENT,
+    event_type TEXT NOT NULL,
+    aggregate_type TEXT NOT NULL,
+    aggregate_id TEXT NOT NULL,
+    payload TEXT NOT NULL,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    projected_at TEXT,
+    retry_count INTEGER NOT NULL DEFAULT 0,
+    last_error TEXT
+);
+
+CREATE TABLE IF NOT EXISTS imported_events (
+    source_event_id INTEGER PRIMARY KEY,
+    run_id TEXT NOT NULL,
+    workspace_id TEXT,
+    session_id TEXT,
+    turn_index INTEGER,
+    event_type TEXT NOT NULL,
+    source TEXT NOT NULL,
+    level TEXT NOT NULL,
+    message TEXT NOT NULL,
+    payload TEXT NOT NULL,
+    duration_ms INTEGER,
+    created_at TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_sessions_workspace
+ON sessions(workspace_id, updated_at DESC);
+
+CREATE INDEX IF NOT EXISTS idx_messages_session
+ON messages(workspace_id, session_id, turn_index, created_at, message_id);
+
+CREATE INDEX IF NOT EXISTS idx_executions_session
+ON executions(workspace_id, session_id, updated_at DESC);
+
+CREATE INDEX IF NOT EXISTS idx_memories_workspace
+ON memories(workspace_id, importance DESC, updated_at DESC);
+
+CREATE INDEX IF NOT EXISTS idx_outbox_pending
+ON projection_outbox(projected_at, outbox_id);

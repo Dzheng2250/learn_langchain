@@ -37,7 +37,16 @@ class FakeAgentService:
     def close(self):
         pass
 
-    async def run_turn(self, workspace_root, session_name, message, on_event, *, run_id=None):
+    async def run_turn(
+        self,
+        workspace_root,
+        session_name,
+        message,
+        on_event,
+        *,
+        run_id=None,
+        control=None,
+    ):
         await asyncio.to_thread(on_event, {"event": "token", "data": {"content": "hello"}})
         await asyncio.to_thread(on_event, {"event": "done", "data": {"status": "ok"}})
         return {"status": "ok", "run_id": run_id}

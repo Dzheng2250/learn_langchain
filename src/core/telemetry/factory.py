@@ -26,17 +26,19 @@ def create_event_bus(pool=None) -> EventBus:
     if AGENT_EVENTS_ENABLED and AGENT_EVENTS_CONSOLE_ENABLED:
         sinks.append(ConsoleEventSink())
     if AGENT_EVENTS_ENABLED and AGENT_EVENTS_FILE_ENABLED:
-        sinks.append(JsonlFileEventSink())
+        file_sink = JsonlFileEventSink()
+        sinks.append(_buffered(file_sink) if AGENT_EVENTS_ASYNC_WRITE else file_sink)
     if AGENT_EVENTS_ENABLED and AGENT_EVENTS_POSTGRES_ENABLED and pool is not None:
         postgres = PostgresEventSink(pool)
-        sinks.append(
-            BufferedEventSink(
-                postgres,
-                batch_size=AGENT_EVENTS_BATCH_SIZE,
-                flush_interval_seconds=AGENT_EVENTS_FLUSH_INTERVAL_SECONDS,
-                queue_max_size=AGENT_EVENTS_QUEUE_MAX_SIZE,
-            )
-            if AGENT_EVENTS_ASYNC_WRITE
-            else postgres
-        )
+        sinks.append(_buffered(postgres) if AGENT_EVENTS_ASYNC_WRITE else postgres)
     return EventBus(sinks or [NoopEventSink()])
+
+
+def _buffered(sink) -> BufferedEventSink:
+    """Apply the shared bounded background writer to any batch-capable sink."""
+    return BufferedEventSink(
+        sink,
+        batch_size=AGENT_EVENTS_BATCH_SIZE,
+        flush_interval_seconds=AGENT_EVENTS_FLUSH_INTERVAL_SECONDS,
+        queue_max_size=AGENT_EVENTS_QUEUE_MAX_SIZE,
+    )

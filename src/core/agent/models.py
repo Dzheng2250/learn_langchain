@@ -3,7 +3,11 @@
 from dataclasses import dataclass
 from enum import StrEnum
 
-from src.config.settings import MAX_GRAPH_STEPS, MAX_TOOL_CALLS_PER_TURN, SUBAGENT_MAX_STEPS
+from src.config.settings import (
+    HARD_MAX_TOOL_CALLS_PER_GRANT,
+    MAX_GRAPH_STEPS_PER_SLICE,
+    SUBAGENT_MAX_STEPS,
+)
 from src.core.workspace.models import SessionContext
 
 
@@ -13,6 +17,9 @@ class StopReason(StrEnum):
     LLM_NOT_CONFIGURED = "llm_not_configured"
     GRAPH_STEP_LIMIT = "graph_step_limit"
     TOOL_CALL_LIMIT = "tool_call_limit"
+    BUDGET_LIMIT = "budget_limit"
+    GRANT_WALL_TIME_LIMIT = "grant_wall_time_limit"
+    CLIENT_DISCONNECTED = "client_disconnected"
     GRAPH_ERROR = "graph_error"
     TURN_ERROR = "turn_error"
 
@@ -20,8 +27,10 @@ class StopReason(StrEnum):
 @dataclass(frozen=True)
 class RunLimits:
     """Immutable limits enforced by graph and streaming adapters."""
-    max_graph_steps: int = MAX_GRAPH_STEPS
-    max_tool_calls: int = MAX_TOOL_CALLS_PER_TURN
+    max_graph_steps: int = MAX_GRAPH_STEPS_PER_SLICE
+    # This is now a high emergency ceiling. Normal policy uses risk-class
+    # budgets instead of treating all tools as equally expensive.
+    max_tool_calls: int = HARD_MAX_TOOL_CALLS_PER_GRANT
     max_subagent_steps: int = SUBAGENT_MAX_STEPS
 
     def __post_init__(self) -> None:

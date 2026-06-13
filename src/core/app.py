@@ -15,10 +15,15 @@ from src.core.telemetry import EventBus, create_event_bus, install_event_bus
 from src.core.transport.socket_server import SocketServer
 from src.ipc.auth import ensure_runtime_dir, pid_path
 from src.core.database.connection import create_pool
-from src.core.memory.store import PostgresMemoryStore
+from src.core.state import (
+    CheckpointManager,
+    ExecutionRepository,
+    LocalStateDatabase,
+    LocalStateStore,
+    LocalWorkspaceRepository,
+)
 from src.core.context.manager import AgentContextManager
 from src.core.llm.provider import OpenAICompatibleProvider
-from src.core.workspace.repository import WorkspaceRepository
 from src.core.workspace.runtime import WorkspaceRuntimeFactory, WorkspaceRuntimeRegistry
 
 
@@ -60,28 +65,41 @@ class CoreApp:
         self.config = config
         self.shutdown_event = asyncio.Event()
         self._pool = None
+        self._state_database = None
         self._event_bus = event_bus
         if agent_service is None:
             # CoreApp is the process-level composition root. These objects are
             # intentionally shared across requests; workspace-specific graphs
             # and tools are created lazily by WorkspaceRuntimeRegistry.
-            self._pool = create_pool()
+            self._state_database = LocalStateDatabase()
+            checkpoint_manager = CheckpointManager()
+            # PostgreSQL is optional. It is opened only for explicitly enabled
+            # telemetry/projection features, never for authoritative Session IO.
+            from src.config.settings import AGENT_EVENTS_POSTGRES_ENABLED
+
+            self._pool = create_pool() if AGENT_EVENTS_POSTGRES_ENABLED else None
             if self._event_bus is None:
                 self._event_bus = create_event_bus(self._pool)
             model_provider = OpenAICompatibleProvider()
             run_limits = RunLimits()
             self.agent_service = AgentTurnService(
-                workspace_repository=WorkspaceRepository(self._pool),
+                workspace_repository=LocalWorkspaceRepository(self._state_database),
                 runtime_registry=WorkspaceRuntimeRegistry(
-                    factory=WorkspaceRuntimeFactory(model_provider, run_limits),
+                    factory=WorkspaceRuntimeFactory(
+                        model_provider,
+                        run_limits,
+                        checkpointer=checkpoint_manager.initialize(),
+                    ),
                 ),
-                memory_store_factory=lambda: PostgresMemoryStore(
-                    pool=self._pool,
+                memory_store_factory=lambda: LocalStateStore(
+                    self._state_database,
                     model_provider=model_provider,
                 ),
                 context_manager=AgentContextManager(model_provider=model_provider),
                 model_configuration=model_provider,
                 run_limits=run_limits,
+                execution_repository=ExecutionRepository(self._state_database),
+                checkpoint_manager=checkpoint_manager,
             )
         else:
             self.agent_service = agent_service
@@ -140,6 +158,8 @@ class CoreApp:
                             timeout=self.config.shutdown_timeout_seconds,
                         )
                 finally:
+                    if self._state_database is not None:
+                        self._state_database.close()
                     if self.config.manage_runtime_files:
                         try:
                             pid_path(self.config.runtime_dir).unlink(missing_ok=True)

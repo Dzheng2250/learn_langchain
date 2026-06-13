@@ -15,6 +15,9 @@ def create_parent_graph(
     parent_tools: list,
     skill_manifest: str,
     model_provider: ModelProvider | None = None,
+    *,
+    checkpointer=None,
+    risk_by_name=None,
 ):
     """Create one compiled graph permanently bound to a WorkspaceRuntime."""
     provider = model_provider or OpenAICompatibleProvider()
@@ -64,10 +67,10 @@ def create_parent_graph(
 
     builder = StateGraph(MessagesState)
     builder.add_node("agent", agent_node)
-    builder.add_node("tools", ObservedToolNode(parent_tools))
+    builder.add_node("tools", ObservedToolNode(parent_tools, risk_by_name=risk_by_name))
     # The graph is the AgentLoop: LLM output without tool calls terminates;
     # tool calls execute centrally, append ToolMessages, then return to LLM.
     builder.add_edge(START, "agent")
     builder.add_conditional_edges("agent", tools_condition, {"tools": "tools", "__end__": END})
     builder.add_edge("tools", "agent")
-    return builder.compile()
+    return builder.compile(checkpointer=checkpointer)

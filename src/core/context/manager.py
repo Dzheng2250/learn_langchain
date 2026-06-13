@@ -122,6 +122,16 @@ class AgentContextManager:
 
         return AgentContextState(summary=summary, recent_messages=recent_messages)
 
+    def extract_turn_messages(self, state: AgentContextState, final_messages: list) -> list:
+        """Return only messages created by the current Turn.
+
+        Synthetic summary and memory messages are removed first. This remains
+        stable across checkpoint resumes even if injected memory changes.
+        """
+        conversation = self._strip_context_summary_messages(final_messages)
+        loaded_recent_count = min(len(state.recent_messages), self.recent_message_limit)
+        return conversation[loaded_recent_count:]
+
     def _should_summarize(self, messages: list) -> bool:
         """Return whether message volume is large enough to compress."""
         if len(messages) > self.summary_trigger_message_limit:

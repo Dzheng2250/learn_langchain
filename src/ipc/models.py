@@ -40,6 +40,19 @@ class ChatParams(AuthenticatedParams):
     message: str = Field(min_length=1, max_length=200_000)
 
 
+class SessionParams(AuthenticatedParams):
+    """Workspace-scoped Session identity accepted by Session control methods."""
+
+    workspace_root: str = Field(min_length=1, max_length=4000)
+    session_name: str = Field(default="default", min_length=1, max_length=200)
+
+
+class SessionResumeParams(SessionParams):
+    """Optional guidance supplied while resuming a recoverable execution."""
+
+    instruction: str = Field(default="", max_length=20_000)
+
+
 class JsonRpcError(StrictModel):
     """Standard JSON-RPC error object."""
     code: int

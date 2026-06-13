@@ -27,9 +27,11 @@ class WorkspaceRuntimeFactory:
         self,
         model_provider: ModelProvider | None = None,
         run_limits: RunLimits | None = None,
+        checkpointer=None,
     ) -> None:
         self.model_provider = model_provider or OpenAICompatibleProvider()
         self.run_limits = run_limits or RunLimits()
+        self.checkpointer = checkpointer
 
     def create(self, workspace: WorkspaceContext) -> WorkspaceRuntime:
         """Build Workspace-bound tools and compile the parent Agent graph."""
@@ -44,6 +46,8 @@ class WorkspaceRuntimeFactory:
             toolset.parent_tools,
             toolset.skill_manifest,
             self.model_provider,
+            checkpointer=self.checkpointer,
+            risk_by_name={spec.name: spec.risk for spec in toolset.registry.specs()},
         )
         return WorkspaceRuntime(workspace, toolset, graph)
 

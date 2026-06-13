@@ -9,10 +9,19 @@ from src.config.env import env_bool, env_float, env_int, env_str
 
 DEBUG_AGENT = env_bool("LEARN_AGENT_DEBUG", False)
 
-# Per-Turn execution limits. Graph steps count LangGraph node transitions;
-# tool calls count individual calls requested by the parent Agent.
-MAX_GRAPH_STEPS = 20
-MAX_TOOL_CALLS_PER_TURN = 12
+# Per-Slice and per-Grant execution limits. A Slice is one bounded LangGraph
+# invocation; a Grant is the automatic work allowed by one chat/resume request.
+MAX_GRAPH_STEPS_PER_SLICE = env_int("LEARN_AGENT_MAX_GRAPH_STEPS_PER_SLICE", 20)
+MAX_AUTO_SLICES_PER_GRANT = env_int("LEARN_AGENT_MAX_AUTO_SLICES_PER_GRANT", 3)
+MAX_GRANT_WALL_SECONDS = env_float("LEARN_AGENT_MAX_GRANT_WALL_SECONDS", 600.0)
+MAX_PARALLEL_TOOL_CALLS = env_int("LEARN_AGENT_MAX_PARALLEL_TOOL_CALLS", 4)
+MAX_CONTROLLED_EXECUTIONS_PER_GRANT = env_int(
+    "LEARN_AGENT_MAX_CONTROLLED_EXECUTIONS_PER_GRANT", 12
+)
+MAX_DELEGATIONS_PER_GRANT = env_int("LEARN_AGENT_MAX_DELEGATIONS_PER_GRANT", 6)
+HARD_MAX_TOOL_CALLS_PER_GRANT = env_int("LEARN_AGENT_HARD_MAX_TOOL_CALLS_PER_GRANT", 100)
+# Backward-compatible name while callers migrate to explicit Slice terminology.
+MAX_GRAPH_STEPS = MAX_GRAPH_STEPS_PER_SLICE
 BASH_PATH = "bash"
 
 # Shared OpenAI-compatible model configuration. The generic LEARN_AGENT names
@@ -61,6 +70,9 @@ SESSION_SUMMARY_MAX_CHARS = 4000
 SUMMARY_SOURCE_CHAR_LIMIT = 12000
 
 MEMORY_ENABLED = True
+# Optional future PostgreSQL business projection. Disabled means local SQLite
+# remains authoritative without accumulating an unconsumed projection outbox.
+POSTGRES_PROJECTION_ENABLED = env_bool("LEARN_AGENT_POSTGRES_PROJECTION_ENABLED", False)
 # LEARN_AGENT_DATABASE_URL overrides the split host/port/name/user/password
 # settings. All Session, memory, and observation data share this PostgreSQL.
 MEMORY_DB_URL = env_str("LEARN_AGENT_DATABASE_URL", "")
@@ -97,10 +109,10 @@ MEMORY_EXTRACT_SOURCE_CHAR_LIMIT = 12000
 
 AGENT_EVENTS_ENABLED = True
 # Event sinks observe business behavior and must never determine its result.
-AGENT_EVENTS_POSTGRES_ENABLED = True
+AGENT_EVENTS_POSTGRES_ENABLED = env_bool("LEARN_AGENT_EVENTS_POSTGRES_ENABLED", False)
 AGENT_EVENTS_CONSOLE_ENABLED = False
-AGENT_EVENTS_FILE_ENABLED = False
-AGENT_EVENTS_FILE_PATH = "logs/agent_events.jsonl"
+AGENT_EVENTS_FILE_ENABLED = env_bool("LEARN_AGENT_EVENTS_FILE_ENABLED", True)
+AGENT_EVENTS_FILE_PATH = env_str("LEARN_AGENT_EVENTS_FILE_PATH", "")
 AGENT_EVENTS_PAYLOAD_PREVIEW_LIMIT = 1000
 AGENT_EVENTS_ASYNC_WRITE = True
 # PostgreSQL event writes are queued and flushed by size or elapsed interval.

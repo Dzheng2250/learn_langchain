@@ -19,6 +19,7 @@ def create_delegate_tool(
     model_provider: ModelProvider | None = None,
     *,
     max_steps: int = SUBAGENT_MAX_STEPS,
+    risk_by_name=None,
 ):
     """Create a delegate tool whose sub-agent cannot recursively delegate."""
     provider = model_provider or OpenAICompatibleProvider()
@@ -47,7 +48,14 @@ def create_delegate_tool(
 
     builder = StateGraph(MessagesState)
     builder.add_node("subagent", subagent_node)
-    builder.add_node("tools", ObservedToolNode(base_tools, event_source="subagent_tool_node"))
+    builder.add_node(
+        "tools",
+        ObservedToolNode(
+            base_tools,
+            event_source="subagent_tool_node",
+            risk_by_name=risk_by_name,
+        ),
+    )
     builder.add_edge(START, "subagent")
     builder.add_conditional_edges("subagent", tools_condition, {"tools": "tools", "__end__": END})
     builder.add_edge("tools", "subagent")

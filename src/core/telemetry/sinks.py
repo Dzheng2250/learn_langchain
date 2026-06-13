@@ -7,6 +7,7 @@ import threading
 import time
 
 from src.config.settings import AGENT_EVENTS_FILE_PATH
+from src.config.paths import telemetry_dir
 from src.core.common.debug import debug_print
 from src.core.telemetry.models import BatchEventSink, TelemetryEvent
 from src.core.telemetry.serialization import event_to_dict
@@ -40,17 +41,26 @@ class ConsoleEventSink(BaseEventSink):
 
 
 class JsonlFileEventSink(BaseEventSink):
-    """Append one JSON object per line to a local file."""
+    """Append event batches to a local JSONL file."""
 
     def __init__(self, path: str = AGENT_EVENTS_FILE_PATH) -> None:
-        self.path = path
+        self.path = path or str(telemetry_dir() / "events.jsonl")
 
     def emit(self, event: TelemetryEvent) -> None:
+        self.emit_batch([event])
+
+    def emit_batch(self, events: list[TelemetryEvent]) -> None:
+        """Write one batch with one open/close cycle."""
+        if not events:
+            return
         directory = os.path.dirname(self.path)
         if directory:
             os.makedirs(directory, exist_ok=True)
         with open(self.path, "a", encoding="utf-8") as file:
-            file.write(json.dumps(event_to_dict(event), ensure_ascii=False, default=str) + "\n")
+            file.writelines(
+                json.dumps(event_to_dict(event), ensure_ascii=False, default=str) + "\n"
+                for event in events
+            )
 
 
 class PostgresEventSink(BaseEventSink):
