@@ -8,6 +8,7 @@
 - [PostgreSQL 到本地状态迁移](docs/local-state-migration.md)
 - [本地优先优化的原因、风险与设计审查](docs/local-first-rationale-and-review.md)
 - [最终响应、后台维护与 Checkpoint 一致性](docs/response-finalization-and-checkpoint-consistency.md)
+- [配置、领域常量与 Prompt 管理边界](docs/configuration-and-domain-constants.md)
 
 这是一个基于 LangChain、LangGraph 和本地 SQLite 状态库的 coding agent。
 
@@ -164,6 +165,7 @@ src/
 - [非功能性需求](docs/non-functional-requirements.md)
 - [非功能性测试与验收方案](docs/non-functional-testing.md)
 - [Workspace 隔离与数据库迁移](docs/workspace-isolation-and-migration.md)
+- [配置、领域常量与 Prompt 管理边界](docs/configuration-and-domain-constants.md)
 
 ## 测试
 

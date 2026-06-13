@@ -8,6 +8,7 @@ from typing import Protocol
 from src.core.agent.contracts import ManagedAgentService
 from src.core.agent.service import AgentTurnService
 from src.core.agent.models import RunLimits
+from src.config.maintenance import MaintenanceSettings
 from src.core.bus.router import RpcRouter
 from src.core.config.models import CoreConfig
 from src.core.handlers import AgentHandlers, CoreHandlers
@@ -25,6 +26,7 @@ from src.core.state import (
 from src.core.finalization import CompletedTurnCommitter, TurnFinalizer
 from src.core.maintenance import (
     ExecutionRecoveryCoordinator,
+    MaintenanceJobType,
     MaintenanceRepository,
     MaintenanceScheduler,
 )
@@ -95,7 +97,11 @@ class CoreApp:
             run_limits = RunLimits()
             workspace_repository = LocalWorkspaceRepository(self._state_database)
             execution_repository = ExecutionRepository(self._state_database)
-            maintenance_repository = MaintenanceRepository(self._state_database)
+            maintenance_settings = MaintenanceSettings.load()
+            maintenance_repository = MaintenanceRepository(
+                self._state_database,
+                maintenance_settings,
+            )
             context_manager = AgentContextManager(model_provider=model_provider)
 
             def state_store_factory():
@@ -107,20 +113,21 @@ class CoreApp:
             maintenance_scheduler = MaintenanceScheduler(
                 maintenance_repository,
                 {
-                    "context_summary": ContextSummaryHandler(
+                    MaintenanceJobType.CONTEXT_SUMMARY: ContextSummaryHandler(
                         workspace_repository,
                         state_store_factory,
                         context_manager,
                     ),
-                    "memory_extract": MemoryExtractionHandler(
+                    MaintenanceJobType.MEMORY_EXTRACT: MemoryExtractionHandler(
                         workspace_repository,
                         state_store_factory,
                     ),
-                    "checkpoint_cleanup": CheckpointCleanupHandler(
+                    MaintenanceJobType.CHECKPOINT_CLEANUP: CheckpointCleanupHandler(
                         checkpoint_manager,
                         execution_repository,
                     ),
                 },
+                settings=maintenance_settings,
             )
             turn_finalizer = TurnFinalizer(
                 context_manager,

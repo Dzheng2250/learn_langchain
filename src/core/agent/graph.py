@@ -8,6 +8,7 @@ from src.config.settings import FILE_READ_CHUNK_LINES
 from src.core.common.debug import debug_print, format_message, format_messages
 from src.core.telemetry import emit_event, record_error
 from src.core.llm.provider import LlmPurpose, ModelProvider, OpenAICompatibleProvider
+from src.core.prompts import build_parent_system_prompt
 from src.core.tools.observed import ObservedToolNode
 
 
@@ -32,18 +33,7 @@ def create_parent_graph(
         """Call the parent LLM with system policy and current graph messages."""
         llm_messages = [
             SystemMessage(
-                content=(
-                    "You are a practical coding assistant working inside one strictly isolated "
-                    "local workspace. Never claim access outside that workspace.\n\n"
-                    "Use relevant long-term memory as background, but prefer the current request. "
-                    "When the user asks you to remember something, do not claim it is already "
-                    "saved; durable memory extraction is queued after the response and reported "
-                    "separately by the client. "
-                    "Use read_workspace_file_lite only for targeted snippets and delegate broad "
-                    "inspection to delegate_to_subagent. Use run_command_in_container for commands. "
-                    f"The sub-agent reads chunks of at most {FILE_READ_CHUNK_LINES} lines.\n\n"
-                    f"Local skill manifest:\n{skill_manifest}"
-                )
+                content=build_parent_system_prompt(skill_manifest, FILE_READ_CHUNK_LINES)
             ),
             *state["messages"],
         ]

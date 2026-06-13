@@ -72,7 +72,12 @@ CREATE TABLE IF NOT EXISTS executions (
     workspace_id TEXT NOT NULL,
     session_id TEXT NOT NULL,
     checkpoint_thread_id TEXT NOT NULL UNIQUE,
-    status TEXT NOT NULL,
+    status TEXT NOT NULL CHECK (
+        status IN (
+            'running', 'paused_budget', 'paused_error', 'paused_confirmation',
+            'paused_recovery', 'unrecoverable_checkpoint', 'completed', 'discarded'
+        )
+    ),
     stop_reason TEXT NOT NULL DEFAULT '',
     original_input TEXT NOT NULL,
     progress_summary TEXT NOT NULL DEFAULT '',
@@ -82,7 +87,9 @@ CREATE TABLE IF NOT EXISTS executions (
     controlled_executions_used INTEGER NOT NULL DEFAULT 0,
     delegations_used INTEGER NOT NULL DEFAULT 0,
     tool_calls_used INTEGER NOT NULL DEFAULT 0,
-    checkpoint_state TEXT NOT NULL DEFAULT 'uninitialized',
+    checkpoint_state TEXT NOT NULL DEFAULT 'uninitialized' CHECK (
+        checkpoint_state IN ('uninitialized', 'available', 'cleanup_pending', 'cleaned', 'missing')
+    ),
     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
     completed_at TEXT,
@@ -95,7 +102,12 @@ CREATE TABLE IF NOT EXISTS execution_slices (
     execution_id TEXT NOT NULL REFERENCES executions(execution_id) ON DELETE CASCADE,
     grant_index INTEGER NOT NULL,
     slice_index INTEGER NOT NULL,
-    status TEXT NOT NULL,
+    status TEXT NOT NULL CHECK (
+        status IN (
+            'running', 'paused_budget', 'paused_error', 'paused_confirmation',
+            'paused_recovery', 'completed', 'discarded'
+        )
+    ),
     stop_reason TEXT NOT NULL DEFAULT '',
     graph_steps_used INTEGER NOT NULL DEFAULT 0,
     started_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
@@ -177,7 +189,9 @@ CREATE TABLE IF NOT EXISTS maintenance_jobs (
     job_type TEXT NOT NULL,
     dedupe_key TEXT NOT NULL UNIQUE,
     priority INTEGER NOT NULL DEFAULT 0,
-    status TEXT NOT NULL DEFAULT 'pending',
+    status TEXT NOT NULL DEFAULT 'pending' CHECK (
+        status IN ('pending', 'running', 'succeeded', 'failed')
+    ),
     payload TEXT NOT NULL DEFAULT '{}',
     attempts INTEGER NOT NULL DEFAULT 0,
     max_attempts INTEGER NOT NULL DEFAULT 5,

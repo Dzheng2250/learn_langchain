@@ -17,6 +17,7 @@ from src.core.agent.coordinator import TurnCoordinator
 from src.core.agent.budget import ExecutionBudget, bind_execution_budget, reset_execution_budget
 from src.core.agent.models import AgentRunContext, RunLimits, StopReason
 from src.core.state.contracts import StateStore
+from src.core.state.types import ExecutionStatus
 from src.core.context.manager import AgentContextManager
 from src.core.telemetry import (
     bind_context,
@@ -298,7 +299,7 @@ class AgentTurnService:
                 if execution is not None and self.execution_repository is not None:
                     self.execution_repository.pause(
                         execution.execution_id,
-                        "paused_error",
+                        ExecutionStatus.PAUSED_ERROR,
                         StopReason.TURN_ERROR.value,
                         f"Workspace runtime creation failed: {exc}",
                     )
@@ -347,7 +348,7 @@ class AgentTurnService:
             except Exception as exc:
                 self.execution_repository.pause(
                     pending.execution_id,
-                    "paused_error",
+                    ExecutionStatus.PAUSED_ERROR,
                     StopReason.TURN_ERROR.value,
                     f"Execution resume preparation failed: {exc}",
                 )
@@ -395,16 +396,20 @@ class AgentTurnService:
             pending = self.execution_repository.discard(session)
             if self.maintenance_repository is not None:
                 from src.core.maintenance.models import MaintenanceJobSpec
+                from src.core.maintenance.types import (
+                    MaintenanceJobType,
+                    MaintenancePriority,
+                )
 
                 self.maintenance_repository.enqueue(
                     MaintenanceJobSpec(
-                        "checkpoint_cleanup",
+                        MaintenanceJobType.CHECKPOINT_CLEANUP,
                         f"checkpoint_cleanup:{pending.execution_id}",
                         str(session.workspace.workspace_id),
                         str(session.session_id),
                         {"checkpoint_thread_id": pending.checkpoint_thread_id},
                         execution_id=pending.execution_id,
-                        priority=100,
+                        priority=MaintenancePriority.CHECKPOINT_CLEANUP,
                     )
                 )
                 if self.maintenance_scheduler is not None:
@@ -509,7 +514,7 @@ class AgentTurnService:
                             self.execution_repository.finish_slice(
                                 slice_id,
                                 execution.execution_id,
-                                status="paused_budget",
+                                status=ExecutionStatus.PAUSED_BUDGET,
                                 stop_reason=exhausted_reason,
                                 graph_steps_used=int(item["data"].get("graph_steps_used", 0)),
                                 usage=usage,
@@ -523,7 +528,7 @@ class AgentTurnService:
                                 self.execution_repository.finish_slice(
                                     slice_id,
                                     execution.execution_id,
-                                    status="paused_error",
+                                    status=ExecutionStatus.PAUSED_ERROR,
                                     stop_reason=item["data"].get(
                                         "stop_reason",
                                         StopReason.TURN_ERROR.value,
@@ -536,7 +541,7 @@ class AgentTurnService:
                                 active_slice_id = None
                             self.execution_repository.pause(
                                 execution.execution_id,
-                                "paused_error",
+                                ExecutionStatus.PAUSED_ERROR,
                                 item["data"].get("stop_reason", StopReason.TURN_ERROR.value),
                                 item["data"].get("message", ""),
                                 usage=usage,
@@ -630,9 +635,9 @@ class AgentTurnService:
             if execution is not None and self.execution_repository is not None:
                 self.execution_repository.pause(
                     execution.execution_id,
-                    "paused_confirmation"
+                    ExecutionStatus.PAUSED_CONFIRMATION
                     if exhausted_reason == StopReason.BUDGET_LIMIT.value
-                    else "paused_budget",
+                    else ExecutionStatus.PAUSED_BUDGET,
                     exhausted_reason,
                     summary,
                     usage=snapshot,
@@ -666,13 +671,13 @@ class AgentTurnService:
                         self.execution_repository.finish_slice(
                             active_slice_id,
                             execution.execution_id,
-                            status="paused_error",
+                            status=ExecutionStatus.PAUSED_ERROR,
                             stop_reason=StopReason.TURN_ERROR.value,
                             usage=usage,
                         )
                     self.execution_repository.pause(
                         execution.execution_id,
-                        "paused_error",
+                        ExecutionStatus.PAUSED_ERROR,
                         StopReason.TURN_ERROR.value,
                         str(exc),
                         usage=usage,

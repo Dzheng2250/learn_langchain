@@ -4,16 +4,11 @@ from dataclasses import dataclass
 from uuid import uuid4
 
 from src.core.state.database import LocalStateDatabase
+from src.core.state.types import CheckpointState, ExecutionStatus
 from src.core.workspace.models import SessionContext
 
 
-ACTIVE_EXECUTION_STATUSES = (
-    "running",
-    "paused_budget",
-    "paused_error",
-    "paused_confirmation",
-    "paused_recovery",
-)
+ACTIVE_EXECUTION_STATUSES = tuple(status.value for status in ExecutionStatus.active())
 
 
 @dataclass(frozen=True)
@@ -22,7 +17,7 @@ class PendingExecution:
 
     execution_id: str
     checkpoint_thread_id: str
-    status: str
+    status: ExecutionStatus
     stop_reason: str
     original_input: str
     progress_summary: str
@@ -32,12 +27,15 @@ class PendingExecution:
     controlled_executions_used: int
     delegations_used: int
     tool_calls_used: int
-    checkpoint_state: str
+    checkpoint_state: CheckpointState
 
     @property
     def recoverable(self) -> bool:
         """Return whether a resume operation may safely use the checkpoint."""
-        return self.status in ACTIVE_EXECUTION_STATUSES and self.checkpoint_state == "available"
+        return (
+            self.status in ACTIVE_EXECUTION_STATUSES
+            and self.checkpoint_state == CheckpointState.AVAILABLE
+        )
 
 
 class ExecutionRepository:
@@ -53,12 +51,13 @@ class ExecutionRepository:
                 SELECT e.* FROM sessions s
                 JOIN executions e ON e.execution_id = s.pending_execution_id
                 WHERE s.workspace_id = ? AND s.session_id = ?
-                  AND e.status IN (
-                      'running', 'paused_budget', 'paused_error',
-                      'paused_confirmation', 'paused_recovery'
-                  )
+                  AND e.status IN (?, ?, ?, ?, ?)
                 """,
-                (str(session.workspace.workspace_id), str(session.session_id)),
+                (
+                    str(session.workspace.workspace_id),
+                    str(session.session_id),
+                    *ACTIVE_EXECUTION_STATUSES,
+                ),
             ).fetchone()
         return self._from_row(row) if row else None
 
@@ -92,13 +91,14 @@ class ExecutionRepository:
                 INSERT INTO executions(
                     execution_id, workspace_id, session_id, checkpoint_thread_id,
                     status, original_input
-                ) VALUES (?, ?, ?, ?, 'running', ?)
+                ) VALUES (?, ?, ?, ?, ?, ?)
                 """,
                 (
                     execution_id,
                     str(session.workspace.workspace_id),
                     str(session.session_id),
                     thread_id,
+                    ExecutionStatus.RUNNING,
                     user_input,
                 ),
             )
@@ -125,14 +125,14 @@ class ExecutionRepository:
         with self.database.transaction() as conn:
             conn.execute(
                 """
-                UPDATE executions SET status='running', stop_reason='',
+                UPDATE executions SET status=?, stop_reason='',
                     grant_index=grant_index+1, slice_index=0,
                     graph_steps_used=0, controlled_executions_used=0,
                     delegations_used=0, tool_calls_used=0,
                     updated_at=CURRENT_TIMESTAMP
                 WHERE execution_id=?
                 """,
-                (pending.execution_id,),
+                (ExecutionStatus.RUNNING, pending.execution_id),
             )
         return self.get_pending(session)
 
@@ -142,16 +142,16 @@ class ExecutionRepository:
             conn.execute(
                 """
                 INSERT INTO execution_slices(slice_id, execution_id, grant_index, slice_index, status)
-                VALUES (?, ?, ?, ?, 'running')
+                VALUES (?, ?, ?, ?, ?)
                 """,
-                (slice_id, execution_id, grant_index, slice_index),
+                (slice_id, execution_id, grant_index, slice_index, ExecutionStatus.RUNNING),
             )
             conn.execute(
                 """
-                UPDATE executions SET slice_index=?, status='running', updated_at=CURRENT_TIMESTAMP
+                UPDATE executions SET slice_index=?, status=?, updated_at=CURRENT_TIMESTAMP
                 WHERE execution_id=?
                 """,
-                (slice_index, execution_id),
+                (slice_index, ExecutionStatus.RUNNING, execution_id),
             )
         return slice_id
 
@@ -160,13 +160,14 @@ class ExecutionRepository:
         slice_id: str,
         execution_id: str,
         *,
-        status: str,
+        status: ExecutionStatus | str,
         stop_reason: str,
         graph_steps_used: int = 0,
         usage: dict | None = None,
     ) -> None:
         """Finish one Slice and persist the latest Grant budget snapshot."""
         usage = usage or {}
+        status = ExecutionStatus(status)
         with self.database.transaction() as conn:
             conn.execute(
                 """
@@ -200,15 +201,17 @@ class ExecutionRepository:
     def pause(
         self,
         execution_id: str,
-        status: str,
+        status: ExecutionStatus | str,
         stop_reason: str,
         summary: str = "",
         *,
         usage: dict | None = None,
-        checkpoint_state: str = "available",
+        checkpoint_state: CheckpointState | str = CheckpointState.AVAILABLE,
     ) -> None:
         """Persist a recoverable pause and the latest Grant budget counters."""
         usage = usage or {}
+        status = ExecutionStatus(status)
+        checkpoint_state = CheckpointState(checkpoint_state)
         with self.database.transaction() as conn:
             conn.execute(
                 """
@@ -237,12 +240,17 @@ class ExecutionRepository:
         execution_update = conn.execute(
             """
             UPDATE executions
-            SET status='completed', stop_reason='completed',
-                checkpoint_state='cleanup_pending', completed_at=CURRENT_TIMESTAMP,
+            SET status=?, stop_reason=?,
+                checkpoint_state=?, completed_at=CURRENT_TIMESTAMP,
                 updated_at=CURRENT_TIMESTAMP
             WHERE execution_id=?
             """,
-            (execution_id,),
+            (
+                ExecutionStatus.COMPLETED,
+                ExecutionStatus.COMPLETED,
+                CheckpointState.CLEANUP_PENDING,
+                execution_id,
+            ),
         )
         if execution_update.rowcount != 1:
             raise RuntimeError("Completed Turn did not update exactly one Execution.")
@@ -269,11 +277,16 @@ class ExecutionRepository:
         slice_update = conn.execute(
             """
             UPDATE execution_slices
-            SET status='completed', stop_reason='completed', graph_steps_used=?,
+            SET status=?, stop_reason=?, graph_steps_used=?,
                 finished_at=CURRENT_TIMESTAMP
             WHERE slice_id=?
             """,
-            (graph_steps_used, slice_id),
+            (
+                ExecutionStatus.COMPLETED,
+                ExecutionStatus.COMPLETED,
+                graph_steps_used,
+                slice_id,
+            ),
         )
         if slice_update.rowcount != 1:
             raise RuntimeError("Completed Turn did not finish exactly one Execution Slice.")
@@ -299,10 +312,10 @@ class ExecutionRepository:
         with self.database.transaction() as conn:
             conn.execute(
                 """
-                UPDATE executions SET checkpoint_state='cleaned', updated_at=CURRENT_TIMESTAMP
+                UPDATE executions SET checkpoint_state=?, updated_at=CURRENT_TIMESTAMP
                 WHERE execution_id=?
                 """,
-                (execution_id,),
+                (CheckpointState.CLEANED, execution_id),
             )
 
     def mark_checkpoint_missing(self, execution_id: str) -> None:
@@ -310,11 +323,15 @@ class ExecutionRepository:
             conn.execute(
                 """
                 UPDATE executions
-                SET status='unrecoverable_checkpoint', checkpoint_state='missing',
+                SET status=?, checkpoint_state=?,
                     stop_reason='checkpoint_missing', updated_at=CURRENT_TIMESTAMP
                 WHERE execution_id=?
                 """,
-                (execution_id,),
+                (
+                    ExecutionStatus.UNRECOVERABLE_CHECKPOINT,
+                    CheckpointState.MISSING,
+                    execution_id,
+                ),
             )
 
     def mark_paused_recovery(self, execution_id: str) -> None:
@@ -322,11 +339,15 @@ class ExecutionRepository:
             conn.execute(
                 """
                 UPDATE executions
-                SET status='paused_recovery', checkpoint_state='available',
+                SET status=?, checkpoint_state=?,
                     stop_reason='core_restarted', updated_at=CURRENT_TIMESTAMP
                 WHERE execution_id=?
                 """,
-                (execution_id,),
+                (
+                    ExecutionStatus.PAUSED_RECOVERY,
+                    CheckpointState.AVAILABLE,
+                    execution_id,
+                ),
             )
 
     def list_for_recovery(self) -> list[dict]:
@@ -337,15 +358,18 @@ class ExecutionRepository:
                 SELECT execution_id, workspace_id, session_id, checkpoint_thread_id,
                        status, checkpoint_state
                 FROM executions
-                WHERE status IN (
-                    'running', 'paused_budget', 'paused_error',
-                    'paused_confirmation', 'paused_recovery'
-                )
+                WHERE status IN (?, ?, ?, ?, ?)
                    OR (
-                       status IN ('completed', 'discarded')
-                       AND checkpoint_state != 'cleaned'
+                       status IN (?, ?)
+                       AND checkpoint_state != ?
                    )
-                """
+                """,
+                (
+                    *ACTIVE_EXECUTION_STATUSES,
+                    ExecutionStatus.COMPLETED,
+                    ExecutionStatus.DISCARDED,
+                    CheckpointState.CLEANED,
+                ),
             ).fetchall()
         return [dict(row) for row in rows]
 
@@ -356,11 +380,16 @@ class ExecutionRepository:
         with self.database.transaction() as conn:
             conn.execute(
                 """
-                UPDATE executions SET status='discarded', stop_reason='discarded',
-                    checkpoint_state='cleanup_pending', completed_at=CURRENT_TIMESTAMP,
+                UPDATE executions SET status=?, stop_reason=?,
+                    checkpoint_state=?, completed_at=CURRENT_TIMESTAMP,
                     updated_at=CURRENT_TIMESTAMP WHERE execution_id=?
                 """,
-                (pending.execution_id,),
+                (
+                    ExecutionStatus.DISCARDED,
+                    ExecutionStatus.DISCARDED,
+                    CheckpointState.CLEANUP_PENDING,
+                    pending.execution_id,
+                ),
             )
             conn.execute(
                 "UPDATE sessions SET pending_execution_id=NULL, updated_at=CURRENT_TIMESTAMP WHERE session_id=?",
@@ -372,7 +401,7 @@ class ExecutionRepository:
         return PendingExecution(
             execution_id=row["execution_id"],
             checkpoint_thread_id=row["checkpoint_thread_id"],
-            status=row["status"],
+            status=ExecutionStatus(row["status"]),
             stop_reason=row["stop_reason"],
             original_input=row["original_input"],
             progress_summary=row["progress_summary"],
@@ -382,5 +411,5 @@ class ExecutionRepository:
             controlled_executions_used=int(row["controlled_executions_used"]),
             delegations_used=int(row["delegations_used"]),
             tool_calls_used=int(row["tool_calls_used"]),
-            checkpoint_state=row["checkpoint_state"],
+            checkpoint_state=CheckpointState(row["checkpoint_state"]),
         )

@@ -2,6 +2,7 @@
 
 from src.core.finalization.models import CompletedTurn, FinalizationResult
 from src.core.maintenance.models import MaintenanceJobSpec
+from src.core.maintenance.types import MaintenanceJobType, MaintenancePriority
 from src.core.memory.policy import has_explicit_memory_request, memory_extraction_reason
 from src.core.telemetry import event_span, record_error
 
@@ -43,12 +44,12 @@ class TurnFinalizer:
         session_id = str(session.session_id)
         jobs = [
             MaintenanceJobSpec(
-                "context_summary",
+                MaintenanceJobType.CONTEXT_SUMMARY,
                 f"context_summary:{session_id}:{turn_index}",
                 workspace_id,
                 session_id,
                 {"target_turn": turn_index},
-                priority=20,
+                priority=MaintenancePriority.CONTEXT_SUMMARY,
             )
         ]
         memory_reason = memory_extraction_reason(user_input, turn_index, messages)
@@ -56,24 +57,28 @@ class TurnFinalizer:
         if self.memory_enabled and memory_reason not in {"not_triggered", "disabled"}:
             jobs.append(
                 MaintenanceJobSpec(
-                    "memory_extract",
+                    MaintenanceJobType.MEMORY_EXTRACT,
                     f"memory_extract:{session_id}:{turn_index}",
                     workspace_id,
                     session_id,
                     {"turn_index": turn_index, "reason": memory_reason},
-                    priority=30 if explicit_memory else 10,
+                    priority=(
+                        MaintenancePriority.EXPLICIT_MEMORY
+                        if explicit_memory
+                        else MaintenancePriority.NORMAL_MEMORY
+                    ),
                 )
             )
         if execution is not None:
             jobs.append(
                 MaintenanceJobSpec(
-                    "checkpoint_cleanup",
+                    MaintenanceJobType.CHECKPOINT_CLEANUP,
                     f"checkpoint_cleanup:{execution.execution_id}",
                     workspace_id,
                     session_id,
                     {"checkpoint_thread_id": execution.checkpoint_thread_id},
                     execution_id=execution.execution_id,
-                    priority=100,
+                    priority=MaintenancePriority.CHECKPOINT_CLEANUP,
                 )
             )
         completed = CompletedTurn(
@@ -115,7 +120,7 @@ class TurnFinalizer:
             tuple(message_ids),
             "pending" if jobs else "none",
             "pending"
-            if any(job.job_type == "memory_extract" for job in jobs)
+            if any(job.job_type == MaintenanceJobType.MEMORY_EXTRACT for job in jobs)
             else "not_scheduled",
             explicit_memory,
         )

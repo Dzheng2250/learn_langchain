@@ -3,15 +3,23 @@
 import json
 from uuid import uuid4
 
+from src.config.maintenance import MaintenanceSettings
 from src.core.maintenance.models import MaintenanceJob, MaintenanceJobSpec
+from src.core.maintenance.types import MaintenanceStatus
 from src.core.state.database import LocalStateDatabase
 
 
 class MaintenanceRepository:
     """Enqueue, lease, retry, and inspect maintenance jobs in ``state.db``."""
 
-    def __init__(self, database: LocalStateDatabase) -> None:
+    def __init__(
+        self,
+        database: LocalStateDatabase,
+        settings: MaintenanceSettings | None = None,
+    ) -> None:
         self.database = database
+        self.settings = settings or MaintenanceSettings.load()
+        self.settings.validate()
 
     def enqueue_in_transaction(self, conn, spec: MaintenanceJobSpec) -> str:
         """Insert one idempotent task inside an existing business transaction."""
@@ -33,7 +41,7 @@ class MaintenanceRepository:
                 spec.dedupe_key,
                 int(spec.priority),
                 json.dumps(spec.payload, ensure_ascii=False, default=str),
-                max(1, int(spec.max_attempts)),
+                max(1, int(spec.max_attempts or self.settings.default_max_attempts)),
             ),
         )
         row = conn.execute(
@@ -47,35 +55,45 @@ class MaintenanceRepository:
         with self.database.transaction() as conn:
             return self.enqueue_in_transaction(conn, spec)
 
-    def claim_next(self, *, lease_seconds: float = 60) -> MaintenanceJob | None:
+    def claim_next(self, *, lease_seconds: float | None = None) -> MaintenanceJob | None:
         """Atomically lease the highest-priority ready job."""
+        lease_seconds = (
+            self.settings.lease_seconds if lease_seconds is None else lease_seconds
+        )
         modifier = f"+{max(1, int(lease_seconds))} seconds"
         with self.database.transaction() as conn:
             conn.execute(
                 """
                 UPDATE maintenance_jobs
-                SET status='pending', lease_expires_at=NULL, updated_at=CURRENT_TIMESTAMP
-                WHERE status='running' AND lease_expires_at <= CURRENT_TIMESTAMP
-                """
+                SET status=?, lease_expires_at=NULL, updated_at=CURRENT_TIMESTAMP
+                WHERE status=? AND lease_expires_at <= CURRENT_TIMESTAMP
+                """,
+                (MaintenanceStatus.PENDING, MaintenanceStatus.RUNNING),
             )
             row = conn.execute(
                 """
                 SELECT * FROM maintenance_jobs
-                WHERE status='pending' AND next_attempt_at <= CURRENT_TIMESTAMP
+                WHERE status=? AND next_attempt_at <= CURRENT_TIMESTAMP
                 ORDER BY priority DESC, created_at, job_id
                 LIMIT 1
-                """
+                """,
+                (MaintenanceStatus.PENDING,),
             ).fetchone()
             if not row:
                 return None
             conn.execute(
                 """
                 UPDATE maintenance_jobs
-                SET status='running', attempts=attempts + 1,
+                SET status=?, attempts=attempts + 1,
                     lease_expires_at=datetime('now', ?), updated_at=CURRENT_TIMESTAMP
-                WHERE job_id=? AND status='pending'
+                WHERE job_id=? AND status=?
                 """,
-                (modifier, row["job_id"]),
+                (
+                    MaintenanceStatus.RUNNING,
+                    modifier,
+                    row["job_id"],
+                    MaintenanceStatus.PENDING,
+                ),
             )
             claimed = conn.execute(
                 "SELECT * FROM maintenance_jobs WHERE job_id=?",
@@ -89,17 +107,20 @@ class MaintenanceRepository:
             conn.execute(
                 """
                 UPDATE maintenance_jobs
-                SET status='succeeded', lease_expires_at=NULL, finished_at=CURRENT_TIMESTAMP,
+                SET status=?, lease_expires_at=NULL, finished_at=CURRENT_TIMESTAMP,
                     updated_at=CURRENT_TIMESTAMP, last_error=''
                 WHERE job_id=?
                 """,
-                (job_id,),
+                (MaintenanceStatus.SUCCEEDED, job_id),
             )
 
     def fail(self, job: MaintenanceJob, error: str) -> None:
         """Retry a failed task with bounded exponential backoff."""
         terminal = job.attempts >= job.max_attempts
-        delay_seconds = min(300, 2 ** max(0, job.attempts - 1))
+        delay_seconds = min(
+            self.settings.max_retry_delay_seconds,
+            2 ** max(0, job.attempts - 1),
+        )
         with self.database.transaction() as conn:
             conn.execute(
                 """
@@ -110,8 +131,8 @@ class MaintenanceRepository:
                 WHERE job_id=?
                 """,
                 (
-                    "failed" if terminal else "pending",
-                    error[:2000],
+                    MaintenanceStatus.FAILED if terminal else MaintenanceStatus.PENDING,
+                    error[: self.settings.error_preview_limit],
                     f"+{delay_seconds} seconds",
                     1 if terminal else 0,
                     job.job_id,
@@ -120,16 +141,26 @@ class MaintenanceRepository:
 
     def counts_for_session(self, workspace_id: str, session_id: str) -> dict[str, int]:
         """Return pending/running/failed counts for a Session control response."""
-        counts = {"pending": 0, "running": 0, "failed": 0}
+        counts = {
+            MaintenanceStatus.PENDING.value: 0,
+            MaintenanceStatus.RUNNING.value: 0,
+            MaintenanceStatus.FAILED.value: 0,
+        }
         with self.database.connect() as conn:
             rows = conn.execute(
                 """
                 SELECT status, count(*) AS count FROM maintenance_jobs
                 WHERE workspace_id=? AND session_id=?
-                  AND status IN ('pending', 'running', 'failed')
+                  AND status IN (?, ?, ?)
                 GROUP BY status
                 """,
-                (workspace_id, session_id),
+                (
+                    workspace_id,
+                    session_id,
+                    MaintenanceStatus.PENDING,
+                    MaintenanceStatus.RUNNING,
+                    MaintenanceStatus.FAILED,
+                ),
             ).fetchall()
         for row in rows:
             counts[row["status"]] = int(row["count"])
@@ -150,11 +181,11 @@ class MaintenanceRepository:
             cur = conn.execute(
                 """
                 UPDATE maintenance_jobs
-                SET status='pending', attempts=0, next_attempt_at=CURRENT_TIMESTAMP,
+                SET status=?, attempts=0, next_attempt_at=CURRENT_TIMESTAMP,
                     lease_expires_at=NULL, finished_at=NULL, updated_at=CURRENT_TIMESTAMP
-                WHERE dedupe_key=? AND status='failed'
+                WHERE dedupe_key=? AND status=?
                 """,
-                (dedupe_key,),
+                (MaintenanceStatus.PENDING, dedupe_key, MaintenanceStatus.FAILED),
             )
         return cur.rowcount == 1
 
@@ -168,7 +199,7 @@ class MaintenanceRepository:
             job_type=row["job_type"],
             dedupe_key=row["dedupe_key"],
             priority=int(row["priority"]),
-            status=row["status"],
+            status=MaintenanceStatus(row["status"]),
             payload=json.loads(row["payload"] or "{}"),
             attempts=int(row["attempts"]),
             max_attempts=int(row["max_attempts"]),

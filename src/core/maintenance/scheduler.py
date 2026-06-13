@@ -3,6 +3,7 @@
 from collections.abc import Callable
 from threading import Event, Thread
 
+from src.config.maintenance import MaintenanceSettings
 from src.core.maintenance.models import MaintenanceJob
 from src.core.maintenance.repository import MaintenanceRepository
 from src.core.telemetry import bind_context, emit_event, record_error, reset_context
@@ -19,13 +20,27 @@ class MaintenanceScheduler:
         repository: MaintenanceRepository,
         handlers: dict[str, MaintenanceHandler],
         *,
-        poll_interval_seconds: float = 0.25,
-        lease_seconds: float = 60,
+        settings: MaintenanceSettings | None = None,
+        poll_interval_seconds: float | None = None,
+        lease_seconds: float | None = None,
     ) -> None:
+        policy = settings or MaintenanceSettings.load()
+        policy.validate()
         self.repository = repository
         self.handlers = dict(handlers)
-        self.poll_interval_seconds = max(0.05, float(poll_interval_seconds))
-        self.lease_seconds = max(1, float(lease_seconds))
+        self.poll_interval_seconds = max(
+            0.05,
+            float(
+                policy.poll_interval_seconds
+                if poll_interval_seconds is None
+                else poll_interval_seconds
+            ),
+        )
+        self.lease_seconds = max(
+            1,
+            float(policy.lease_seconds if lease_seconds is None else lease_seconds),
+        )
+        self.shutdown_timeout_seconds = policy.shutdown_timeout_seconds
         self._stop = Event()
         self._wake = Event()
         self._thread: Thread | None = None
@@ -42,13 +57,18 @@ class MaintenanceScheduler:
         """Prompt the worker after a Turn enqueues new work."""
         self._wake.set()
 
-    def close(self, timeout_seconds: float = 5) -> bool:
+    def close(self, timeout_seconds: float | None = None) -> bool:
         """Stop claiming new work; leased jobs recover after expiry on restart."""
         self._stop.set()
         self._wake.set()
         thread = self._thread
         if thread is not None:
-            thread.join(timeout=max(0, timeout_seconds))
+            timeout = (
+                self.shutdown_timeout_seconds
+                if timeout_seconds is None
+                else timeout_seconds
+            )
+            thread.join(timeout=max(0, timeout))
         stopped = thread is None or not thread.is_alive()
         # Keep the reference when shutdown times out. A later close() call can
         # still join the same worker, and callers know not to close resources

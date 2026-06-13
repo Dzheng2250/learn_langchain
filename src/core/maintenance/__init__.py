@@ -4,6 +4,7 @@ from .models import MaintenanceJob, MaintenanceJobSpec
 from .repository import MaintenanceRepository
 from .recovery import ExecutionRecoveryCoordinator
 from .scheduler import MaintenanceScheduler
+from .types import MaintenanceJobType, MaintenancePriority, MaintenanceStatus
 
 __all__ = [
     "MaintenanceJob",
@@ -11,4 +12,7 @@ __all__ = [
     "MaintenanceRepository",
     "MaintenanceScheduler",
     "ExecutionRecoveryCoordinator",
+    "MaintenanceJobType",
+    "MaintenancePriority",
+    "MaintenanceStatus",
 ]

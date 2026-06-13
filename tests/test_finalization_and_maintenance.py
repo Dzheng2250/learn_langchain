@@ -602,7 +602,26 @@ class LocalSchemaMigrationTest(unittest.TestCase):
         self.assertIn("summary_through_turn", session_columns)
         self.assertIn("checkpoint_state", execution_columns)
         self.assertIn("completed_at", execution_columns)
-        self.assertEqual(2, version)
+        self.assertEqual(3, version)
+        conn = sqlite3.connect(":memory:")
+        conn.row_factory = sqlite3.Row
+        conn.executescript(
+            """
+            CREATE TABLE local_schema_migrations(version INTEGER PRIMARY KEY, name TEXT, applied_at TEXT);
+            INSERT INTO local_schema_migrations VALUES (2, 'old', CURRENT_TIMESTAMP);
+            CREATE TABLE executions(
+                execution_id TEXT PRIMARY KEY,
+                checkpoint_state TEXT NOT NULL DEFAULT 'uninitialized'
+            );
+            """
+        )
+        apply_local_migrations(conn)
+        conn.execute("INSERT INTO executions(execution_id) VALUES ('execution')")
+        with self.assertRaises(sqlite3.IntegrityError):
+            conn.execute(
+                "UPDATE executions SET checkpoint_state='invented' WHERE execution_id='execution'"
+            )
+        conn.close()
 
     def test_newer_local_schema_version_is_rejected(self):
         database = LocalStateDatabase(":memory:")
@@ -610,11 +629,32 @@ class LocalSchemaMigrationTest(unittest.TestCase):
         database.initialize()
         with database.transaction() as conn:
             conn.execute(
-                "INSERT INTO local_schema_migrations(version, name) VALUES (3, 'future')"
+                "INSERT INTO local_schema_migrations(version, name) VALUES (4, 'future')"
             )
 
         with self.assertRaisesRegex(RuntimeError, "newer"):
             database.initialize()
+
+    def test_state_validation_migration_rejects_existing_unknown_status(self):
+        conn = sqlite3.connect(":memory:")
+        conn.row_factory = sqlite3.Row
+        conn.executescript(
+            """
+            CREATE TABLE local_schema_migrations(version INTEGER PRIMARY KEY, name TEXT, applied_at TEXT);
+            INSERT INTO local_schema_migrations VALUES (2, 'old', CURRENT_TIMESTAMP);
+            CREATE TABLE maintenance_jobs(status TEXT NOT NULL);
+            INSERT INTO maintenance_jobs(status) VALUES ('invented');
+            """
+        )
+
+        with self.assertRaisesRegex(RuntimeError, "unsupported maintenance_jobs.status"):
+            apply_local_migrations(conn)
+
+        version = conn.execute(
+            "SELECT max(version) FROM local_schema_migrations"
+        ).fetchone()[0]
+        conn.close()
+        self.assertEqual(2, version)
 
     def test_initialize_rolls_back_schema_upgrade_when_migration_fails(self):
         database = LocalStateDatabase(":memory:")
@@ -624,7 +664,7 @@ class LocalSchemaMigrationTest(unittest.TestCase):
         workspace = workspaces.resolve(str(Path("tests/fixtures/workspace_a").resolve()))
         session, _ = workspaces.resolve_session(workspace, "migration")
         with database.transaction() as conn:
-            conn.execute("DELETE FROM local_schema_migrations WHERE version=2")
+            conn.execute("DELETE FROM local_schema_migrations WHERE version IN (2, 3)")
             conn.execute(
                 "UPDATE sessions SET turn_index=1 WHERE session_id=?",
                 (str(session.session_id),),

@@ -11,6 +11,7 @@ from langgraph.prebuilt import InjectedState, tools_condition
 from src.config.settings import SUBAGENT_CONTEXT_MESSAGE_LIMIT, SUBAGENT_MAX_STEPS, SUBAGENT_RESULT_LIMIT
 from src.core.common.debug import format_message
 from src.core.llm.provider import LlmPurpose, ModelProvider, OpenAICompatibleProvider
+from src.core.prompts import SUBAGENT_SYSTEM_PROMPT, build_subagent_task_prompt
 from src.core.tools.observed import ObservedToolNode
 
 
@@ -34,13 +35,7 @@ def create_delegate_tool(
         """Call the non-recursive sub-agent LLM with its bounded tool view."""
         response = llm.invoke(
             [
-                SystemMessage(
-                    content=(
-                        "You are a focused non-recursive coding sub-agent. Use the available "
-                        "workspace-bound tools and return compact findings with evidence. "
-                        "You cannot delegate to another agent."
-                    )
-                ),
+                SystemMessage(content=SUBAGENT_SYSTEM_PROMPT),
                 *state["messages"],
             ]
         )
@@ -70,10 +65,7 @@ def create_delegate_tool(
         """Delegate bounded workspace research to a non-recursive sub-agent."""
         messages = (state or {}).get("messages", [])[-SUBAGENT_CONTEXT_MESSAGE_LIMIT:]
         parent_context = "\n\n".join(format_message(message) for message in messages)
-        prompt = (
-            f"Task:\n{task}\n\nExtra context:\n{context or '(none)'}\n\n"
-            f"Recent parent context:\n{parent_context or '(none)'}"
-        )
+        prompt = build_subagent_task_prompt(task, context, parent_context)
         try:
             result = graph.invoke(
                 {"messages": [HumanMessage(content=prompt)]},

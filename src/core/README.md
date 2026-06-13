@@ -38,3 +38,4 @@ CoreApp
 - [`docs/local-first-rationale-and-review.md`](../../docs/local-first-rationale-and-review.md)
 - [`docs/database-state-and-consistency.md`](../../docs/database-state-and-consistency.md)
 - [`docs/response-finalization-and-checkpoint-consistency.md`](../../docs/response-finalization-and-checkpoint-consistency.md)
+- [`docs/configuration-and-domain-constants.md`](../../docs/configuration-and-domain-constants.md)

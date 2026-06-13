@@ -306,7 +306,9 @@ Handler 只获得最小 `RequestContext`，不能访问底层 TCP writer。Agent
 
 1. 顶层 Python 包仍命名为 `src`，长期应迁移为正式包名。
 2. `state/store.py` 仍然较大，未来可继续按消息、Session 与记忆查询职责拆分。
-3. 部署参数已支持用户级 `.env` 与进程环境覆盖，但内部策略常量仍集中在 Python 配置模块，
-   尚未形成完整的严格配置模型，也不支持热更新。
+3. 部署参数已支持用户级 `.env` 与进程环境覆盖。后台维护策略已使用类型化配置并由
+   `CoreApp` 注入；其他功能域仍通过兼容 `settings.py` 逐步迁移，当前不支持热更新。
+   配置、领域枚举和 Prompt 的边界见
+   [`configuration-and-domain-constants.md`](configuration-and-domain-constants.md)。
 4. Agent 流式事件内部 `data` 仍是通用字典，未来可增加严格事件模型。
 5. MaintenanceScheduler 当前只有一个 worker，且长任务租约尚未续租；未来多实例前必须加强协调。

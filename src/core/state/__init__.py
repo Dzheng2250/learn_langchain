@@ -8,6 +8,7 @@ from .executions import ExecutionRepository, PendingExecution
 from .migration import LocalStateMigration, LocalStateMigrationReport
 from .store import LocalStateStore
 from .workspace import LocalWorkspaceRepository
+from .types import CheckpointState, ExecutionStatus
 
 __all__ = [
     "ArtifactStore",
@@ -22,4 +23,6 @@ __all__ = [
     "LocalStateStore",
     "LocalWorkspaceRepository",
     "PendingExecution",
+    "CheckpointState",
+    "ExecutionStatus",
 ]
