@@ -10,7 +10,7 @@ from src.config.settings import (
     SUMMARY_TRIGGER_MESSAGE_LIMIT,
 )
 from src.core.common.debug import debug_print, format_message
-from src.core.hooks.events import emit_event, event_span, record_error
+from src.core.telemetry import emit_event, event_span, record_error
 from src.core.context.models import AgentContextState
 from src.core.llm.provider import LlmPurpose, ModelProvider, OpenAICompatibleProvider
 

@@ -26,5 +26,8 @@ CoreApp
 - [`docs/workspace-isolation-review.md`](../../docs/workspace-isolation-review.md)
 - [`docs/agent-execution-architecture.md`](../../docs/agent-execution-architecture.md)
 - [`docs/memory-management.md`](../../docs/memory-management.md)
+- [`docs/event-system.md`](../../docs/event-system.md)
+- [`docs/non-functional-requirements.md`](../../docs/non-functional-requirements.md)
+- [`docs/non-functional-testing.md`](../../docs/non-functional-testing.md)
 - [`docs/pr-3-review-hardening.md`](../../docs/pr-3-review-hardening.md)
 - [`docs/deployment.md`](../../docs/deployment.md)

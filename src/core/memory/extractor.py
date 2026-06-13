@@ -7,7 +7,7 @@ from langchain_core.messages import HumanMessage, SystemMessage
 
 from src.core.common.debug import debug_print, format_message
 from src.config.settings import MEMORY_EXTRACT_SOURCE_CHAR_LIMIT
-from src.core.hooks.events import event_span
+from src.core.telemetry import event_span
 from src.core.llm.provider import LlmPurpose, ModelProvider, OpenAICompatibleProvider
 
 

@@ -16,7 +16,7 @@ from src.config.settings import (
 from src.core.context.models import AgentContextState
 from src.core.database.connection import create_pool
 from src.core.database.schema import SchemaManager
-from src.core.hooks.events import emit_event, record_error, record_memory_saved
+from src.core.telemetry import emit_event, record_error, record_memory_saved
 from src.core.memory.extractor import MemoryCandidateExtractor
 from src.core.memory.models import RetrievedMemory
 from src.core.memory.repositories import MemoryRepository, MessageRepository, SessionRepository

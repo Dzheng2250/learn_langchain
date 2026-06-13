@@ -11,9 +11,7 @@ from psycopg.errors import ForeignKeyViolation
 from src.core.context.models import AgentContextState
 from src.core.agent.service import AgentTurnService
 from src.core.database.connection import create_pool
-from src.core.hooks.events import NoopEventSink, set_event_sinks
-from src.core.hooks.models import AgentEvent
-from src.core.hooks.sinks import PostgresEventSink
+from src.core.telemetry import EventBus, NoopEventSink, PostgresEventSink, TelemetryEvent, install_event_bus
 from src.core.memory.store import PostgresMemoryStore
 from src.core.llm.provider import LlmConfigurationStatus
 from src.core.workspace.repository import WorkspaceRepository
@@ -21,7 +19,7 @@ from src.core.workspace.repository import WorkspaceRepository
 
 class WorkspaceMemoryStoreTest(unittest.TestCase):
     def setUp(self) -> None:
-        set_event_sinks([NoopEventSink()])
+        install_event_bus(EventBus([NoopEventSink()]))
         self.pool = create_pool()
         self.addCleanup(self.pool.close)
         self.store = PostgresMemoryStore(pool=self.pool, retrieval_limit=5, min_importance=1)
@@ -44,7 +42,7 @@ class WorkspaceMemoryStoreTest(unittest.TestCase):
                     ([self.workspace_a.workspace_id, self.workspace_b.workspace_id],),
                 )
             conn.commit()
-        set_event_sinks(None)
+        install_event_bus(None)
 
     def test_same_session_name_isolated_by_workspace(self) -> None:
         self.assertEqual("default", self.session_a.session_name)
@@ -228,19 +226,16 @@ class WorkspaceMemoryStoreTest(unittest.TestCase):
 
     def test_event_sink_persists_workspace_and_session_identity(self) -> None:
         run_id = uuid4().hex
-        sink = PostgresEventSink(async_write=False)
-        try:
-            sink.emit(
-                AgentEvent(
-                    event_type="workspace_test",
-                    source="test",
-                    workspace_id=self.workspace_a.workspace_id,
-                    session_id=self.session_a.session_id,
-                    run_id=run_id,
-                )
+        sink = PostgresEventSink(self.pool)
+        sink.emit(
+            TelemetryEvent(
+                event_type="workspace_test",
+                source="test",
+                workspace_id=self.workspace_a.workspace_id,
+                session_id=self.session_a.session_id,
+                run_id=run_id,
             )
-        finally:
-            sink.close()
+        )
         with self.pool.connection() as conn:
             with conn.cursor() as cur:
                 cur.execute(

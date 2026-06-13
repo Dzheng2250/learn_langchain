@@ -6,7 +6,7 @@ from uuid import uuid4
 from src.core.agent.contracts import AgentTurnRunner
 from src.core.bus.context import RequestContext
 from src.core.bus.router import RpcRouter
-from src.core.hooks.events import record_error
+from src.core.telemetry import record_error
 from src.ipc.models import AgentEventNotification, ChatParams
 
 

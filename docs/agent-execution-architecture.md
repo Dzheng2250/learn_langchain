@@ -2,6 +2,13 @@
 
 > Session 短期上下文、完整消息归档、长期记忆提取与加载机制见
 > [`memory-management.md`](memory-management.md)。
+>
+> 两条事件通道、Telemetry 生命周期和 Sink 可靠性见
+> [`event-system.md`](event-system.md)。
+>
+> 用户延迟、后台处理边界与非功能验收方案见
+> [`non-functional-requirements.md`](non-functional-requirements.md) 和
+> [`non-functional-testing.md`](non-functional-testing.md)。
 
 ## 目标
 
@@ -17,7 +24,7 @@ CoreApp
               -> ToolRegistry
               -> LangGraph
           -> ContextManager + MemoryStore
-          -> EventPublisher
+          -> EventBus
 ```
 
 这些抽象用于解决不同问题：
@@ -27,7 +34,7 @@ CoreApp
 - `AgentRunContext`：描述一次运行的身份与限制。
 - `ModelProvider`：集中创建不同用途的 LLM。
 - `ToolRegistry`：集中声明工具能力、受众和风险等级。
-- `EventPublisher`：将观测事件广播到持久化或调试 sink。
+- `EventBus`：将 Telemetry 观测事件广播到持久化或调试 sink。
 
 ## 一次请求的数据流
 
@@ -759,7 +766,7 @@ Registry 当前只描述和筛选能力，不负责执行工具。工具执行�
 
 未来可基于风险等级增加审批策略或只读运行模式。
 
-## EventPublisher 与流式事件
+## Telemetry 与请求流式事件
 
 项目保留两条事件通道，它们不能混为一体：
 
@@ -767,16 +774,17 @@ Registry 当前只描述和筛选能力，不负责执行工具。工具执行�
 
 ```text
 emit_event
-  -> EventPublisher
-      -> PostgresEventSink
+  -> EventBus
+      -> BufferedEventSink
+          -> PostgresEventSink
       -> JsonlFileEventSink
       -> ConsoleEventSink
 ```
 
 观测事件用于日志、审计和诊断。subscriber 失败不会改变 Agent 业务结果。
 每个 turn 和后台任务结束时都会恢复进入任务前的事件上下文，避免线程复用导致身份泄漏。
-`CoreApp` 可以注入自定义 `EventPublisher`；未注入时，事件模块根据配置惰性创建默认
-sink-backed publisher。
+`CoreApp` 显式组装并安装 `EventBus`。业务模块不会因为首次发送事件而隐式创建数据库
+连接或后台线程。
 
 ### 请求流式事件
 
@@ -840,7 +848,7 @@ flowchart LR
 
 客户端断线时，通知发送停止并记录一次 `stream_notification_failed`；已经开始的 Turn 不会取消。
 
-#### 2. Hook 观测事件通道
+#### 2. Telemetry 观测事件通道
 
 这张图回答：审计和诊断事件如何从业务模块进入不同 sink。
 
@@ -856,15 +864,16 @@ flowchart LR
 
     subgraph Bus["统一观测边界"]
         direction TB
-        Identity["AgentEventContext<br/>workspace / session / turn / run"]
+        Identity["TelemetryContext<br/>workspace / session / turn / run"]
         Emit["领域 helper / emit_event<br/>清洗 + 截断"]
-        Publisher["EventPublisher"]
+        Publisher["EventBus"]
         Identity --> Emit --> Publisher
     end
 
     subgraph Sinks["可选 sinks"]
         direction TB
-        Pg["PostgresEventSink<br/>队列 + 批量写入"]
+        Buffer["BufferedEventSink<br/>队列 + 批量写入"]
+        Pg["PostgresEventSink<br/>数据库批次写入"]
         File["JsonlFileEventSink"]
         Console["ConsoleEventSink"]
     end
@@ -873,7 +882,7 @@ flowchart LR
     Graph --> Emit
     Tool --> Emit
     Context --> Emit
-    Publisher --> Pg
+    Publisher --> Buffer --> Pg
     Publisher --> File
     Publisher --> Console
 
@@ -882,14 +891,14 @@ flowchart LR
     classDef sink fill:#dff2df,stroke:#629b62,color:#222;
     class Service,Graph,Tool,Context producer;
     class Identity,Emit,Publisher bus;
-    class Pg,File,Console sink;
+    class Buffer,Pg,File,Console sink;
 ```
 
 两条事件通道的关键约束：
 
 1. `stream_graph_events()` 生成面向当前客户端的轻量流式事件；它不负责写入事件数据库。
-2. `emit_event()` 和领域 helper 生成观测事件，经清洗和截断后由 `EventPublisher` 广播。
-3. `PostgresEventSink` 默认可通过内存队列批量写入 `agent_events`；队列或 sink 失败只记录调试信息，不中断 Agent。
+2. `emit_event()` 和领域 helper 生成观测事件，经清洗和截断后由 `EventBus` 广播。
+3. `BufferedEventSink` 负责内存队列和批量提交，`PostgresEventSink` 只负责数据库写入；队列或 sink 失败只记录调试信息，不中断 Agent。
 4. 两条事件通道都携带 `run_id`，但只有请求流式通道依赖当前 TCP 连接。
 
 ### 图中组件与代码位置
@@ -909,8 +918,8 @@ flowchart LR
 | 非递归 Sub-agent | `src/core/subagent/graph.py` |
 | 短期上下文与压缩 | `src/core/context/manager.py` |
 | Session、消息与长期记忆 | `src/core/memory/store.py`、`src/core/memory/repositories.py` |
-| 观测事件入口与上下文 | `src/core/hooks/events.py` |
-| EventPublisher 与 sinks | `src/core/hooks/publisher.py`、`src/core/hooks/sinks.py` |
+| 观测事件入口与上下文 | `src/core/telemetry/recorder.py`、`src/core/telemetry/context.py` |
+| EventBus、组装与 sinks | `src/core/telemetry/bus.py`、`src/core/telemetry/factory.py`、`src/core/telemetry/sinks.py` |
 
 ## 与常见 AgentRunner / AgentLoop 设计的关系
 
@@ -923,7 +932,7 @@ flowchart LR
 | AgentLoop | LangGraph `StateGraph` |
 | Provider | `ModelProvider` |
 | ToolRegistry | `ToolRegistry` + Workspace tool factories |
-| EventBus | `EventPublisher` + JSON-RPC 流式通道 |
+| EventBus | `EventBus` + JSON-RPC 流式通道 |
 
 项目不手写 `AgentLoop`，因为 LangGraph 已经提供状态传递、条件边、工具循环和递归限制。
 `AgentTurnService` 也不承担 daemon、RPC 或数据库 schema 生命周期，以保持职责边界。
@@ -954,7 +963,7 @@ flowchart LR
 ### 增加事件消费者
 
 1. 实现 `EventSink.emit()`。
-2. 由 `SinkEventPublisher` 组合。
+2. 由 `EventBus` 组合。
 3. sink 必须自行处理缓冲、重试和关闭。
 4. sink 失败不得抛入 Agent 业务链。
 

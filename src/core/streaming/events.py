@@ -5,7 +5,7 @@ from langchain_core.messages import HumanMessage
 from langgraph.errors import GraphRecursionError
 
 from src.core.agent.models import AgentRunContext, RunLimits, StopReason
-from src.core.hooks.events import emit_event, record_error
+from src.core.telemetry import emit_event, record_error
 
 
 def _message_text(message) -> str:

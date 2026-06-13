@@ -7,7 +7,7 @@ from typing import Any
 from langchain_core.tools import BaseTool
 from langgraph.prebuilt import ToolNode
 
-from src.core.hooks.events import record_tool_failed, record_tool_finished, record_tool_started
+from src.core.telemetry import record_tool_failed, record_tool_finished, record_tool_started
 
 
 def _tool_call_name(request) -> str | None:

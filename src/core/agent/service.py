@@ -11,12 +11,12 @@ from src.config.settings import CORE_AGENT_WORKERS, MEMORY_ENABLED, MEMORY_EXTRA
 from src.core.agent.contracts import EventCallback
 from src.core.agent.models import AgentRunContext, RunLimits, StopReason
 from src.core.context.manager import AgentContextManager
-from src.core.hooks.events import (
+from src.core.telemetry import (
+    bind_context,
+    bind_run_context,
     emit_event,
     record_error,
-    reset_event_context,
-    set_event_context,
-    set_run_event_context,
+    reset_context,
 )
 from src.core.memory.policy import has_explicit_memory_request, memory_extraction_reason, turn_message_chars
 from src.core.memory.store import PostgresMemoryStore
@@ -196,7 +196,7 @@ class AgentTurnService:
     ) -> Iterator[dict]:
         """Execute and persist one configured-LLM Turn while its Session is locked."""
         store = self.memory_store_factory()
-        context_token = set_event_context(
+        context_token = bind_context(
             workspace_id=session.workspace.workspace_id,
             session_id=session.session_id,
             run_id=run_id,
@@ -213,7 +213,7 @@ class AgentTurnService:
                 turn_index=current_turn,
                 limits=self.run_limits,
             )
-            run_context_token = set_run_event_context(run_context)
+            run_context_token = bind_run_context(run_context)
             emit_event(
                 "turn_started",
                 "agent_service",
@@ -317,8 +317,8 @@ class AgentTurnService:
             }
         finally:
             if run_context_token is not None:
-                reset_event_context(run_context_token)
-            reset_event_context(context_token)
+                reset_context(run_context_token)
+            reset_context(context_token)
             store.close()
 
     def _stream_unconfigured_turn(
@@ -329,7 +329,7 @@ class AgentTurnService:
     ) -> Iterator[dict]:
         """Validate infrastructure without mutating conversation state."""
         store = self.memory_store_factory()
-        context_token = set_event_context(
+        context_token = bind_context(
             workspace_id=session.workspace.workspace_id,
             session_id=session.session_id,
             run_id=run_id,
@@ -343,7 +343,7 @@ class AgentTurnService:
                 turn_index=turn_index,
                 limits=self.run_limits,
             )
-            run_context_token = set_run_event_context(run_context)
+            run_context_token = bind_run_context(run_context)
             emit_event(
                 "diagnostic_started",
                 "agent_service",
@@ -406,8 +406,8 @@ class AgentTurnService:
             }
         finally:
             if run_context_token is not None:
-                reset_event_context(run_context_token)
-            reset_event_context(context_token)
+                reset_context(run_context_token)
+            reset_context(context_token)
             store.close()
 
     def _handle_extraction(
@@ -459,7 +459,7 @@ class AgentTurnService:
         source_ids: list[int],
     ) -> None:
         """Run memory extraction with restored Turn event identity."""
-        context_token = set_event_context(
+        context_token = bind_context(
             workspace_id=session.workspace.workspace_id,
             session_id=session.session_id,
             turn_index=turn_index,
@@ -477,5 +477,5 @@ class AgentTurnService:
                 event_type="memory_failed",
             )
         finally:
-            reset_event_context(context_token)
+            reset_context(context_token)
             store.close()

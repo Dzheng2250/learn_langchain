@@ -11,8 +11,7 @@ from src.core.agent.models import RunLimits
 from src.core.bus.router import RpcRouter
 from src.core.config.models import CoreConfig
 from src.core.handlers import AgentHandlers, CoreHandlers
-from src.core.hooks.events import set_event_publisher
-from src.core.hooks.publisher import EventPublisher
+from src.core.telemetry import EventBus, create_event_bus, install_event_bus
 from src.core.transport.socket_server import SocketServer
 from src.ipc.auth import ensure_runtime_dir, pid_path
 from src.core.database.connection import create_pool
@@ -56,17 +55,19 @@ class CoreApp:
         *,
         agent_service: ManagedAgentService | None = None,
         transport_factory: TransportFactory = create_socket_transport,
-        event_publisher: EventPublisher | None = None,
+        event_bus: EventBus | None = None,
     ) -> None:
         self.config = config
         self.shutdown_event = asyncio.Event()
         self._pool = None
-        self._event_publisher = event_publisher
+        self._event_bus = event_bus
         if agent_service is None:
             # CoreApp is the process-level composition root. These objects are
             # intentionally shared across requests; workspace-specific graphs
             # and tools are created lazily by WorkspaceRuntimeRegistry.
             self._pool = create_pool()
+            if self._event_bus is None:
+                self._event_bus = create_event_bus(self._pool)
             model_provider = OpenAICompatibleProvider()
             run_limits = RunLimits()
             self.agent_service = AgentTurnService(
@@ -100,8 +101,7 @@ class CoreApp:
         if self._started:
             return
         try:
-            if self._event_publisher is not None:
-                set_event_publisher(self._event_publisher)
+            install_event_bus(self._event_bus)
             self.agent_service.initialize()
             if self.config.manage_runtime_files:
                 ensure_runtime_dir(self.config.runtime_dir)
@@ -133,7 +133,7 @@ class CoreApp:
                 await asyncio.to_thread(self.agent_service.close)
             finally:
                 try:
-                    set_event_publisher(None)
+                    await asyncio.to_thread(install_event_bus, None)
                     if self._pool is not None:
                         await asyncio.to_thread(
                             self._pool.close,

@@ -139,7 +139,8 @@ src/
     context/         短期上下文管理
     memory/          消息归档和长期记忆
     tools/           Workspace 工具
-    hooks/           结构化观测事件
+    telemetry/       结构化观测事件、广播与持久化
+    hooks/           旧事件导入路径兼容层
 ```
 
 架构文档：
@@ -148,6 +149,9 @@ src/
 - [Core 架构](docs/core-architecture.md)
 - [Agent 执行架构](docs/agent-execution-architecture.md)
 - [记忆管理与加载机制](docs/memory-management.md)
+- [Event 系统设计与维护指南](docs/event-system.md)
+- [非功能性需求](docs/non-functional-requirements.md)
+- [非功能性测试与验收方案](docs/non-functional-testing.md)
 - [Workspace 隔离与数据库迁移](docs/workspace-isolation-and-migration.md)
 
 ## 测试

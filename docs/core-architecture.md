@@ -5,6 +5,13 @@
 >
 > 单次 Agent 执行、ModelProvider、RunContext、ToolRegistry 与事件通道见
 > [`agent-execution-architecture.md`](agent-execution-architecture.md)。
+>
+> Telemetry Event、EventBus、Sink 和可靠性边界见
+> [`event-system.md`](event-system.md)。
+>
+> 用户可感知延迟、后台处理边界与验收方法见
+> [`non-functional-requirements.md`](non-functional-requirements.md) 和
+> [`non-functional-testing.md`](non-functional-testing.md)。
 > 端到端请求路径见其中的[完整数据流动示意图](agent-execution-architecture.md#完整数据流动示意图)，
 > Agent 内部执行与双事件通道见[调用链与事件通道图](agent-execution-architecture.md#agent-调用链与事件通道图)。
 >
@@ -259,7 +266,7 @@ Handler 只获得最小 `RequestContext`，不能访问底层 TCP writer。Agent
 仍存在但不在本次重构范围内的问题：
 
 1. 顶层 Python 包仍命名为 `src`，长期应迁移为正式包名。
-2. `memory/store.py` 和 `hooks/events.py` 体积较大，未来可按查询、事务和 sink registry 进一步拆分。
+2. `memory/store.py` 仍然较大，未来可继续按事务编排与查询职责拆分。
 3. 部署参数已支持用户级 `.env` 与进程环境覆盖，但内部策略常量仍集中在 Python 配置模块，
    尚未形成完整的严格配置模型，也不支持热更新。
 4. Agent 流式事件内部 `data` 仍是通用字典，未来可增加严格事件模型。
