@@ -30,6 +30,7 @@ def create_delegate_tool(
     )
 
     def subagent_node(state: MessagesState) -> dict:
+        """Call the non-recursive sub-agent LLM with its bounded tool view."""
         response = llm.invoke(
             [
                 SystemMessage(

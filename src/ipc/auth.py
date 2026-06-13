@@ -9,28 +9,34 @@ from src.config.paths import runtime_dir as default_runtime_dir
 
 
 def runtime_dir(base_dir: str | Path | None = None) -> Path:
+    """Resolve an explicit runtime directory or the platform default."""
     return Path(base_dir).resolve() if base_dir else default_runtime_dir().resolve()
 
 
 def token_path(base_dir: str | Path | None = None) -> Path:
+    """Return the daemon authentication token file path."""
     return runtime_dir(base_dir) / "daemon.token"
 
 
 def pid_path(base_dir: str | Path | None = None) -> Path:
+    """Return the advisory daemon PID file path."""
     return runtime_dir(base_dir) / "daemon.pid"
 
 
 def log_path(base_dir: str | Path | None = None) -> Path:
+    """Return the daemon stdout/stderr log file path."""
     return runtime_dir(base_dir) / "daemon.log"
 
 
 def ensure_runtime_dir(base_dir: str | Path | None = None) -> Path:
+    """Create and return the directory containing daemon runtime files."""
     path = runtime_dir(base_dir)
     path.mkdir(parents=True, exist_ok=True)
     return path
 
 
 def create_token(base_dir: str | Path | None = None) -> str:
+    """Generate and persist a cryptographically random local RPC token."""
     ensure_runtime_dir(base_dir)
     token = secrets.token_urlsafe(32)
     path = token_path(base_dir)
@@ -43,10 +49,12 @@ def create_token(base_dir: str | Path | None = None) -> str:
 
 
 def read_token(base_dir: str | Path | None = None) -> str:
+    """Read the local daemon token used to authenticate RPC requests."""
     return token_path(base_dir).read_text(encoding="utf-8").strip()
 
 
 def verify_token(expected: str, received: str) -> bool:
+    """Compare authentication tokens in constant time."""
     return hmac.compare_digest(expected, received)
 
 

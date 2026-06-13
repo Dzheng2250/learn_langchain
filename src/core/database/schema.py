@@ -20,10 +20,13 @@ class LegacySchemaError(RuntimeError):
 
 
 class SchemaManager:
+    """Initialize fresh schemas and apply known atomic upgrades."""
+
     def __init__(self, pool) -> None:
         self.pool = pool
 
     def initialize(self) -> None:
+        """Validate schema ownership and apply all supported migrations."""
         with self.pool.connection() as conn:
             with conn.transaction():
                 with conn.cursor() as cur:

@@ -11,6 +11,7 @@ from src.config.settings import (
 
 
 def connection_kwargs() -> dict:
+    """Return psycopg keyword arguments, preferring a complete database URL."""
     if MEMORY_DB_URL:
         from psycopg.conninfo import conninfo_to_dict
 
@@ -25,12 +26,14 @@ def connection_kwargs() -> dict:
 
 
 def connection_info() -> str:
+    """Build a normalized psycopg connection string from configured settings."""
     from psycopg.conninfo import make_conninfo
 
     return make_conninfo("", **connection_kwargs())
 
 
 def create_pool(*, min_size: int = 1, max_size: int = 4):
+    """Create and immediately open the shared synchronous PostgreSQL pool."""
     from psycopg_pool import ConnectionPool
 
     return ConnectionPool(

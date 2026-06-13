@@ -13,12 +13,16 @@ from src.core.workspace.models import WorkspaceContext
 
 @dataclass(frozen=True)
 class WorkspaceRuntime:
+    """Cached tools and compiled graph permanently bound to one Workspace."""
+
     workspace: WorkspaceContext
     toolset: WorkspaceToolset
     graph: object
 
 
 class WorkspaceRuntimeFactory:
+    """Compose a complete immutable runtime for one Workspace."""
+
     def __init__(
         self,
         model_provider: ModelProvider | None = None,
@@ -28,6 +32,9 @@ class WorkspaceRuntimeFactory:
         self.run_limits = run_limits or RunLimits()
 
     def create(self, workspace: WorkspaceContext) -> WorkspaceRuntime:
+        """Build Workspace-bound tools and compile the parent Agent graph."""
+        # Every factory below receives the immutable workspace root. Tools and
+        # graphs therefore cannot be rebound by mutating process-global state.
         toolset = create_workspace_toolset(
             workspace,
             self.model_provider,
@@ -42,6 +49,8 @@ class WorkspaceRuntimeFactory:
 
 
 class WorkspaceRuntimeRegistry:
+    """Thread-safe cache that prevents duplicate per-Workspace compilation."""
+
     def __init__(self, factory: WorkspaceRuntimeFactory | None = None) -> None:
         self.factory = factory or WorkspaceRuntimeFactory()
         self._lock = Lock()
@@ -49,6 +58,10 @@ class WorkspaceRuntimeRegistry:
         self._creation_locks: dict[UUID, Lock] = {}
 
     def get(self, workspace: WorkspaceContext) -> WorkspaceRuntime:
+        """Return a cached runtime or create exactly one for the Workspace."""
+        # Fast path reads the cache under the registry lock. A per-workspace
+        # creation lock prevents duplicate graph compilation without blocking
+        # unrelated workspaces.
         with self._lock:
             runtime = self._runtimes.get(workspace.workspace_id)
             creation_lock = self._creation_locks.setdefault(workspace.workspace_id, Lock())

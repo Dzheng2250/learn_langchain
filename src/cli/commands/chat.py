@@ -7,6 +7,7 @@ from src.cli.workspace import discover_workspace_root
 
 
 def register(subparsers, config) -> None:
+    """Register interactive and one-shot ``chat`` CLI arguments."""
     parser = subparsers.add_parser("chat", help="chat through the Core daemon")
     parser.add_argument("message", nargs="?")
     parser.add_argument("--session", default=config.default_session_id)
@@ -15,6 +16,7 @@ def register(subparsers, config) -> None:
 
 
 def run(args, config) -> int:
+    """Dispatch the parsed chat command using validated CLI configuration."""
     client = CoreClient(config)
     if args.message:
         chat_once(client, args.session, args.message, args.workspace)
@@ -24,6 +26,7 @@ def run(args, config) -> int:
 
 
 def chat_once(client: CoreClient, session_name: str, message: str, workspace: str | None = None) -> None:
+    """Send one Workspace-scoped message to Core and render its event stream."""
     workspace_root = discover_workspace_root(workspace)
     print("AI: ", end="", flush=True)
     result = client.request(
@@ -37,6 +40,7 @@ def chat_once(client: CoreClient, session_name: str, message: str, workspace: st
 
 
 def interactive_chat(client: CoreClient, session_name: str, workspace: str | None = None) -> None:
+    """Read non-empty terminal input and execute repeated one-shot turns."""
     print("Connected to Core daemon. Type 'exit' or 'quit' to stop.")
     while True:
         message = input("\nYou: ").strip()

@@ -26,6 +26,7 @@ def create_parent_graph(
     )
 
     def agent_node(state: MessagesState) -> dict:
+        """Call the parent LLM with system policy and current graph messages."""
         llm_messages = [
             SystemMessage(
                 content=(
@@ -64,6 +65,8 @@ def create_parent_graph(
     builder = StateGraph(MessagesState)
     builder.add_node("agent", agent_node)
     builder.add_node("tools", ObservedToolNode(parent_tools))
+    # The graph is the AgentLoop: LLM output without tool calls terminates;
+    # tool calls execute centrally, append ToolMessages, then return to LLM.
     builder.add_edge(START, "agent")
     builder.add_conditional_edges("agent", tools_condition, {"tools": "tools", "__end__": END})
     builder.add_edge("tools", "agent")

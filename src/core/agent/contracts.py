@@ -8,6 +8,8 @@ EventCallback = Callable[[dict], None]
 
 
 class AgentTurnRunner(Protocol):
+    """Minimal asynchronous Turn interface required by RPC handlers."""
+
     async def run_turn(
         self,
         workspace_root: str,
@@ -21,6 +23,8 @@ class AgentTurnRunner(Protocol):
 
 
 class ManagedAgentService(AgentTurnRunner, Protocol):
+    """Turn runner whose durable dependencies have an explicit lifecycle."""
+
     def initialize(self) -> None:
         """Initialize durable dependencies."""
 

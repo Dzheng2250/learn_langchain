@@ -1,3 +1,5 @@
+"""Typed skill manifest summaries and full local skill documents."""
+
 from dataclasses import dataclass
 
 

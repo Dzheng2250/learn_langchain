@@ -1,3 +1,5 @@
+"""Optional Server-Sent Events adapter for raw Agent graph streams."""
+
 import json
 
 from src.core.streaming.events import stream_agent_events

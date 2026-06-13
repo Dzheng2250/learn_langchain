@@ -1,3 +1,5 @@
+"""Build bounded Agent input and compress older Session conversation state."""
+
 from langchain_core.messages import HumanMessage, SystemMessage
 
 from src.config.settings import (
@@ -46,6 +48,8 @@ class AgentContextManager:
     ) -> list:
         """Build one bounded graph input from compact context state."""
         messages = []
+        # Synthetic context messages are input-only. update_after_turn removes
+        # them before recent conversation state is persisted.
         if state.summary:
             messages.append(SystemMessage(content=f"{SUMMARY_MESSAGE_PREFIX}\n{state.summary}"))
 

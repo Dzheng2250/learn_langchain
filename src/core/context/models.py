@@ -1,3 +1,5 @@
+"""Compact Session context persisted separately from full message history."""
+
 from dataclasses import dataclass, field
 
 

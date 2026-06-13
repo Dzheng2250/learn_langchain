@@ -19,6 +19,7 @@ from src.core.workspace.resolver import canonical_path_key, canonicalize_workspa
 
 @dataclass(frozen=True)
 class MigrationReport:
+    """Counts and backup metadata produced by inspect or apply."""
     sessions: int
     messages: int
     memories: int
@@ -37,6 +38,7 @@ class WorkspaceMigration:
         self.connection_factory = connection_factory
 
     def inspect(self, workspace: str | Path, keep_session: str) -> MigrationReport:
+        """Count legacy rows that would be retained without modifying data."""
         root = canonicalize_workspace(workspace)
         with self.connection_factory() as conn:
             with conn.cursor() as cur:
@@ -63,6 +65,7 @@ class WorkspaceMigration:
         return MigrationReport(sessions, messages, memories, events, root)
 
     def apply(self, workspace: str | Path, keep_session: str) -> MigrationReport:
+        """Back up and atomically migrate one legacy Session into a Workspace."""
         report = self.inspect(workspace, keep_session)
         backup = create_database_backup()
         workspace_id = uuid4()
@@ -183,12 +186,14 @@ class WorkspaceMigration:
         )
 
     def _require_legacy(self, cur) -> None:
+        """Reject migration unless the connected database has the legacy shape."""
         cur.execute(DETECT_LEGACY_SCHEMA)
         is_current, has_sessions = cur.fetchone()
         if not has_sessions or is_current:
             raise RuntimeError("The database is not an unmigrated legacy schema.")
 
     def _validate_counts(self, cur, expected: MigrationReport) -> None:
+        """Abort the transaction when migrated row counts differ from dry-run."""
         for table, count in (
             ("agent_sessions", expected.sessions),
             ("agent_messages", expected.messages),

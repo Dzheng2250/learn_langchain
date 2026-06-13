@@ -9,6 +9,7 @@ SQL_DIR = Path(__file__).resolve().parent / "sql"
 
 
 def load_sql_file(filename: str) -> str:
+    """Read a managed SQL file after rejecting directory traversal."""
     path = (SQL_DIR / filename).resolve()
     if SQL_DIR not in path.parents and path != SQL_DIR:
         raise ValueError(f"SQL file must be inside {SQL_DIR}: {filename}")
@@ -16,11 +17,13 @@ def load_sql_file(filename: str) -> str:
 
 
 def execute_sql_file(cur, filename: str) -> None:
+    """Execute each parsed statement from a managed SQL file."""
     for statement in split_sql_statements(load_sql_file(filename)):
         cur.execute(statement)
 
 
 def split_sql_statements(sql: str) -> list[str]:
+    """Split SQL while preserving literals, comments, and dollar-quoted bodies."""
     return [
         statement.strip().removesuffix(";").rstrip()
         for statement in sqlparse.split(sql)

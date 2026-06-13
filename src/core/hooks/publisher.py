@@ -7,6 +7,8 @@ from src.core.hooks.models import AgentEvent, EventSink
 
 
 class EventPublisher(Protocol):
+    """Observation fan-out interface owned by the Core process lifecycle."""
+
     def publish(self, event: AgentEvent) -> None:
         """Publish one observation event without changing business behavior."""
 
@@ -24,6 +26,7 @@ class SinkEventPublisher:
         self.sinks = list(sinks)
 
     def publish(self, event: AgentEvent) -> None:
+        """Publish one event to every sink while isolating sink failures."""
         for sink in self.sinks:
             try:
                 sink.emit(event)
@@ -31,6 +34,7 @@ class SinkEventPublisher:
                 debug_print("AGENT EVENT SINK ERROR", f"{sink.__class__.__name__}: {exc}")
 
     def flush(self) -> None:
+        """Ask buffered sinks to finish pending writes."""
         for sink in self.sinks:
             operation = getattr(sink, "flush", None)
             if callable(operation):
@@ -40,6 +44,7 @@ class SinkEventPublisher:
                     debug_print("AGENT EVENT SINK FLUSH ERROR", f"{sink.__class__.__name__}: {exc}")
 
     def close(self) -> None:
+        """Close every sink without allowing one failure to block others."""
         for sink in self.sinks:
             operation = getattr(sink, "close", None)
             if callable(operation):

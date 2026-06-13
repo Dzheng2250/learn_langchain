@@ -12,6 +12,7 @@ from src.ipc.auth import create_token, log_path, pid_path, token_path
 
 
 def daemon_status(config: CliConfig) -> dict | None:
+    """Return Core health data, or ``None`` when no daemon is reachable."""
     try:
         return CoreClient(config, timeout=0.5).request("core.ping")
     except CoreUnavailableError:
@@ -19,6 +20,7 @@ def daemon_status(config: CliConfig) -> dict | None:
 
 
 def start_daemon(config: CliConfig) -> dict:
+    """Start detached Core and wait until its authenticated ping succeeds."""
     status = daemon_status(config)
     if status is not None:
         return status
@@ -76,6 +78,7 @@ def start_daemon(config: CliConfig) -> dict:
 
 
 def stop_daemon(config: CliConfig) -> dict:
+    """Request graceful Core shutdown and wait for the daemon to disappear."""
     try:
         result = CoreClient(config).request("core.shutdown")
     except CoreUnavailableError:
@@ -98,6 +101,7 @@ def stop_daemon(config: CliConfig) -> dict:
 
 
 def _cleanup_runtime_files(config: CliConfig) -> None:
+    """Remove advisory PID and authentication token files after shutdown."""
     for path in (pid_path(config.runtime_dir), token_path(config.runtime_dir)):
         try:
             path.unlink(missing_ok=True)

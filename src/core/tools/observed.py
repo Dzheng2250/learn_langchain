@@ -1,3 +1,5 @@
+"""Central ToolNode wrapper that observes every tool-call boundary."""
+
 import time
 from collections.abc import Callable, Sequence
 from typing import Any
@@ -9,14 +11,17 @@ from src.core.hooks.events import record_tool_failed, record_tool_finished, reco
 
 
 def _tool_call_name(request) -> str | None:
+    """Read the model-requested tool name from a ToolNode request."""
     return request.tool_call.get("name")
 
 
 def _tool_call_id(request) -> str | None:
+    """Read the correlation ID assigned to one tool call."""
     return request.tool_call.get("id")
 
 
 def _tool_call_args(request):
+    """Read validated tool arguments from a ToolNode request."""
     return request.tool_call.get("args")
 
 
@@ -34,12 +39,14 @@ def _result_preview(result) -> str:
 
 
 def _result_is_error(result) -> bool:
+    """Detect ToolMessage error status across scalar or batched results."""
     if isinstance(result, list):
         return any(_result_is_error(item) for item in result)
     return getattr(result, "status", None) == "error"
 
 
 def _observe_tool_call(source: str, request, execute: Callable[[Any], Any]):
+    """Execute one tool call while recording start, success, or failure."""
     tool = _tool_call_name(request)
     tool_call_id = _tool_call_id(request)
     started_at = time.monotonic()
@@ -101,10 +108,12 @@ class ObservedToolNode(ToolNode):
         existing_wrapper = kwargs.pop("wrap_tool_call", None)
 
         def observed_wrapper(request, execute):
+            """Compose centralized observation with an optional existing wrapper."""
             if existing_wrapper is None:
                 return _observe_tool_call(event_source, request, execute)
 
             def wrapped_execute(observed_request):
+                """Preserve a caller-provided wrapper inside observation hooks."""
                 return existing_wrapper(observed_request, execute)
 
             return _observe_tool_call(event_source, request, wrapped_execute)

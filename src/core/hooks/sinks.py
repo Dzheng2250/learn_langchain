@@ -1,3 +1,5 @@
+"""Failure-isolated destinations for structured observation events."""
+
 import atexit
 import json
 import os
@@ -28,6 +30,7 @@ class NoopEventSink:
     """Drop events."""
 
     def emit(self, event: AgentEvent) -> None:
+        """Discard one event intentionally."""
         return
 
 
@@ -35,6 +38,7 @@ class ConsoleEventSink:
     """Print compact event lines for local debugging."""
 
     def emit(self, event: AgentEvent) -> None:
+        """Print a sanitized event through the debug output helper."""
         debug_print(
             f"EVENT {event.event_type}",
             json.dumps(event_to_dict(event), ensure_ascii=False, default=str),
@@ -48,6 +52,7 @@ class JsonlFileEventSink:
         self.path = path
 
     def emit(self, event: AgentEvent) -> None:
+        """Append one JSON-serializable event line to the configured file."""
         directory = os.path.dirname(self.path)
         if directory:
             os.makedirs(directory, exist_ok=True)
@@ -71,6 +76,11 @@ class PostgresEventSink:
         flush_interval_seconds: float = AGENT_EVENTS_FLUSH_INTERVAL_SECONDS,
         queue_max_size: int = AGENT_EVENTS_QUEUE_MAX_SIZE,
     ) -> None:
+        """Configure synchronous or queued batch persistence.
+
+        Explicit connection arguments override shared database settings.
+        ``async_write`` moves inserts to one background writer thread.
+        """
         self.host = host or MEMORY_DB_HOST
         self.port = port or MEMORY_DB_PORT
         self.dbname = dbname or MEMORY_DB_NAME
@@ -102,6 +112,7 @@ class PostgresEventSink:
             atexit.register(self.close)
 
     def emit(self, event: AgentEvent) -> None:
+        """Queue or synchronously persist one event without blocking producers."""
         if not self.async_write:
             self._write_batch([event])
             return
@@ -135,6 +146,7 @@ class PostgresEventSink:
         self._pool.close()
 
     def _run_writer(self) -> None:
+        """Drain queued events into bounded batches until the sentinel arrives."""
         assert self._queue is not None
         while True:
             event = self._queue.get()
@@ -171,6 +183,7 @@ class PostgresEventSink:
                 self._queue.task_done()
 
     def _write_batch(self, events: list[AgentEvent]) -> None:
+        """Persist one event batch in a single database transaction."""
         if not events:
             return
         with self._connect() as conn:
@@ -182,6 +195,7 @@ class PostgresEventSink:
             conn.commit()
 
     def _event_params(self, event: AgentEvent) -> tuple:
+        """Convert an event into parameters ordered for ``INSERT_AGENT_EVENT``."""
         return (
             event.run_id,
             event.workspace_id,
@@ -226,6 +240,7 @@ class PostgresEventSink:
         )
 
     def _load_jsonb_adapter(self):
+        """Lazy-import and return psycopg's JSONB parameter adapter."""
         from psycopg.types.json import Jsonb
 
         return Jsonb

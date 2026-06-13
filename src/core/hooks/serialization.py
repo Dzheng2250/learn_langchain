@@ -1,3 +1,5 @@
+"""Sanitize observation payloads before they leave the business boundary."""
+
 from dataclasses import asdict
 
 from src.config.settings import AGENT_EVENTS_PAYLOAD_PREVIEW_LIMIT
@@ -51,11 +53,13 @@ def sanitize_payload(value):
     return _truncate_text(repr(value))
 
 def _is_sensitive_key(key: str) -> bool:
+    """Return whether a payload key may contain credentials or secrets."""
     lowered = key.lower()
     return any(term in lowered for term in SENSITIVE_KEYS)
 
 
 def _truncate_text(text: str) -> str:
+    """Bound payload text to the configured observation preview limit."""
     if len(text) <= AGENT_EVENTS_PAYLOAD_PREVIEW_LIMIT:
         return text
     return text[:AGENT_EVENTS_PAYLOAD_PREVIEW_LIMIT] + "\n... event payload truncated ..."

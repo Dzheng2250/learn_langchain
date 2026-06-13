@@ -44,6 +44,7 @@ def read_workspace_lines(root: Path, path: str) -> tuple[Path, list[str]]:
 
 
 def _format_range(path: str, lines: list[str], start_line: int, max_lines: int, output_limit: int) -> str:
+    """Format a bounded numbered line range without exceeding output limits."""
     start = max(1, int(start_line))
     limit = max(1, int(max_lines))
     selected = lines[start - 1:start - 1 + limit]

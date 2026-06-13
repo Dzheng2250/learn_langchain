@@ -8,6 +8,7 @@ from src.core.skills.store import LocalSkillStore
 
 
 def create_skill_tools(root: Path) -> tuple[object, object, LocalSkillStore]:
+    """Create skill manifest and document tools bound to ``root``."""
     store = LocalSkillStore(str(root))
 
     @tool

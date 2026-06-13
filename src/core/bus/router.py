@@ -35,12 +35,16 @@ class RpcRouter:
         self._handlers: dict[str, tuple[type[BaseModel], RpcHandler]] = {}
 
     def register(self, method: str, params_model: type[BaseModel], handler: RpcHandler) -> None:
+        """Register one method with its strict parameter model and async handler."""
         if method in self._handlers:
             raise ValueError(f"RPC method already registered: {method}")
         self._handlers[method] = (params_model, handler)
 
     async def dispatch(self, raw: dict, context: RequestContext):
+        """Validate, authenticate, and invoke one JSON-RPC request."""
         request_id = raw.get("id") if isinstance(raw, dict) else None
+        # Validation order is security-sensitive: no handler runs before the
+        # envelope, method params, and authentication token are accepted.
         try:
             request = JsonRpcRequest.model_validate(raw)
         except ValidationError as exc:
@@ -69,6 +73,7 @@ class RpcRouter:
 
 
 def error_response(request_id, code: int, message: str, data=None) -> JsonRpcErrorResponse:
+    """Build a standard JSON-RPC error response for transport delivery."""
     return JsonRpcErrorResponse(
         id=request_id,
         error=JsonRpcError(code=code, message=message, data=data),

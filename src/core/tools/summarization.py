@@ -17,9 +17,11 @@ from src.core.tools.workspace import read_workspace_lines
 
 
 def create_summarize_large_file(root: Path, model_provider: ModelProvider | None = None):
+    """Create a Workspace-bound parallel map-reduce file summarization tool."""
     provider = model_provider or OpenAICompatibleProvider()
 
     def llm():
+        """Create an isolated deterministic model call for one map/reduce step."""
         return provider.create_chat_model(
             LlmPurpose.FILE_SUMMARY,
             temperature=0,
@@ -48,6 +50,7 @@ def create_summarize_large_file(root: Path, model_provider: ModelProvider | None
             return f"{path} is empty."
 
         def summarize(chunk) -> str:
+            """Extract question-relevant notes from one numbered file chunk."""
             start, end, content = chunk
             response = llm().invoke(
                 [

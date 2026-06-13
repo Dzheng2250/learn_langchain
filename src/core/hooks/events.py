@@ -1,3 +1,5 @@
+"""Public event helpers and process-level observation publisher access."""
+
 import time
 from contextlib import contextmanager
 from contextvars import ContextVar, Token
@@ -398,6 +400,7 @@ def flush_event_sinks() -> None:
 
 
 def _get_event_publisher() -> EventPublisher:
+    """Return the installed publisher or lazily compose configured sinks."""
     global _event_publisher
     if _event_publisher is not None:
         return _event_publisher

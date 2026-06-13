@@ -17,14 +17,19 @@ class AgentHandlers:
         self.agent_service = agent_service
 
     def register(self, router: RpcRouter) -> None:
+        """Expose the validated ``agent.chat`` RPC method."""
         router.register("agent.chat", ChatParams, self.chat)
 
     async def chat(self, params: ChatParams, context: RequestContext) -> dict:
+        """Execute one Turn and bridge worker events to RPC notifications."""
         loop = asyncio.get_running_loop()
         run_id = uuid4().hex
         notification_failed = False
 
         def on_event(item: dict) -> None:
+            """Forward one worker-thread stream item to the request connection."""
+            # AgentTurnService executes in a worker thread. Marshal each stream
+            # event back onto the Core asyncio loop before touching the socket.
             nonlocal notification_failed
             if notification_failed:
                 return
@@ -43,6 +48,8 @@ class AgentHandlers:
             try:
                 future.result()
             except Exception as exc:
+                # A broken client stream must not cancel a turn that may still
+                # need to persist messages, context, and long-term memory.
                 notification_failed = True
                 record_error(
                     "agent_handler",

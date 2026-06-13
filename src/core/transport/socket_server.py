@@ -18,15 +18,19 @@ class SocketRequestContext:
     close_after_response: bool = False
 
     async def send_notification(self, value: Any) -> None:
+        """Write one server-initiated notification on this request connection."""
         await self._send(value)
 
     async def send_response(self, value: Any) -> None:
+        """Write the final JSON-RPC response on this request connection."""
         await self._send(value)
 
     def request_close(self) -> None:
+        """Mark the connection for closure after its final response."""
         self.close_after_response = True
 
     async def _send(self, value: Any) -> None:
+        """Serialize one NDJSON frame while preventing concurrent write interleaving."""
         async with self.write_lock:
             self.writer.write(encode_ndjson(value))
             await self.writer.drain()
@@ -102,6 +106,7 @@ class SocketServer:
         reader: asyncio.StreamReader,
         writer: asyncio.StreamWriter,
     ) -> None:
+        """Read, dispatch, and respond to frames from one client connection."""
         task = asyncio.current_task()
         if task is not None:
             self._tasks.add(task)
@@ -119,6 +124,8 @@ class SocketServer:
                 if raw is None:
                     break
                 context.request_id = raw.get("id") if isinstance(raw, dict) else None
+                # dispatch() owns protocol validation and business invocation;
+                # transport only frames messages and serializes socket writes.
                 response = await self.router.dispatch(raw, context)
                 await context.send_response(response)
                 if context.close_after_response:
@@ -133,6 +140,7 @@ class SocketServer:
             self._writers.discard(writer)
 
     async def _wait_closed(self, writer: asyncio.StreamWriter) -> None:
+        """Wait for stream closure while tolerating peer disconnects."""
         try:
             await writer.wait_closed()
         except ConnectionError:

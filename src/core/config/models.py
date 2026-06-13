@@ -27,6 +27,7 @@ class CoreConfig:
         port: int | None = None,
         manage_runtime_files: bool = True,
     ) -> "CoreConfig":
+        """Build and validate daemon configuration with optional host/port overrides."""
         config = cls(
             host=host if host is not None else settings.CORE_HOST,
             port=port if port is not None else settings.CORE_PORT,
@@ -39,6 +40,7 @@ class CoreConfig:
         return config
 
     def validate(self) -> None:
+        """Reject unsafe network exposure and invalid transport limits."""
         try:
             address = ipaddress.ip_address(self.host)
         except ValueError as exc:

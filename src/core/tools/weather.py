@@ -1,4 +1,6 @@
 
+"""Simple deterministic demonstration tool used by parent and sub-agents."""
+
 from langchain_core.tools import tool
 
 from src.core.common.debug import debug_print

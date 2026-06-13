@@ -10,6 +10,7 @@ from src.config.settings import LLM_API_KEY, LLM_BASE_URL, MODEL
 
 
 class LlmPurpose(StrEnum):
+    """Stable workload labels attached to provider-created model clients."""
     PARENT_AGENT = "parent_agent"
     SUBAGENT = "subagent"
     CONTEXT_SUMMARY = "context_summary"
@@ -26,6 +27,8 @@ class LlmConfigurationStatus:
 
 
 class ModelConfiguration(Protocol):
+    """Readiness check used before constructing Workspace runtimes."""
+
     def configuration_status(self) -> LlmConfigurationStatus:
         """Return model readiness without performing a network request."""
 
@@ -71,6 +74,7 @@ class OpenAICompatibleProvider:
         temperature: float = 0,
         tools: list | None = None,
     ):
+        """Create a ChatOpenAI client and optionally bind the supplied tools."""
         model = ChatOpenAI(
             model=self.model,
             api_key=self.api_key,
