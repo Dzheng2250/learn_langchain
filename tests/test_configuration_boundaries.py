@@ -1,4 +1,5 @@
 import os
+import re
 import sqlite3
 import unittest
 from pathlib import Path
@@ -19,6 +20,23 @@ from src.core.prompts import (
 from src.core.state import CheckpointState, ExecutionRepository, ExecutionStatus
 from src.core.state import LocalStateDatabase
 from src.core.state.workspace import LocalWorkspaceRepository
+
+
+class ConfigurationDocumentationTest(unittest.TestCase):
+    def test_all_environment_variables_are_in_the_configuration_reference(self):
+        root = Path(__file__).resolve().parents[1]
+        source = "\n".join(
+            path.read_text(encoding="utf-8")
+            for path in (root / "src").rglob("*.py")
+        )
+        reference = (root / "docs" / "configuration-reference.md").read_text(
+            encoding="utf-8"
+        )
+
+        variables = set(re.findall(r"LEARN_AGENT_[A-Z0-9_]+", source))
+        undocumented = sorted(name for name in variables if name not in reference)
+
+        self.assertEqual([], undocumented)
 
 
 class MaintenanceSettingsTest(unittest.TestCase):

@@ -1,5 +1,8 @@
 # CLI 架构优化方案
 
+> 文档状态：Current
+> 配置默认值与环境变量名称见 [`configuration-reference.md`](configuration-reference.md)。
+
 > 当前 CLI 在每次 `chat` 时识别最近 Git 根目录，并将 `workspace_root` 与
 > `session_name` 发送给用户级 Core daemon。详细设计见
 > [`workspace-isolation-and-migration.md`](workspace-isolation-and-migration.md)。
@@ -27,6 +30,7 @@ src/cli/commands/
   stop.py
   status.py
   chat.py
+  session.py
 ```
 
 `src/cli/main.py` 只负责：
@@ -331,13 +335,16 @@ from learn_agent.cli.client import CoreClient
 
 ### CLI 当前支持
 
-CLI 当前提供四个命令：
+CLI 当前提供五组命令：
 
 ```text
 learn-agent start
 learn-agent stop
 learn-agent status
 learn-agent chat
+learn-agent session status
+learn-agent session resume
+learn-agent session discard
 ```
 
 #### `start`
@@ -421,17 +428,42 @@ learn-agent chat
 - 上传文件、图片或其他多模态输入。
 - 从 CLI 选择模型、工具权限或 Agent 类型。
 
+#### `session`
+
+`session` 命令用于查看和控制当前 Workspace 中尚未完成的 Execution：
+
+```text
+learn-agent session status --session default
+learn-agent session resume --session default
+learn-agent session resume --session default --instruction "先只完成测试修复"
+learn-agent session discard --session default
+```
+
+当前支持：
+
+- 查询待恢复 Execution、checkpoint 状态和后台维护任务数量。
+- 使用新的 Grant 从 LangGraph checkpoint 继续未完成任务。
+- 为恢复执行附加一条补充指令。
+- 丢弃待恢复 Execution，同时保留审计记录。
+
+当前不支持：
+
+- 列出 Workspace 中所有 Session。
+- 恢复 checkpoint 缺失或被标记为不可恢复的 Execution。
+- 修改历史消息后从任意旧节点创建分支。
+- 取消正在执行中的 Grant。
+
 ### CLI 配置边界
 
 CLI 当前只读取并验证：
 
 ```text
-CORE_HOST
-CORE_PORT
-CORE_CONNECT_TIMEOUT_SECONDS
-CORE_DAEMON_STARTUP_TIMEOUT_SECONDS
-CORE_DAEMON_STOP_TIMEOUT_SECONDS
-CORE_RUNTIME_DIR
+LEARN_AGENT_CORE_HOST
+LEARN_AGENT_CORE_PORT
+LEARN_AGENT_CORE_CONNECT_TIMEOUT_SECONDS
+LEARN_AGENT_DAEMON_STARTUP_TIMEOUT_SECONDS
+LEARN_AGENT_DAEMON_STOP_TIMEOUT_SECONDS
+LEARN_AGENT_RUNTIME_DIR
 DEFAULT_SESSION_ID
 ```
 
@@ -484,6 +516,9 @@ TOML 或任意命令行配置覆盖；仅由明确的命令参数覆盖对应操
 core.ping
 core.shutdown
 agent.chat
+session.status
+session.resume
+session.discard
 ```
 
 当前服务端通知：

@@ -1,5 +1,9 @@
 # 配置、领域常量与 Prompt 的管理边界
 
+> 文档状态：Current Design Note
+> 本文解释“配置代码如何组织”，不作为完整参数清单。全部环境变量、默认值、单位和调整风险见
+> [`configuration-reference.md`](configuration-reference.md)。
+
 ## 为什么要优化
 
 程序中出现固定字符串和固定数字并不一定是问题。真正的问题是：一个值的

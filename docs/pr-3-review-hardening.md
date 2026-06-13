@@ -1,5 +1,10 @@
 # PR #3 Review 整改与可靠性加固
 
+> 文档状态：Historical Review Record
+> 本文记录 PR #3 当时的整改决策，不代表当前完整架构。当前设计见
+> [`core-architecture.md`](core-architecture.md) 与
+> [`database-state-and-consistency.md`](database-state-and-consistency.md)。
+
 ## 目标
 
 本轮根据 PR #3 review 加固双进程架构，但不全面异步化 LangGraph、工具和 psycopg

@@ -1,5 +1,9 @@
 # Workspace 隔离实施代码审查
 
+> 文档状态：Historical Review Record
+> 本文记录 Workspace 隔离首次实施后的审查结果；当前数据权威来源和恢复机制已经演进为本地
+> `state.db` / `checkpoints.db` 架构。
+
 ## 审查范围
 
 本次审查覆盖用户级 daemon、Workspace 身份解析、Session 和长期记忆隔离、
