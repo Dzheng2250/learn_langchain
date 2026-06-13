@@ -1,5 +1,11 @@
 # Learn LangChain Agent
 
+架构与运行机制：
+
+- [本地优先 Session 状态](docs/local-first-session-state.md)
+- [可恢复执行与预算控制](docs/resumable-execution.md)
+- [PostgreSQL 到本地状态迁移](docs/local-state-migration.md)
+
 这是一个基于 LangChain、LangGraph 和 PostgreSQL 的本地 coding agent。
 
 项目采用双进程结构：

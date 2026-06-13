@@ -31,3 +31,7 @@ CoreApp
 - [`docs/non-functional-testing.md`](../../docs/non-functional-testing.md)
 - [`docs/pr-3-review-hardening.md`](../../docs/pr-3-review-hardening.md)
 - [`docs/deployment.md`](../../docs/deployment.md)
+- [`docs/local-first-session-state.md`](../../docs/local-first-session-state.md)
+- [`docs/resumable-execution.md`](../../docs/resumable-execution.md)
+- [`docs/local-state-migration.md`](../../docs/local-state-migration.md)
+- [`docs/local-first-testing.md`](../../docs/local-first-testing.md)
