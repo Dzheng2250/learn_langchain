@@ -7,8 +7,9 @@
 
 ### 1.1 用户输出优先
 
-一旦模型产生可展示内容，普通会话归档、Session 状态更新、Telemetry 写入和普通长期记忆
-提取不得延迟 token 输出，也不得延迟 CLI 在回答结束后恢复输入。
+一旦模型产生可展示内容，任何持久化不得延迟 token 输出。模型完成后，完整消息和 Session
+最小业务状态必须经过一次本地原子提交后才能返回成功；摘要、Telemetry、长期记忆和 checkpoint
+清理不得延迟 CLI 恢复输入。
 
 用户不应看到以下基础设施状态：
 
@@ -26,43 +27,43 @@
 |---|---|---|
 | LLM 和工具执行 | 是，属于回答生成过程 | 是 |
 | Socket token 发送 | 是，但必须有超时和背压边界 | 是 |
-| 普通消息归档 | 否 | 否 |
-| 普通 Session 状态保存 | 否 | 否 |
+| 完整消息与最小 Session 状态原子提交 | 否 | 是，作为耐久性屏障 |
 | Telemetry 数据库写入 | 否 | 否 |
 | JSONL/Console Telemetry | 否 | 否 |
 | 普通长期记忆提取 | 否 | 否 |
-| 上下文压缩 | 不得影响已产生 token | 当前允许延迟 Turn 完成，目标为后台执行 |
-| 用户明确要求“记住” | 不得影响已产生 token | 可以等待持久化结果 |
+| 上下文压缩 | 不得影响已产生 token | 否；通过持久化维护任务后台执行 |
+| 用户明确要求“记住” | 不得影响已产生 token | 否；返回 pending，不虚假确认成功 |
 
-普通会话持久化即使发生延迟，也只能影响后台最终一致性或同一 Session 的下一轮准备，
-不能占用上一轮用户输出路径。
+最小业务提交允许占用最后一个 token 到最终响应之间的短暂窗口，但不得影响已经开始的 token
+流。所有可重建的派生维护只能影响后台最终一致性。
 
 ### 1.3 同一 Session 一致性
 
 后台持久化不能导致下一轮读取旧状态。目标行为：
 
-1. 上一轮回答完成后，CLI 立即恢复输入。
-2. 普通会话提交在后台执行。
-3. 用户立即发送同一 Session 的下一轮时，Core 在内部等待上一轮提交完成。
-4. 不同 Session 不受该等待影响。
-5. 提交失败必须记录并有限重试，不能静默覆盖或跳过状态。
+1. 上一轮最小业务提交成功后，CLI 立即恢复输入。
+2. 摘要、记忆与 checkpoint 清理在后台执行。
+3. 用户立即发送同一 Session 下一轮时，只依赖上一轮已完成的最小提交。
+4. 不同 Session 不受后台维护影响。
+5. 派生维护失败必须记录并有限重试，不能静默丢失。
 
 ## 2. 延迟目标
 
-以下指标以本地 Core、健康 PostgreSQL、未包含模型服务自身响应时间为基准。测试阈值用于发现
-架构回归，不代表公网模型调用的服务承诺。
+以下指标以本地 Core、健康本地状态库、可选 PostgreSQL Telemetry 关闭或健康、且未包含模型服务
+自身响应时间为基准。测试阈值用于发现架构回归，不代表公网模型调用的服务承诺。
 
 | 指标 | 定义 | 目标 |
 |---|---|---:|
 | `stream_forward_latency_ms` | Core 收到 token 到开始写入客户端连接 | p95 < 20 ms，p99 < 50 ms |
 | `telemetry_publish_latency_ms` | 业务线程调用 `emit_event()` 的耗时 | p95 < 2 ms，p99 < 10 ms |
 | `response_release_latency_ms` | 最后一个可见 token 到 CLI 可再次接受输入 | p95 < 100 ms，p99 < 250 ms |
-| `ordinary_commit_latency_ms` | 普通消息归档和 Session 更新耗时 | p95 < 100 ms；不得进入前台输出关键路径 |
-| `same_session_handoff_ms` | 下一轮等待上一轮后台提交的时间 | p95 < 150 ms |
+| `minimal_commit_latency_ms` | 消息、Session、Execution 和维护任务原子提交耗时 | p95 < 100 ms；是响应前耐久性屏障 |
+| `same_session_handoff_ms` | 下一轮解析已提交上一轮状态的额外耗时 | p95 < 50 ms |
 | `different_session_interference_ms` | 一个慢 Session 对其他 Session 输出增加的延迟 | p95 增量 < 50 ms |
 | `core_ping_latency_ms` | daemon 空闲时本地 `core.ping` 往返 | p95 < 50 ms |
 
-性能测试必须记录机器、Python、PostgreSQL、并发数和数据规模。单次结果不能作为验收结论。
+性能测试必须记录机器、Python、SQLite journal 模式、可选 PostgreSQL 状态、并发数和数据规模。
+单次结果不能作为验收结论。
 
 ## 3. 输出链路要求
 
@@ -76,25 +77,25 @@
 
 ### 3.2 回答完成
 
-用户可见回答完成和后台最终提交是不同事实：
+用户可见回答完成和派生维护完成是不同事实：
 
 ```text
-response completed != persistence completed
+response completed != maintenance completed
 ```
 
-目标架构必须使普通会话持久化不成为 CLI 恢复输入的条件。Core 可以在内部维护提交任务、
-重试状态和同 Session 顺序，但不得显示保存提示。
+目标架构必须使派生维护不成为 CLI 恢复输入的条件。完整消息与最小 Session 状态仍是返回
+成功前的耐久性屏障，但不得显示保存提示。
 
 ## 4. 数据库与后台任务隔离
 
 ### 4.1 普通会话提交
 
 - 消息归档和 Session 状态更新应由单个事务完成。
-- 普通提交应由有界后台执行器处理。
-- 队列必须有容量限制、失败重试和关闭时 drain 策略。
-- 同一 Session 的提交必须保持顺序。
-- 不同 Session 允许并行提交。
-- 后台提交失败不能被误报为成功持久化。
+- 最小提交必须短小，只包含不可重建的业务事实。
+- 摘要、记忆和 checkpoint 清理必须通过持久化维护任务执行。
+- 维护任务必须有状态、租约、有限重试和启动恢复策略。
+- 同一 Session 的最小提交必须保持顺序；不同 Session 允许并行。
+- 最小提交失败不能被误报为成功持久化。
 
 ### 4.2 Telemetry
 
@@ -107,7 +108,7 @@ response completed != persistence completed
 ### 4.3 上下文压缩与记忆
 
 - 普通长期记忆提取必须后台执行。
-- 用户明确要求记忆时，可以等待持久化确认。
+- 用户明确要求记忆时返回 `pending`，不得虚假确认成功。
 - 上下文压缩不得阻塞已经开始的 token 流。
 - 后台压缩更新 Session 时必须进行版本检查，防止覆盖更新后的状态。
 
@@ -120,7 +121,7 @@ response completed != persistence completed
 | Telemetry 队列满 | 丢弃观测事件并记录计数；不阻塞输出 |
 | 客户端断开 | 停止通知；Core Turn 继续完成 |
 | Core 正常关闭 | 停止接收新请求，并在超时内 drain 后台任务 |
-| Core 强制终止 | 允许丢失未提交的 best-effort Telemetry；会话提交的丢失风险必须被明确记录 |
+| Core 强制终止 | 已返回成功的最小提交不得丢失；允许丢失 best-effort Telemetry，持久化维护任务下次启动恢复 |
 | 同一 Session 快速连续请求 | 不覆盖、不乱序、不读取未提交旧状态 |
 
 ## 6. 可观测性要求
@@ -130,10 +131,10 @@ response completed != persistence completed
 - 首 token 时间。
 - token 转发耗时和 Socket drain 耗时。
 - 最后 token 到前端释放的耗时。
-- 普通会话提交耗时、重试次数和失败数。
+- 最小业务提交耗时和失败数。
 - 上下文压缩耗时。
 - 长期记忆提取耗时。
-- Agent worker、后台提交、记忆和 Telemetry 队列长度。
+- Agent worker、维护任务、记忆和 Telemetry 队列长度。
 - 数据库连接获取耗时。
 - Telemetry 丢弃计数。
 
@@ -147,9 +148,9 @@ response completed != persistence completed
 | PostgreSQL Telemetry 后台批量写入 | 已实现：`BufferedEventSink` |
 | Telemetry 队列满不阻塞生产者 | 已实现：`put_nowait()` 并丢弃 |
 | EventBus 关闭不阻塞 asyncio 主循环 | 已实现：Core 通过工作线程关闭 |
-| 普通会话写入不延迟 CLI 恢复输入 | **未实现** |
-| 消息归档与 Session 更新单事务提交 | **未实现** |
-| 上下文压缩后台执行并带版本检查 | **未实现** |
+| 派生维护不延迟 CLI 恢复输入 | 已实现：持久化 `maintenance_jobs` |
+| 消息、Session、Execution 与维护任务单事务提交 | 已实现：`CompletedTurnCommitter` |
+| 上下文压缩后台执行并带版本检查 | 已实现：摘要任务与 `summary_through_turn` CAS |
 | 慢客户端发送超时 | **未实现** |
 | IO 型 Console/JSONL Sink 默认缓冲 | **未实现** |
 | 业务数据库池与 Telemetry 池资源隔离 | **未实现** |

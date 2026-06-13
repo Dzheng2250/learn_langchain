@@ -9,6 +9,9 @@
 > 用户延迟、后台处理边界与非功能验收方案见
 > [`non-functional-requirements.md`](non-functional-requirements.md) 和
 > [`non-functional-testing.md`](non-functional-testing.md)。
+>
+> Turn 最小提交、后台维护和跨 SQLite 恢复协调见
+> [`response-finalization-and-checkpoint-consistency.md`](response-finalization-and-checkpoint-consistency.md)。
 
 ## 目标
 
@@ -23,7 +26,10 @@ CoreApp
               -> ModelProvider
               -> ToolRegistry
               -> LangGraph
-          -> ContextManager + MemoryStore
+          -> TurnCoordinator
+              -> TurnFinalizer
+              -> CompletedTurnCommitter
+          -> MaintenanceScheduler + RecoveryCoordinator
           -> EventBus
 ```
 
@@ -50,9 +56,9 @@ CLI 识别 Workspace
        agent node -> ModelProvider 创建的父 Agent LLM
        tools node -> ToolRegistry 生成的父 Agent 工具视图
        tools_condition -> 继续或结束
-  -> 保存完整消息和短期上下文
-  -> 按策略提取长期记忆
+  -> 原子提交完整消息、近期上下文、Execution 和维护任务
   -> 返回 stop_reason、tool_call_count 和运行身份
+  -> MaintenanceScheduler 后台执行摘要、记忆提取和 checkpoint 清理
 ```
 
 同一 Session 通过内部 UUID 锁串行执行。不同 Session 和不同 Workspace 可以并行。
@@ -77,7 +83,7 @@ CLI 识别 Workspace
 | 6 | `AgentTurnService.run_turn()` | Core asyncio loop | 获取并发 slot，提交同步 Turn 到专用 executor |
 | 7 | `AgentTurnService._run_turn_sync()` | `agent-turn` worker | 消费内部事件流，形成最终结果 |
 | 8 | `AgentTurnService.stream_turn()` | `agent-turn` worker | 解析 Workspace/Session，获取 Session UUID 锁 |
-| 9 | `AgentTurnService._stream_locked_turn()` | `agent-turn` worker | 加载上下文、执行 Graph、持久化结果 |
+| 9 | `AgentTurnService._stream_locked_turn()` | `agent-turn` worker | 加载上下文、执行 Graph、委托最小持久化提交 |
 | 10 | `stream_graph_events()` | `agent-turn` worker | 将 LangGraph stream 转换为稳定事件协议 |
 | 11 | `agent_node()` / `ObservedToolNode` | `agent-turn` worker | 调用 LLM，或执行模型请求的工具 |
 | 12 | `on_event()` | `agent-turn` worker | 将流事件投递回 Core asyncio loop |
@@ -432,35 +438,30 @@ asyncio.run_coroutine_threadsafe(
 
 ### 第十阶段：成功完成后的持久化
 
-只有收到 `done` 时，`_stream_locked_turn()` 才执行成功持久化：
+只有收到 LangGraph `done` 时，`TurnCoordinator` 才调用 `TurnFinalizer`：
 
 ```python
-final_messages = item["data"]["messages"]
-turn_messages = final_messages[len(input_messages) - 1:]
-source_ids = store.archive_turn_messages(session, current_turn, turn_messages)
-state = context_manager.update_after_turn(state, final_messages, memory_context=memory_text)
-store.save_session(session, state, current_turn)
-_handle_extraction(..., turn_messages, source_ids)
+finalization = turn_coordinator.finalize(
+    store=store,
+    session=session,
+    turn_index=current_turn,
+    previous_state=state,
+    final_messages=item["data"]["messages"],
+    execution=execution,
+)
 ```
 
-`len(input_messages) - 1` 的含义是：Graph 输入最后一条是当前用户消息，因此从该位置切片，
-可以保留本轮用户消息和 Graph 新增消息，同时排除旧历史、summary 与长期记忆合成消息。
-
-持久化顺序和副作用：
+最小提交和派生维护边界：
 
 | 顺序 | 调用 | 数据库结果 |
 |---:|---|---|
-| 1 | `archive_turn_messages()` | 向 `agent_messages` 写入本轮完整消息，返回消息 ID |
-| 2 | `update_after_turn()` | 在内存中计算新的 summary 和 recent messages |
-| 3 | `save_session()` | 更新 `agent_sessions` 的有限上下文和 `turn_index` |
-| 4 | `_handle_extraction()` | 根据策略跳过、同步或后台提取长期记忆 |
+| 1 | `build_fast_state()` | 纯计算近期消息，不调用摘要模型 |
+| 2 | `CompletedTurnCommitter.commit()` | 同事务写入消息、Session、Execution 和维护任务 |
+| 3 | 返回最终 `done` | CLI 可以恢复输入 |
+| 4 | `MaintenanceScheduler` | 后台执行摘要、记忆和 checkpoint 清理 |
 
-长期记忆提取在消息归档之后运行，因此 `agent_memory_sources.message_id` 引用的是已经提交的
-消息。周期性或大内容提取可进入单独的 `agent-memory` executor；用户明确要求“记住”时同步
-执行，使保存结果在本轮完成前可知。
-
-当前消息归档与 Session 更新仍是两个事务。如果归档成功而 Session 更新失败，可能出现部分提交；
-该问题记录在 `memory-management.md` 的 Turn Unit of Work 后续方案中。
+长期记忆 handler 只读取已提交消息，因此来源关系始终引用有效消息。用户明确要求“记住”时也
+返回 `pending`；CLI 不会把尚未完成的后台提取表述为已经保存。
 
 ### 第十一阶段：最终响应与资源恢复
 
@@ -475,6 +476,9 @@ _handle_extraction(..., turn_messages, source_ids)
     "session_name": "...",
     "stop_reason": "completed",
     "tool_call_count": 3,
+    "durability": "committed",
+    "maintenance_status": "pending",
+    "memory_status": "pending",
 }
 ```
 
@@ -485,7 +489,7 @@ _handle_extraction(..., turn_messages, source_ids)
 
 ```text
 恢复进入本轮前的事件上下文
-  -> 关闭本轮 MemoryStore facade
+  -> 关闭本轮 StateStore facade
   -> 释放 Session UUID 锁
   -> worker future 完成
   -> 释放并发 semaphore slot
@@ -576,23 +580,21 @@ flowchart LR
         Slot --> Worker --> Graph
     end
 
-    subgraph Persist["阶段三：持久化"]
+    subgraph Persist["阶段三：最小提交与后台维护"]
         direction TB
-        Messages["归档完整本轮消息"]
-        Context["更新 summary<br/>与 recent_messages"]
-        Memory["按策略提取长期记忆"]
-        Done["返回 stop_reason<br/>与 tool_call_count"]
-        Messages --> Context --> Memory --> Done
+        Commit["CompletedTurnCommitter<br/>原子提交业务事实"]
+        State["state.db<br/>消息 / Session / Execution"]
+        Jobs["maintenance_jobs<br/>持久化任务"]
+        Done["返回 done<br/>CLI 恢复输入"]
+        Maintenance["MaintenanceScheduler<br/>摘要 / 记忆 / checkpoint 清理"]
+        Commit --> State --> Done
+        Commit --> Jobs --> Maintenance
     end
 
-    DB[("PostgreSQL")]
     Build --> Slot
-    Graph --> Messages
-    Resolve <--> DB
-    Load <--> DB
-    Messages --> DB
-    Context --> DB
-    Memory --> DB
+    Graph --> Commit
+    Resolve <--> State
+    Load <--> State
 
     classDef prepare fill:#fff3cd,stroke:#d6a100,color:#222;
     classDef execute fill:#dce9ff,stroke:#5b85c5,color:#222;
@@ -600,8 +602,8 @@ flowchart LR
     classDef store fill:#f3e8ff,stroke:#8b5fbf,color:#222;
     class Resolve,Lock,Load,Build prepare;
     class Slot,Worker,Graph execute;
-    class Messages,Context,Memory,Done persist;
-    class DB store;
+    class Commit,Done,Maintenance persist;
+    class State,Jobs store;
 ```
 
 #### 3. Parent Agent 与 Sub-agent 调用链
@@ -653,7 +655,7 @@ flowchart LR
 - `AgentHandlers` 和 `SocketServer` 运行在 Core asyncio 事件循环中。
 - `WorkspaceRepository`、Memory、LangGraph、LLM 和工具执行位于专用 `agent-turn` worker。
 - worker 通过 `on_event` 回调和 `asyncio.run_coroutine_threadsafe()` 将流式通知送回事件循环。
-- 完整消息、压缩上下文和长期记忆都写入 PostgreSQL，但用途和生命周期不同。
+- 完整消息和最小 Session 状态原子写入 `state.db`；摘要、长期记忆和 checkpoint 清理通过持久化维护任务完成。
 - 客户端断线后，流式通知停止；已经进入 worker 的 turn 仍继续执行并完成持久化。
 
 ## AgentRunContext 与 RunLimits
@@ -917,7 +919,7 @@ flowchart LR
 | 工具注册、筛选与边界观测 | `src/core/tools/registry.py`、`src/core/tools/observed.py` |
 | 非递归 Sub-agent | `src/core/subagent/graph.py` |
 | 短期上下文与压缩 | `src/core/context/manager.py` |
-| Session、消息与长期记忆 | `src/core/memory/store.py`、`src/core/memory/repositories.py` |
+| Session、消息与长期记忆 | `src/core/state/store.py`、`src/core/state/` |
 | 观测事件入口与上下文 | `src/core/telemetry/recorder.py`、`src/core/telemetry/context.py` |
 | EventBus、组装与 sinks | `src/core/telemetry/bus.py`、`src/core/telemetry/factory.py`、`src/core/telemetry/sinks.py` |
 
@@ -935,7 +937,8 @@ flowchart LR
 | EventBus | `EventBus` + JSON-RPC 流式通道 |
 
 项目不手写 `AgentLoop`，因为 LangGraph 已经提供状态传递、条件边、工具循环和递归限制。
-`AgentTurnService` 也不承担 daemon、RPC 或数据库 schema 生命周期，以保持职责边界。
+`AgentTurnService` 不实现 daemon、RPC 或数据库 schema 细节；它通过注入的 StateStore、Repository、
+Finalizer 和 Scheduler 委托这些职责，并由 `CoreApp` 组合和触发生命周期。
 
 ## 扩展流程
 

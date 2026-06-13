@@ -70,7 +70,7 @@ class AgentTurnExecutorTest(unittest.IsolatedAsyncioTestCase):
         return AgentTurnService(
             workspace_repository=Mock(),
             runtime_registry=Mock(),
-            memory_store_factory=Mock(),
+            state_store_factory=Mock(),
             turn_executor=executor,
             max_concurrent_turns=max_concurrent_turns,
         )
@@ -195,7 +195,7 @@ class DiagnosticTurnTest(unittest.TestCase):
         service = AgentTurnService(
             workspace_repository=Repository(),
             runtime_registry=runtime_registry,
-            memory_store_factory=lambda: store,
+            state_store_factory=lambda: store,
             model_configuration=MissingConfiguration(),
         )
         try:

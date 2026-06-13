@@ -1,6 +1,7 @@
 """Thread-safe workspace runtime factory and cache."""
 
 from dataclasses import dataclass
+from collections.abc import Callable
 from threading import Lock
 from uuid import UUID
 
@@ -28,10 +29,12 @@ class WorkspaceRuntimeFactory:
         model_provider: ModelProvider | None = None,
         run_limits: RunLimits | None = None,
         checkpointer=None,
+        checkpointer_provider: Callable[[], object] | None = None,
     ) -> None:
         self.model_provider = model_provider or OpenAICompatibleProvider()
         self.run_limits = run_limits or RunLimits()
         self.checkpointer = checkpointer
+        self.checkpointer_provider = checkpointer_provider
 
     def create(self, workspace: WorkspaceContext) -> WorkspaceRuntime:
         """Build Workspace-bound tools and compile the parent Agent graph."""
@@ -42,11 +45,16 @@ class WorkspaceRuntimeFactory:
             self.model_provider,
             subagent_max_steps=self.run_limits.max_subagent_steps,
         )
+        checkpointer = (
+            self.checkpointer_provider()
+            if self.checkpointer_provider is not None
+            else self.checkpointer
+        )
         graph = create_parent_graph(
             toolset.parent_tools,
             toolset.skill_manifest,
             self.model_provider,
-            checkpointer=self.checkpointer,
+            checkpointer=checkpointer,
             risk_by_name={spec.name: spec.risk for spec in toolset.registry.specs()},
         )
         return WorkspaceRuntime(workspace, toolset, graph)

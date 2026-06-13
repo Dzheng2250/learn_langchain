@@ -32,8 +32,16 @@ class CheckpointManager:
         return self.saver
 
     def delete_thread(self, thread_id: str) -> None:
-        if self.saver is not None:
-            self.saver.delete_thread(thread_id)
+        if self.saver is None:
+            raise RuntimeError("Checkpoint manager must be initialized before deleting a thread.")
+        self.saver.delete_thread(thread_id)
+
+    def thread_exists(self, thread_id: str) -> bool:
+        """Return whether LangGraph has at least one durable checkpoint for a thread."""
+        if self.saver is None:
+            raise RuntimeError("Checkpoint manager must be initialized before recovery reconciliation.")
+        config = {"configurable": {"thread_id": thread_id, "checkpoint_ns": ""}}
+        return self.saver.get_tuple(config) is not None
 
     def close(self) -> None:
         if self._context is not None:

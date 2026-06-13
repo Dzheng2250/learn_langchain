@@ -12,6 +12,8 @@
 > 用户可感知延迟、后台处理边界与验收方法见
 > [`non-functional-requirements.md`](non-functional-requirements.md) 和
 > [`non-functional-testing.md`](non-functional-testing.md)。
+> 最终响应耐久性屏障、后台维护与 checkpoint 恢复见
+> [`response-finalization-and-checkpoint-consistency.md`](response-finalization-and-checkpoint-consistency.md)。
 > 端到端请求路径见其中的[完整数据流动示意图](agent-execution-architecture.md#完整数据流动示意图)，
 > Agent 内部执行与双事件通道见[调用链与事件通道图](agent-execution-architecture.md#agent-调用链与事件通道图)。
 >
@@ -69,8 +71,29 @@ src/core/
     socket_server.py
 
   agent/
+    contracts.py
+    coordinator.py
     graph.py
     service.py
+
+  finalization/
+    committer.py
+    models.py
+    service.py
+
+  maintenance/
+    handlers.py
+    models.py
+    recovery.py
+    repository.py
+    scheduler.py
+
+  state/
+    contracts.py
+    database.py
+    executions.py
+    schema.sql
+    store.py
 ```
 
 ### `main.py`
@@ -99,7 +122,10 @@ src/core/
 启动顺序：
 
 ```text
-Agent service initialize
+初始化并迁移 state.db
+  -> 初始化 checkpoints.db
+  -> ExecutionRecoveryCoordinator 跨库对账
+  -> 启动 MaintenanceScheduler
   -> 准备 runtime 目录
   -> Transport start
   -> 写入 PID
@@ -113,7 +139,9 @@ Agent service initialize
   -> 关闭客户端 stream，释放空闲连接
   -> 等待活跃 handler
   -> 等待 Transport 完全关闭
-  -> 关闭 Agent service
+  -> 等待 Agent turn executor
+  -> 停止 MaintenanceScheduler 认领新任务
+  -> 关闭 checkpoint
   -> flush/关闭事件 sink
   -> 关闭数据库连接池
   -> 删除 PID
@@ -193,14 +221,19 @@ daemon PID/token 管理
 - `SocketServer` 只处理传输。
 - `RpcRouter` 只处理验证和分发。
 - Handlers 只适配协议与业务。
-- `AgentTurnService` 只编排 Agent turn。
+- `AgentTurnService` 编排 Slice 循环与暂停恢复。
+- `TurnCoordinator` 负责 Turn 准备和最终提交协调。
+- `CompletedTurnCommitter` 只负责最小业务事务。
+- `MaintenanceScheduler` 只负责持久化后台任务分发。
+- `ExecutionRecoveryCoordinator` 只负责两个 SQLite 数据库的恢复对账。
 - `CoreApp` 只负责组装和生命周期。
 
 ### 依赖倒置原则
 
 `AgentHandlers` 依赖 `AgentTurnRunner` 协议，`CoreApp` 依赖 `ManagedAgentService` 和
 `CoreTransport` 协议。两个 Agent service 协议集中定义在 `core.agent.contracts`，
-测试和未来 Transport 可以注入替代实现。
+测试和未来 Transport 可以注入替代实现。前台 Turn、后台维护和 checkpoint 分别依赖
+`StateStore`、`MaintenanceStateStore` 和 `CheckpointStore` 最小能力协议。
 
 ### 开闭原则
 
@@ -209,6 +242,7 @@ daemon PID/token 管理
 ### 接口隔离原则
 
 Handler 只获得最小 `RequestContext`，不能访问底层 TCP writer。Agent service 不知道 RPC 或连接概念。
+后台维护 handler 不能通过前台 `StateStore` 协议调用不属于自己的能力。
 
 ### 组合优于继承
 
@@ -247,6 +281,9 @@ Handler 只获得最小 `RequestContext`，不能访问底层 TCP writer。Agent
 - Agent token/step/error/done 流式通知。
 - 同 session 串行、跨 session 并行。
 - 同步 Agent turn 通过专用有界 executor 执行，不占用 asyncio 默认线程池。
+- 最小 Turn 状态与后台维护任务通过同一 `state.db` 事务提交。
+- 摘要、记忆和 checkpoint 清理通过持久化任务后台执行。
+- 启动时对账 Execution 与 LangGraph checkpoint。
 - 启动失败反向清理资源。
 - shutdown 等待活跃请求并设置超时。
 
@@ -266,7 +303,8 @@ Handler 只获得最小 `RequestContext`，不能访问底层 TCP writer。Agent
 仍存在但不在本次重构范围内的问题：
 
 1. 顶层 Python 包仍命名为 `src`，长期应迁移为正式包名。
-2. `memory/store.py` 仍然较大，未来可继续按事务编排与查询职责拆分。
+2. `state/store.py` 仍然较大，未来可继续按消息、Session 与记忆查询职责拆分。
 3. 部署参数已支持用户级 `.env` 与进程环境覆盖，但内部策略常量仍集中在 Python 配置模块，
    尚未形成完整的严格配置模型，也不支持热更新。
 4. Agent 流式事件内部 `data` 仍是通用字典，未来可增加严格事件模型。
+5. MaintenanceScheduler 当前只有一个 worker，且长任务租约尚未续租；未来多实例前必须加强协调。

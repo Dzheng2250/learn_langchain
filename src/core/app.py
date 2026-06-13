@@ -22,6 +22,17 @@ from src.core.state import (
     LocalStateStore,
     LocalWorkspaceRepository,
 )
+from src.core.finalization import CompletedTurnCommitter, TurnFinalizer
+from src.core.maintenance import (
+    ExecutionRecoveryCoordinator,
+    MaintenanceRepository,
+    MaintenanceScheduler,
+)
+from src.core.maintenance.handlers import (
+    CheckpointCleanupHandler,
+    ContextSummaryHandler,
+    MemoryExtractionHandler,
+)
 from src.core.context.manager import AgentContextManager
 from src.core.llm.provider import OpenAICompatibleProvider
 from src.core.workspace.runtime import WorkspaceRuntimeFactory, WorkspaceRuntimeRegistry
@@ -82,24 +93,67 @@ class CoreApp:
                 self._event_bus = create_event_bus(self._pool)
             model_provider = OpenAICompatibleProvider()
             run_limits = RunLimits()
+            workspace_repository = LocalWorkspaceRepository(self._state_database)
+            execution_repository = ExecutionRepository(self._state_database)
+            maintenance_repository = MaintenanceRepository(self._state_database)
+            context_manager = AgentContextManager(model_provider=model_provider)
+
+            def state_store_factory():
+                return LocalStateStore(
+                    self._state_database,
+                    model_provider=model_provider,
+                )
+
+            maintenance_scheduler = MaintenanceScheduler(
+                maintenance_repository,
+                {
+                    "context_summary": ContextSummaryHandler(
+                        workspace_repository,
+                        state_store_factory,
+                        context_manager,
+                    ),
+                    "memory_extract": MemoryExtractionHandler(
+                        workspace_repository,
+                        state_store_factory,
+                    ),
+                    "checkpoint_cleanup": CheckpointCleanupHandler(
+                        checkpoint_manager,
+                        execution_repository,
+                    ),
+                },
+            )
+            turn_finalizer = TurnFinalizer(
+                context_manager,
+                CompletedTurnCommitter(
+                    self._state_database,
+                    execution_repository,
+                    maintenance_repository,
+                ),
+                maintenance_scheduler,
+            )
             self.agent_service = AgentTurnService(
-                workspace_repository=LocalWorkspaceRepository(self._state_database),
+                workspace_repository=workspace_repository,
                 runtime_registry=WorkspaceRuntimeRegistry(
                     factory=WorkspaceRuntimeFactory(
                         model_provider,
                         run_limits,
-                        checkpointer=checkpoint_manager.initialize(),
+                        checkpointer_provider=checkpoint_manager.initialize,
                     ),
                 ),
-                memory_store_factory=lambda: LocalStateStore(
-                    self._state_database,
-                    model_provider=model_provider,
-                ),
-                context_manager=AgentContextManager(model_provider=model_provider),
+                state_store_factory=state_store_factory,
+                context_manager=context_manager,
                 model_configuration=model_provider,
                 run_limits=run_limits,
-                execution_repository=ExecutionRepository(self._state_database),
+                execution_repository=execution_repository,
                 checkpoint_manager=checkpoint_manager,
+                turn_finalizer=turn_finalizer,
+                maintenance_repository=maintenance_repository,
+                maintenance_scheduler=maintenance_scheduler,
+                recovery_coordinator=ExecutionRecoveryCoordinator(
+                    execution_repository,
+                    checkpoint_manager,
+                    maintenance_repository,
+                ),
             )
         else:
             self.agent_service = agent_service

@@ -6,6 +6,7 @@
 - [可恢复执行与预算控制](docs/resumable-execution.md)
 - [PostgreSQL 到本地状态迁移](docs/local-state-migration.md)
 - [本地优先优化的原因、风险与设计审查](docs/local-first-rationale-and-review.md)
+- [最终响应、后台维护与 Checkpoint 一致性](docs/response-finalization-and-checkpoint-consistency.md)
 
 这是一个基于 LangChain、LangGraph 和本地 SQLite 状态库的 coding agent。
 

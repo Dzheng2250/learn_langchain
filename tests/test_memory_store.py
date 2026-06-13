@@ -98,7 +98,7 @@ class WorkspaceMemoryStoreTest(unittest.TestCase):
         service = AgentTurnService(
             workspace_repository=WorkspaceRepository(self.pool),
             runtime_registry=runtime_registry,
-            memory_store_factory=lambda: PostgresMemoryStore(pool=self.pool),
+            state_store_factory=lambda: PostgresMemoryStore(pool=self.pool),
             model_configuration=MissingConfiguration(),
         )
         try:

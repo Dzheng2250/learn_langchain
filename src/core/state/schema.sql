@@ -21,6 +21,7 @@ CREATE TABLE IF NOT EXISTS sessions (
     summary TEXT NOT NULL DEFAULT '',
     recent_messages TEXT NOT NULL DEFAULT '[]',
     turn_index INTEGER NOT NULL DEFAULT 0,
+    summary_through_turn INTEGER NOT NULL DEFAULT 0,
     version INTEGER NOT NULL DEFAULT 0,
     active_branch_id TEXT,
     pending_execution_id TEXT,
@@ -81,8 +82,10 @@ CREATE TABLE IF NOT EXISTS executions (
     controlled_executions_used INTEGER NOT NULL DEFAULT 0,
     delegations_used INTEGER NOT NULL DEFAULT 0,
     tool_calls_used INTEGER NOT NULL DEFAULT 0,
+    checkpoint_state TEXT NOT NULL DEFAULT 'uninitialized',
     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    completed_at TEXT,
     FOREIGN KEY(workspace_id, session_id)
         REFERENCES sessions(workspace_id, session_id) ON DELETE CASCADE
 );
@@ -166,6 +169,29 @@ CREATE TABLE IF NOT EXISTS projection_outbox (
     last_error TEXT
 );
 
+CREATE TABLE IF NOT EXISTS maintenance_jobs (
+    job_id TEXT PRIMARY KEY,
+    workspace_id TEXT NOT NULL,
+    session_id TEXT NOT NULL,
+    execution_id TEXT,
+    job_type TEXT NOT NULL,
+    dedupe_key TEXT NOT NULL UNIQUE,
+    priority INTEGER NOT NULL DEFAULT 0,
+    status TEXT NOT NULL DEFAULT 'pending',
+    payload TEXT NOT NULL DEFAULT '{}',
+    attempts INTEGER NOT NULL DEFAULT 0,
+    max_attempts INTEGER NOT NULL DEFAULT 5,
+    next_attempt_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    lease_expires_at TEXT,
+    last_error TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    finished_at TEXT,
+    FOREIGN KEY(workspace_id, session_id)
+        REFERENCES sessions(workspace_id, session_id) ON DELETE CASCADE,
+    FOREIGN KEY(execution_id) REFERENCES executions(execution_id) ON DELETE CASCADE
+);
+
 CREATE TABLE IF NOT EXISTS imported_events (
     source_event_id INTEGER PRIMARY KEY,
     run_id TEXT NOT NULL,
@@ -195,3 +221,9 @@ ON memories(workspace_id, importance DESC, updated_at DESC);
 
 CREATE INDEX IF NOT EXISTS idx_outbox_pending
 ON projection_outbox(projected_at, outbox_id);
+
+CREATE INDEX IF NOT EXISTS idx_maintenance_jobs_ready
+ON maintenance_jobs(status, next_attempt_at, priority DESC, created_at);
+
+CREATE INDEX IF NOT EXISTS idx_maintenance_jobs_session
+ON maintenance_jobs(workspace_id, session_id, status, created_at);

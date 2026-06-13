@@ -20,7 +20,7 @@
 |---|---|---|
 | 单元测试 | 验证非阻塞调用、队列边界、失败隔离 | 必须运行 |
 | 组件测试 | 验证 AgentService、EventBus、Finalizer 的并发行为 | 必须运行 |
-| 本地集成测试 | 验证 TCP、CLI、PostgreSQL 和 daemon 完整链路 | 建议运行 |
+| 本地集成测试 | 验证 TCP、CLI、state.db、checkpoints.db 和 daemon 完整链路 | 建议运行 |
 | 基准测试 | 统计 p50/p95/p99 和资源占用 | 专用环境运行 |
 | 长时间稳定性测试 | 验证队列增长、连接泄漏和内存增长 | 发布前运行 |
 
@@ -64,48 +64,48 @@
 - 默认生产配置下，慢 IO Sink 不增加 token 转发延迟。
 - 如果某 Sink 未被缓冲，测试必须失败并指出配置风险。
 
-### 3.4 普通会话保存不延迟前端释放
+### 3.4 派生维护不延迟前端释放
 
 目标架构实现后台 Finalizer 后，构造：
 
 - 模型立即产生完整回答。
-- `commit_turn()` 固定阻塞 2 秒。
+- 摘要、记忆或 checkpoint 清理 handler 固定阻塞 2 秒。
 - CLI 记录最后 token 和重新获得输入权的时间。
 
 验收：
 
 - CLI 在最后 token 后 250 ms 内恢复输入。
-- 后台提交仍然继续并最终完成。
+- 最小提交完成后，后台维护仍然继续并最终完成。
 - 不显示“正在保存会话”。
 
-该测试在当前实现下预期失败，应在引入后台提交后转为强制回归测试。
+最小业务提交本身是耐久性屏障；另需注入慢 `CompletedTurnCommitter`，验证 `done` 不得提前返回。
 
 ### 3.5 同一 Session 保持一致性
 
 构造：
 
-- 第一轮回答后，后台提交阻塞。
+- 第一轮最小提交成功并返回，但摘要和记忆维护仍阻塞。
 - 用户立即发起同一 Session 第二轮。
 
 验收：
 
 - 第一轮 CLI 已恢复输入。
-- 第二轮在 Core 内部等待第一轮提交。
 - 第二轮加载到第一轮已提交状态。
 - 两轮 `turn_index` 连续且无覆盖。
+- 第二轮不等待第一轮摘要和记忆维护。
 
 ### 3.6 不同 Session 不互相阻塞
 
 构造：
 
-- Session A 的提交或数据库读取阻塞 2 秒。
+- Session A 的后台维护阻塞 2 秒。
 - 同时执行 Session B。
 
 验收：
 
 - Session B 的 token 输出延迟增量符合
   [`different_session_interference_ms`](non-functional-requirements.md#2-延迟目标)。
-- Session B 不等待 Session A 的 Session 锁或后台提交。
+- Session B 不等待 Session A 的 Session 锁或后台维护。
 
 ### 3.7 上下文压缩不影响已开始的输出
 
@@ -138,13 +138,13 @@
 
 构造：
 
-- 后台会话提交、Telemetry 和记忆任务均存在待处理工作。
+- 持久化维护任务和 Telemetry 均存在待处理工作。
 - 请求 `core.shutdown`。
 
 验收：
 
 - Core 停止接收新请求。
-- 在配置超时内 drain 关键会话提交。
+- 已提交维护任务保留在 `state.db`，运行中的任务停止或通过租约在下次启动恢复。
 - best-effort Telemetry 可在超时后放弃。
 - 不先关闭数据库池再等待依赖数据库的任务。
 
@@ -178,7 +178,7 @@ t_maintenance_finished
 ```text
 stream_forward_latency = t_token_forward_started - t_token_generated
 response_release_latency = t_frontend_released - t_last_visible_token
-ordinary_commit_latency = t_commit_finished - t_commit_started
+minimal_commit_latency = t_commit_finished - t_commit_started
 maintenance_latency = t_maintenance_finished - t_commit_finished
 ```
 
@@ -192,13 +192,15 @@ class SlowBatchSink:
         time.sleep(0.5)
 
 
-class SlowCommitStore:
-    def commit_turn(self, ...):
+class SlowCompletedTurnCommitter:
+    def commit(self, ...):
         time.sleep(2)
 ```
 
 数据库集成测试可以使用：
 
+- SQLite 长写事务模拟 `state.db` 写锁竞争。
+- 故障注入的迁移函数验证 Schema 事务回滚。
 - PostgreSQL `pg_sleep()` 模拟慢语句。
 - 小连接池模拟连接竞争。
 - `statement_timeout` 验证有限失败。
@@ -249,13 +251,21 @@ git diff --check
 - 客户端通知失败不取消 Turn。
 - 并发 Socket 写入不会交叉。
 - Core 关闭等待活动请求。
+- 最小 Turn 提交任一步失败时整体回滚。
+- 慢摘要、记忆或 checkpoint 维护不延迟进程内响应释放。
+- 慢最小提交必须延迟 `done`。
+- 同一 Session 下一轮不等待上一轮后台维护。
+- 维护任务去重、租约恢复、有限重试和 worker 异常生存性。
+- 摘要 CAS 冲突不覆盖新状态。
+- Execution 与 checkpoint 的启动恢复对账。
+- 本地 Schema 加法迁移、失败回滚和新版本拒绝。
 
 当前尚缺少：
 
 - 慢 Telemetry 数据库对 token 延迟的断言。
 - Telemetry 队列满时的延迟和丢弃计数测试。
-- 普通会话后台提交与前端立即释放测试。
-- 上下文压缩后台执行和版本冲突测试。
+- 完整 TCP 链路下的慢后台维护与前端立即释放测试。
+- 真实摘要模型延迟与 CAS 冲突集成测试。
 - Socket 发送超时测试。
 - 业务数据库池与 Telemetry 池争用测试。
 - p50/p95/p99 自动基准和 CI 回归门禁。

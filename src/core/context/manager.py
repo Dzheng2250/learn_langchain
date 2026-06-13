@@ -122,6 +122,24 @@ class AgentContextManager:
 
         return AgentContextState(summary=summary, recent_messages=recent_messages)
 
+    def build_fast_state(self, state: AgentContextState, final_messages: list) -> AgentContextState:
+        """Build bounded committed context without invoking a summary model."""
+        final_conversation_messages = self._strip_context_summary_messages(final_messages)
+        unsent_previous_messages = state.recent_messages[:-self.recent_message_limit]
+        conversation_messages = [*unsent_previous_messages, *final_conversation_messages]
+        return AgentContextState(
+            summary=state.summary,
+            recent_messages=conversation_messages[-self.recent_message_limit:],
+        )
+
+    def should_summarize(self, messages: list) -> bool:
+        """Expose the summary policy to durable maintenance handlers."""
+        return self._should_summarize(messages)
+
+    def summarize_messages(self, previous_summary: str, messages: list, memory_context: str = "") -> str:
+        """Create a derived summary outside the response critical path."""
+        return self._summarize_messages(previous_summary, messages, memory_context)
+
     def extract_turn_messages(self, state: AgentContextState, final_messages: list) -> list:
         """Return only messages created by the current Turn.
 

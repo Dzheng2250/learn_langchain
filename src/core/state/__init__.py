@@ -2,6 +2,7 @@
 
 from .artifacts import ArtifactStore
 from .checkpoints import CheckpointManager
+from .contracts import CheckpointStore, MaintenanceStateStore, StateStore
 from .database import LocalStateDatabase
 from .executions import ExecutionRepository, PendingExecution
 from .migration import LocalStateMigration, LocalStateMigrationReport
@@ -11,6 +12,9 @@ from .workspace import LocalWorkspaceRepository
 __all__ = [
     "ArtifactStore",
     "CheckpointManager",
+    "CheckpointStore",
+    "MaintenanceStateStore",
+    "StateStore",
     "ExecutionRepository",
     "LocalStateDatabase",
     "LocalStateMigration",

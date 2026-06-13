@@ -86,3 +86,25 @@ class LocalWorkspaceRepository:
                 """,
                 (str(session.workspace.workspace_id), str(session.session_id)),
             ).fetchone()
+
+    def get_session(self, workspace_id: str, session_id: str) -> SessionContext:
+        """Rehydrate immutable Session identity for a background job."""
+        with self.database.connect() as conn:
+            row = conn.execute(
+                """
+                SELECT w.workspace_id, w.display_path, s.session_id, s.session_name
+                FROM sessions s
+                JOIN workspaces w ON w.workspace_id=s.workspace_id
+                WHERE s.workspace_id=? AND s.session_id=?
+                """,
+                (workspace_id, session_id),
+            ).fetchone()
+        if not row:
+            raise RuntimeError("Maintenance job refers to a missing Session.")
+        from pathlib import Path
+
+        return SessionContext(
+            UUID(row["session_id"]),
+            row["session_name"],
+            WorkspaceContext(UUID(row["workspace_id"]), Path(row["display_path"]).resolve()),
+        )

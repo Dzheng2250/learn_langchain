@@ -87,9 +87,6 @@ MEMORY_RETRIEVAL_LIMIT = 6
 MEMORY_BOOTSTRAP_LIMIT = 4
 MEMORY_CONTEXT_CHAR_LIMIT = 6000
 MEMORY_EXTRACTION_ENABLED = True
-# Non-explicit extraction may run after the Turn on a dedicated worker. An
-# explicit "remember" request remains synchronous so its outcome is known.
-MEMORY_EXTRACTION_ASYNC = True
 MEMORY_EXTRACTION_INTERVAL_TURNS = 5
 MEMORY_EXTRACTION_MIN_CHARS = 1200
 MEMORY_EXTRACTION_HINT_KEYWORDS = [

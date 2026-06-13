@@ -80,8 +80,8 @@ class LocalStateStore:
     ) -> list[str]:
         """Atomically append one completed Turn and update compact Session state."""
         with self.database.transaction() as conn:
-            ids = self._append_messages(conn, session, turn_index, messages)
-            self._save_session(conn, session, state, turn_index)
+            ids = self.append_messages_in_transaction(conn, session, turn_index, messages)
+            self.save_session_in_transaction(conn, session, state, turn_index)
             self._enqueue_outbox(
                 conn,
                 "turn_committed",
@@ -90,6 +90,143 @@ class LocalStateStore:
                 {"workspace_id": str(session.workspace.workspace_id), "turn_index": turn_index},
             )
             return ids
+
+    def append_messages_in_transaction(
+        self,
+        conn,
+        session: SessionContext,
+        turn_index: int,
+        messages: list,
+        *,
+        execution_id: str | None = None,
+    ) -> list[str]:
+        """Append messages using a caller-owned Unit of Work transaction."""
+        return self._append_messages(
+            conn,
+            session,
+            turn_index,
+            messages,
+            execution_id=execution_id,
+        )
+
+    def save_session_in_transaction(
+        self,
+        conn,
+        session: SessionContext,
+        state: AgentContextState,
+        turn_index: int,
+    ) -> None:
+        """Update compact Session state using a caller-owned transaction."""
+        self._save_session(conn, session, state, turn_index)
+
+    def save_fast_session_in_transaction(
+        self,
+        conn,
+        session: SessionContext,
+        state: AgentContextState,
+        turn_index: int,
+    ) -> None:
+        """Commit recent messages without overwriting a concurrent derived summary."""
+        recent = json.dumps(messages_to_dict(state.recent_messages), ensure_ascii=False, default=str)
+        cur = conn.execute(
+            """
+            UPDATE sessions SET recent_messages=?, turn_index=?,
+                version=version + 1, updated_at=CURRENT_TIMESTAMP
+            WHERE workspace_id=? AND session_id=?
+            """,
+            (
+                recent,
+                turn_index,
+                str(session.workspace.workspace_id),
+                str(session.session_id),
+            ),
+        )
+        if cur.rowcount != 1:
+            raise RuntimeError("Fast Session context update did not affect exactly one row.")
+
+    def load_turn_messages(self, session: SessionContext, turn_index: int) -> tuple[list, list[str]]:
+        """Load one committed Turn for a durable maintenance handler."""
+        with self.database.connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT message_id, raw FROM messages
+                WHERE workspace_id=? AND session_id=? AND turn_index=?
+                ORDER BY created_at, message_id
+                """,
+                (str(session.workspace.workspace_id), str(session.session_id), turn_index),
+            ).fetchall()
+        raw = [json.loads(row["raw"]) for row in rows]
+        return messages_from_dict(raw), [row["message_id"] for row in rows]
+
+    def load_summary_source(
+        self,
+        session: SessionContext,
+        target_turn: int,
+    ) -> tuple[str, int, list[tuple[int, object]]]:
+        """Load unsummarized committed messages up to a target Turn."""
+        with self.database.connect() as conn:
+            session_row = conn.execute(
+                """
+                SELECT summary, summary_through_turn FROM sessions
+                WHERE workspace_id=? AND session_id=?
+                """,
+                (str(session.workspace.workspace_id), str(session.session_id)),
+            ).fetchone()
+            if not session_row:
+                raise RuntimeError("Session disappeared before context summary maintenance.")
+            rows = conn.execute(
+                """
+                SELECT turn_index, raw FROM messages
+                WHERE workspace_id=? AND session_id=?
+                  AND turn_index > ? AND turn_index <= ?
+                ORDER BY turn_index, created_at, message_id
+                """,
+                (
+                    str(session.workspace.workspace_id),
+                    str(session.session_id),
+                    int(session_row["summary_through_turn"]),
+                    target_turn,
+                ),
+            ).fetchall()
+        return (
+            session_row["summary"] or "",
+            int(session_row["summary_through_turn"]),
+            [
+                (int(row["turn_index"]), message)
+                for row, message in zip(
+                    rows,
+                    messages_from_dict([json.loads(row["raw"]) for row in rows]),
+                    strict=True,
+                )
+            ],
+        )
+
+    def update_summary_cas(
+        self,
+        session: SessionContext,
+        *,
+        expected_summary_through_turn: int,
+        summary_through_turn: int,
+        summary: str,
+    ) -> bool:
+        """Write a derived summary only when no newer summary won the race."""
+        with self.database.transaction() as conn:
+            cur = conn.execute(
+                """
+                UPDATE sessions
+                SET summary=?, summary_through_turn=?, version=version + 1,
+                    updated_at=CURRENT_TIMESTAMP
+                WHERE workspace_id=? AND session_id=? AND summary_through_turn=?
+                """,
+                (
+                    summary,
+                    summary_through_turn,
+                    str(session.workspace.workspace_id),
+                    str(session.session_id),
+                    expected_summary_through_turn,
+                ),
+            )
+        return cur.rowcount == 1
 
     def retrieve_relevant(self, workspace_id: UUID, query: str, limit: int | None = None) -> list[RetrievedMemory]:
         terms = self._normalize_search_query(query).casefold().split()
@@ -241,7 +378,15 @@ class LocalStateStore:
             f"- [{memory.kind} | importance={memory.importance}] {memory.content}" for memory in memories
         ) or "(none)"
 
-    def _append_messages(self, conn, session: SessionContext, turn_index: int, messages: list) -> list[str]:
+    def _append_messages(
+        self,
+        conn,
+        session: SessionContext,
+        turn_index: int,
+        messages: list,
+        *,
+        execution_id: str | None = None,
+    ) -> list[str]:
         session_row = conn.execute(
             "SELECT active_branch_id FROM sessions WHERE session_id = ?",
             (str(session.session_id),),
@@ -262,8 +407,8 @@ class LocalStateStore:
                 """
                 INSERT INTO messages(
                     message_id, workspace_id, session_id, branch_id, parent_message_id,
-                    role, content, message_type, raw, turn_index
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    execution_id, role, content, message_type, raw, turn_index
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     message_id,
@@ -271,6 +416,7 @@ class LocalStateStore:
                     str(session.session_id),
                     branch_id,
                     head,
+                    execution_id,
                     self._message_role(message),
                     self._message_content(message),
                     message.__class__.__name__,

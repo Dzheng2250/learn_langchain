@@ -152,6 +152,13 @@ class ExecutionBudgetTest(unittest.TestCase):
 
 
 class CheckpointResumeTest(unittest.TestCase):
+    def test_uninitialized_manager_rejects_recovery_operations(self):
+        manager = CheckpointManager(":memory:")
+        with self.assertRaisesRegex(RuntimeError, "initialized"):
+            manager.thread_exists("thread")
+        with self.assertRaisesRegex(RuntimeError, "initialized"):
+            manager.delete_thread("thread")
+
     def test_graph_continues_from_checkpoint_after_slice_limit(self):
         manager = CheckpointManager(":memory:")
         calls = {"count": 0}

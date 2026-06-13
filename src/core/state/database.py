@@ -3,12 +3,13 @@
 import sqlite3
 from contextlib import contextmanager
 from pathlib import Path
-from threading import RLock
+from threading import Lock, RLock
 
 from src.config.paths import local_state_db
+from src.core.state.migrations import LATEST_SCHEMA_VERSION, apply_local_migrations
 
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = LATEST_SCHEMA_VERSION
 
 
 class LocalStateDatabase:
@@ -18,6 +19,8 @@ class LocalStateDatabase:
         self.path = ":memory:" if path == ":memory:" else Path(path or local_state_db()).expanduser().resolve()
         self.busy_timeout_ms = max(1, int(busy_timeout_ms))
         self._memory_lock = RLock()
+        self._journal_lock = Lock()
+        self._journal_configured = False
         self._memory_conn = (
             sqlite3.connect(":memory:", isolation_level=None, check_same_thread=False)
             if self.path == ":memory:"
@@ -25,6 +28,9 @@ class LocalStateDatabase:
         )
         if self._memory_conn is not None:
             self._memory_conn.row_factory = sqlite3.Row
+            self._memory_conn.execute("PRAGMA foreign_keys=ON")
+            self._memory_conn.execute(f"PRAGMA busy_timeout={self.busy_timeout_ms}")
+            self._journal_configured = True
 
     def initialize(self) -> None:
         """Create the authoritative local schema in one transaction."""
@@ -32,15 +38,27 @@ class LocalStateDatabase:
             self.path.parent.mkdir(parents=True, exist_ok=True)
         schema_path = Path(__file__).with_name("schema.sql")
         with self.connect() as conn:
-            conn.executescript(schema_path.read_text(encoding="utf-8"))
-            conn.execute(
-                """
-                INSERT INTO local_schema_migrations(version, name)
-                VALUES (?, ?)
-                ON CONFLICT(version) DO NOTHING
-                """,
-                (SCHEMA_VERSION, "local_first_state"),
-            )
+            try:
+                # sqlite3.executescript() commits an existing transaction
+                # before running. Starting the transaction inside the script
+                # keeps fresh-schema creation and additive upgrades atomic.
+                conn.executescript(
+                    "BEGIN IMMEDIATE;\n" + schema_path.read_text(encoding="utf-8")
+                )
+                conn.execute(
+                    """
+                    INSERT INTO local_schema_migrations(version, name)
+                    VALUES (?, ?)
+                    ON CONFLICT(version) DO NOTHING
+                    """,
+                    (1, "local_first_state"),
+                )
+                apply_local_migrations(conn)
+            except Exception:
+                conn.rollback()
+                raise
+            else:
+                conn.commit()
 
     def close(self) -> None:
         """Close the persistent in-memory test connection, if one is used."""
@@ -62,13 +80,7 @@ class LocalStateDatabase:
             isolation_level=None,
         )
         conn.row_factory = sqlite3.Row
-        try:
-            conn.execute("PRAGMA journal_mode=WAL")
-        except sqlite3.OperationalError:
-            # Some restricted/network filesystems reject WAL sidecar files.
-            # DELETE mode preserves correctness for tests and degraded setups;
-            # normal user-level local storage uses WAL.
-            conn.execute("PRAGMA journal_mode=DELETE")
+        self._configure_journal_mode(conn)
         conn.execute("PRAGMA foreign_keys=ON")
         conn.execute(f"PRAGMA busy_timeout={self.busy_timeout_ms}")
         try:
@@ -88,3 +100,18 @@ class LocalStateDatabase:
                 raise
             else:
                 conn.commit()
+
+    def _configure_journal_mode(self, conn) -> None:
+        """Configure the database-wide journal once per process instance."""
+        if self._journal_configured:
+            return
+        with self._journal_lock:
+            if self._journal_configured:
+                return
+            try:
+                conn.execute("PRAGMA journal_mode=WAL")
+            except sqlite3.OperationalError:
+                # Some restricted/network filesystems reject WAL sidecar
+                # files. DELETE mode preserves correctness in degraded setups.
+                conn.execute("PRAGMA journal_mode=DELETE")
+            self._journal_configured = True

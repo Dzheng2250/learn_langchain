@@ -15,6 +15,9 @@
 
 PostgreSQL 不再是普通对话必须依赖的组件。它可以在未来用于跨设备同步、分析查询或服务端投影，但不能阻塞本地对话。
 
+最终响应、持久化后台维护和两个 SQLite 数据库的恢复一致性见
+[`response-finalization-and-checkpoint-consistency.md`](response-finalization-and-checkpoint-consistency.md)。
+
 ## 文件布局
 
 默认数据位于操作系统提供的用户数据目录：
@@ -100,10 +103,12 @@ learn-agent-core gc-artifacts
 2. 获取 Session UUID 对应的锁，避免同一 Session 并发覆盖。
 3. 从 `state.db` 加载摘要、近期消息和长期记忆。
 4. 执行 Agent。
-5. 在一个 SQLite 事务中追加本轮消息并更新 Session 状态。
-6. 按策略在后台提取长期记忆。
+5. `CompletedTurnCommitter` 在一个 SQLite 事务中追加消息、更新 Session 和 Execution，并写入维护任务。
+6. 返回最终响应。
+7. `MaintenanceScheduler` 在后台执行摘要、长期记忆提取和 checkpoint 清理。
 
-第 5 步使用 `LocalStateStore.commit_turn()`。消息追加和 Session 状态更新要么全部成功，要么全部回滚，避免出现“消息已保存但 turn_index 未更新”的半完成状态。
+第 5 步是响应前的最小耐久性屏障。消息、Session、Execution 和维护任务要么全部成功，要么
+全部回滚，避免出现“回答已声明成功但消息未保存”或“Execution 已完成但清理任务丢失”的半完成状态。
 
 SQLite 使用 WAL 模式。WAL 可简单理解为“先把变更追加到日志，再合并到主文件”，它允许读操作与短写事务更好地并行。受限文件系统不支持 WAL 时会降级为 DELETE journal 模式。
 
@@ -126,7 +131,9 @@ SQLite 使用 WAL 模式。WAL 可简单理解为“先把变更追加到日志�
 
 ## 当前限制
 
-- 对话完成后，短期上下文压缩仍可能在 Agent worker 中同步执行。
+- 最终响应仍等待一次短小的 `state.db` 原子提交；磁盘异常或长写锁仍可能延迟响应。
+- 上下文摘要、长期记忆提取和 checkpoint 清理已在后台执行，但当前只有一个维护 worker。
+- `state.db` 与 `checkpoints.db` 采用恢复协调实现最终一致，不提供跨库原子事务。
 - 大型消息尚未自动转为 Artifact。
 - Branch 数据结构已存在，但 CLI 尚无分支命令。
 - SQLite 是单机用户级状态，不提供多设备实时一致性。
