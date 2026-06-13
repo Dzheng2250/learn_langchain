@@ -14,6 +14,8 @@
 > [`non-functional-testing.md`](non-functional-testing.md)。
 > 最终响应耐久性屏障、后台维护与 checkpoint 恢复见
 > [`response-finalization-and-checkpoint-consistency.md`](response-finalization-and-checkpoint-consistency.md)。
+> 数据库表、事务、Outbox、CAS、Saga 和恢复协调器的通俗说明见
+> [`database-state-and-consistency.md`](database-state-and-consistency.md)。
 > 端到端请求路径见其中的[完整数据流动示意图](agent-execution-architecture.md#完整数据流动示意图)，
 > Agent 内部执行与双事件通道见[调用链与事件通道图](agent-execution-architecture.md#agent-调用链与事件通道图)。
 >

@@ -3,6 +3,7 @@
 架构与运行机制：
 
 - [本地优先 Session 状态](docs/local-first-session-state.md)
+- [本地数据库设计与一致性机制](docs/database-state-and-consistency.md)
 - [可恢复执行与预算控制](docs/resumable-execution.md)
 - [PostgreSQL 到本地状态迁移](docs/local-state-migration.md)
 - [本地优先优化的原因、风险与设计审查](docs/local-first-rationale-and-review.md)
@@ -157,6 +158,7 @@ src/
 - [CLI 架构](docs/cli-architecture.md)
 - [Core 架构](docs/core-architecture.md)
 - [Agent 执行架构](docs/agent-execution-architecture.md)
+- [本地数据库设计与一致性机制](docs/database-state-and-consistency.md)
 - [记忆管理与加载机制](docs/memory-management.md)
 - [Event 系统设计与维护指南](docs/event-system.md)
 - [非功能性需求](docs/non-functional-requirements.md)

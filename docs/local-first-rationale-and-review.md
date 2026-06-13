@@ -1,5 +1,9 @@
 # 本地优先状态优化：问题、决策与设计审查
 
+数据库表、事务、维护队列、CAS、Saga 和恢复协调器的集中说明见
+[`database-state-and-consistency.md`](database-state-and-consistency.md)。本文重点解释为什么从用户可感知
+卡顿问题推导出本地优先与最小提交设计。
+
 ## 1. 我们最初遇到了什么问题
 
 最直接的用户体验问题是：

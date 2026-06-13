@@ -1,5 +1,8 @@
 # 非功能性测试与验收方案
 
+本文测试的数据库一致性术语和故障状态，统一以
+[`database-state-and-consistency.md`](database-state-and-consistency.md) 为准。
+
 本文定义延迟、并发、故障隔离和后台任务的测试方法。对应需求见
 [`non-functional-requirements.md`](non-functional-requirements.md)。
 
@@ -118,7 +121,7 @@
 
 - 已开始的回答 token 不被压缩任务打断。
 - 目标架构下，普通回答结束后 CLI 不等待压缩。
-- 压缩结果通过 Session version/CAS 检查，旧结果不能覆盖新状态。
+- 压缩结果通过 `summary_through_turn` CAS 检查，旧结果不能覆盖新状态。
 
 ### 3.8 慢客户端与断线
 

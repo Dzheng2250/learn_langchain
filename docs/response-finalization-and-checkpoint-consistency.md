@@ -1,182 +1,197 @@
 # 最终响应、后台维护与 Checkpoint 一致性
 
-## 1. 解决的问题
+本文按时间顺序说明：模型回答结束后，Core 为什么不能立即返回，哪些工作必须等待，哪些工作必须放到
+后台，以及两个 SQLite 数据库发生不一致时如何恢复。
 
-模型输出最后一个 token 后，旧实现仍同步执行上下文摘要、长期记忆提取、Execution 完成和
-checkpoint 删除。任何一个步骤变慢，CLI 都无法恢复输入。
+数据库表、约束、迁移和术语的完整说明见
+[本地数据库设计与一致性机制](database-state-and-consistency.md)。
 
-直接在最后一个 token 后返回也不安全：如果 Core 随后崩溃，用户已经看到的回答可能没有写入
-消息历史。
+## 1. 我们要解决什么问题
 
-当前方案保留一个很小的 **durability barrier（耐久性屏障）**：
+旧流程在最后一个 token 之后继续同步执行摘要、长期记忆提取和 checkpoint 删除。任何一步变慢，
+CLI 都无法恢复输入，看起来像程序卡住。
+
+但直接在最后一个 token 后返回也不可靠：Core 可能在回答展示后、消息保存前崩溃，导致用户看见的
+回答不在历史记录中。
+
+因此当前流程把收尾分成两段：
 
 ```text
-回答生成完成
-  -> 在 state.db 原子提交本轮业务事实
-  -> 返回 done，CLI 恢复输入
-  -> 后台处理派生维护
+前台最小提交：不可丢失，必须完成后才能返回成功。
+后台派生维护：允许滞后，可以重试，不得延迟用户响应。
 ```
 
-这里的“业务事实”包括完整消息、`turn_index`、近期上下文、分支头和 Execution 完成状态。
-摘要、长期记忆和 checkpoint 清理可以根据这些事实重新生成或重试，因此不属于响应前的必要工作。
+## 2. 什么必须在响应前完成
 
-## 2. 正常响应流程
-
-```mermaid
-flowchart TB
-    G[LangGraph 完成] --> C[TurnCoordinator]
-    C --> F[TurnFinalizer]
-    F --> U[CompletedTurnCommitter / Unit of Work]
-    U --> S[(state.db)]
-    U --> O[同事务写入 maintenance_jobs]
-    S --> D[发送 done 与最终 RPC 响应]
-    O --> M[MaintenanceScheduler 后台处理]
-```
-
-`CompletedTurnCommitter` 使用一个 `state.db` 事务完成：
+一次成功 Turn 返回 `done` 前，`CompletedTurnCommitter` 会在一个 `state.db` 原子事务中：
 
 1. 追加本轮完整消息，并关联 `execution_id`。
-2. 更新近期消息、`turn_index` 和分支头。
+2. 更新 Session 的 `recent_messages`、`turn_index` 和分支头。
 3. 完成最终 Slice 和 Execution，清除 `pending_execution_id`。
-4. 写入需要执行的后台维护任务。
-
-任意一步失败，整个事务回滚，`done` 不会被误报为成功。
-
-最小提交不会写回 Session 摘要。摘要只能由后台任务通过 CAS 更新，避免下一轮提交把刚生成的
-新摘要覆盖成旧值。
-
-## 3. 后台维护流程
+4. 写入之后必须执行的 `maintenance_jobs`。
 
 ```mermaid
 flowchart LR
-    J[(maintenance_jobs)] --> L[租约认领]
-    L --> R{Handler Registry}
-    R --> CS[ContextSummaryHandler]
-    R --> ME[MemoryExtractionHandler]
-    R --> CC[CheckpointCleanupHandler]
-    CS --> OK[成功]
-    ME --> OK
-    CC --> OK
-    R --> E[失败与指数退避]
-    E --> J
+    G[LangGraph 完成] --> F[TurnFinalizer]
+    F --> C[最小原子提交]
+    C --> D[返回 done]
+    C --> J[maintenance_jobs 已可靠入队]
+    J --> W[后台 worker]
 ```
 
-`maintenance_jobs` 是 Transactional Outbox。这个术语表示：业务状态和“之后必须做的工作”在
-同一事务中保存。Core 即使在返回响应后立即崩溃，任务也不会只存在于内存中。
+这次事务称为耐久性屏障：只有提交成功，Core 才能声明本轮成功。如果任一步失败，整个事务回滚，
+客户端会收到错误而不是虚假的成功。
 
-任务使用状态、租约和有限重试：
+## 3. 什么在后台执行
 
-- `pending`：等待执行。
-- `running`：已被一个 worker 租用。
-- `succeeded`：完成。
-- `failed`：达到最大重试次数。
+当前后台维护任务包括：
 
-Core 重启后，租约过期的 `running` 任务会重新变为 `pending`。不同任务 handler 必须幂等，
-即重复执行不会制造重复业务结果。
+- `context_summary`：压缩旧上下文。
+- `memory_extract`：从已提交消息中提取长期记忆。
+- `checkpoint_cleanup`：删除已完成 Execution 的 LangGraph checkpoint。
 
-显式“记住”请求同样进入后台任务。CLI 只提示记忆保存处于 `pending`，模型不得声称已经保存成功。
+这些任务都可以从已经提交的业务事实重新执行，因此不需要阻塞最终响应。
 
-## 4. 为什么保留两个 SQLite 数据库
+显式“请记住”也采用后台提取。响应会返回：
 
-`state.db` 保存业务事实，`checkpoints.db` 由 LangGraph `SqliteSaver` 保存图执行断点。
+```json
+{
+  "durability": "committed",
+  "maintenance_status": "pending",
+  "memory_status": "pending"
+}
+```
 
-将两组表放进同一个文件仍不能自动获得原子事务，因为 LangGraph saver 使用自己的连接和提交边界。
-强行自研 Checkpointer 会增加与 LangGraph 升级兼容的维护成本。因此当前保留两个数据库，并采用
-Saga / Process Manager：
+`pending` 只表示任务已可靠入队，不表示记忆已经保存成功。用户可以通过 `session.status` 查看当前
+Session 的待处理和失败维护任务数量。
 
-> 不假装跨库操作具有一个事务，而是保存明确状态，并通过幂等补偿和启动对账最终收敛。
+## 4. 后台任务为什么不会因重启丢失
 
-Execution 的 checkpoint 状态：
+维护任务不只存在于内存队列，而是保存在 `state.db.maintenance_jobs`。
+
+worker 认领任务时会把它改为 `running` 并设置租约到期时间。如果 Core 在执行中崩溃，租约到期后，
+下一次启动可以把任务重新变为 `pending` 并继续执行。
+
+失败任务使用有限重试和指数退避：
+
+```text
+pending -> running -> succeeded
+                  \-> pending，稍后重试
+                  \-> failed，达到最大尝试次数
+```
+
+任务必须具有幂等性，即重复执行不会制造重复结果。去重键、摘要 CAS 和可重复 checkpoint 删除都服务于
+这个要求。
+
+## 5. 摘要为什么使用 CAS
+
+后台摘要可能与下一轮对话同时发生。较早启动的摘要任务可能更晚完成，如果直接写回，就可能覆盖较新
+摘要。
+
+CAS，即“比较后再更新”，通过 `sessions.summary_through_turn` 防止这种覆盖：
+
+```text
+任务开始时读取 summary_through_turn = 10
+写回时要求数据库中的值仍然等于 10
+如果其他任务已经推进到 15，本次更新影响 0 行并被放弃
+```
+
+这里不使用“谁的时间戳更新就覆盖谁”，因为完成时间晚不代表数据更新。业务轮次边界比时间戳更可靠。
+
+## 6. 为什么 checkpoint 使用另一个数据库
+
+`state.db` 保存用户可理解的业务状态；`checkpoints.db` 由 LangGraph `SqliteSaver` 保存图内部断点。
+
+即使两者都使用 SQLite，也不能共享一个事务，因为 LangGraph saver 有自己的连接和提交边界。当前项目
+不自研 Checkpointer，而是通过恢复协调器实现最终一致。
+
+Execution 使用 `checkpoint_state` 明确记录关系：
 
 ```text
 uninitialized -> available -> cleanup_pending -> cleaned
                        \-> missing
 ```
 
-## 5. 崩溃恢复流程
+- `available`：存在可用于恢复的断点。
+- `cleanup_pending`：业务已经完成，只等待删除断点。
+- `cleaned`：断点已清理。
+- `missing`：业务状态需要断点，但断点不存在，不能安全恢复。
+
+## 7. Core 启动时如何恢复
+
+`ExecutionRecoveryCoordinator` 是 Saga 恢复协调器。Saga 的含义是：不假装跨数据库操作具有原子事务，
+而是记录中间状态，并在启动时通过幂等操作修复。
 
 ```mermaid
 flowchart TB
-    B[Core 启动] --> R[ExecutionRecoveryCoordinator]
+    S[Core 启动] --> R[ExecutionRecoveryCoordinator]
     R --> Q{Execution 与 checkpoint 状态}
-    Q -->|running + checkpoint 存在| P[paused_recovery，可恢复]
-    Q -->|活动 Execution + checkpoint 缺失| X[unrecoverable_checkpoint]
-    Q -->|completed/discarded + 未清理| J[补建 checkpoint_cleanup 任务]
-    J --> W[MaintenanceScheduler]
+    Q -->|活动 Execution + checkpoint 存在| P[标记 paused_recovery]
+    Q -->|活动 Execution + checkpoint 缺失| X[标记 unrecoverable_checkpoint]
+    Q -->|completed/discarded + 未清理| J[补建 checkpoint_cleanup]
 ```
 
-用户可以通过 `learn-agent session status` 查看：
+恢复规则：
 
-- Execution 是否可恢复。
-- checkpoint 状态。
-- 当前 Session 的 pending、running 和 failed 维护任务数量。
-
-checkpoint 删除失败不会把已提交回答改成失败。失败任务会重试；达到上限后保留为 `failed`，
-供状态查询和后续恢复对账使用。
-
-## 6. 使用的设计模式
-
-| 模式 | 当前职责 |
+| 状态 | 处理 |
 |---|---|
-| Unit of Work | `CompletedTurnCommitter` 原子提交一轮业务事实和后台任务 |
-| Transactional Outbox | `maintenance_jobs` 与业务状态同事务入队 |
-| Saga / Process Manager | `ExecutionRecoveryCoordinator` 协调两个 SQLite 数据库 |
-| Strategy + Registry | MaintenanceScheduler 按 `job_type` 分发独立 handler |
-| Repository | 状态、Execution 和维护任务通过明确仓储访问 |
-| Protocol / Dependency Inversion | Agent 依赖 `StateStore`、Workspace 能力接口，而非具体数据库 |
-| Composition Root | `CoreApp` 创建并连接 committer、scheduler、recovery 和 handlers |
+| `running` 且 checkpoint 存在 | 改为 `paused_recovery`，等待用户恢复 |
+| 活动 Execution 但 checkpoint 缺失 | 改为 `unrecoverable_checkpoint`，禁止自动恢复 |
+| `completed/discarded` 且尚未清理 | 补建或重试清理任务 |
 
-调用层次：
+checkpoint 删除失败不会撤销已成功提交的回答，因为业务完成事实以 `state.db` 为准。
+
+## 8. 关键代码调用链
 
 ```text
-AgentTurnService
-  -> TurnCoordinator
-      -> TurnFinalizer
-          -> CompletedTurnCommitter
-              -> state.db Unit of Work
-              -> maintenance_jobs
+AgentTurnService._stream_locked_turn()
+  -> TurnCoordinator.finalize()
+  -> TurnFinalizer.finalize()
+       -> AgentContextManager.build_fast_state()
+       -> CompletedTurnCommitter.commit()
+            -> LocalStateStore.append_messages_in_transaction()
+            -> LocalStateStore.save_fast_session_in_transaction()
+            -> ExecutionRepository.finish_slice_in_transaction()
+            -> ExecutionRepository.complete_in_transaction()
+            -> MaintenanceRepository.enqueue_in_transaction()
+       -> MaintenanceScheduler.wake()
 
-CoreApp
-  -> ExecutionRecoveryCoordinator
-  -> MaintenanceScheduler
-      -> maintenance handlers
+Core 启动
+  -> AgentTurnService.initialize()
+       -> state.db 初始化与迁移
+       -> checkpoints.db 初始化
+       -> ExecutionRecoveryCoordinator.reconcile()
+       -> MaintenanceScheduler.start()
 ```
 
-## 7. 风险与当前边界
+`build_fast_state()` 只做内存计算，不调用 LLM。真正的摘要由后台 `ContextSummaryHandler` 完成。
 
-- 最终 `done` 仍必须等待本地最小提交；磁盘异常或长写锁仍会延迟响应。
-- SQLite 是单写者模型。当前事务很短，但它不适合高并发多用户服务。
-- 后台维护当前使用单 worker，慢摘要会延后其他任务；checkpoint 清理通过高优先级降低影响。
-- handler 执行时间超过租约时当前不会续租；单 daemon 模式下不会并发认领，未来支持多实例前必须增加租约心跳。
-- `succeeded` 维护任务当前作为审计记录保留，长期运行后需要增加保留与清理策略。
-- `state.db` 与 `checkpoints.db` 只能最终一致，无法提供真正跨库原子提交。
-- 显式记忆是异步确认；用户需要通过 Session 状态或未来的维护任务查询界面确认失败。
+## 9. 当前保证与限制
 
-## 8. 实施审查
+已保证：
 
-本轮独立审查重点检查了响应关键路径、事务边界、后台 worker 生存性和跨库恢复：
+- 成功返回的 Turn 已写入 `state.db`。
+- 消息、Session、Execution 和维护任务一起提交或一起回滚。
+- 摘要、记忆提取和 checkpoint 清理不会延迟最终响应。
+- 过期摘要不能覆盖新摘要。
+- 维护任务和跨库中间状态可以在重启后恢复。
 
-- `CompletedTurnCommitter` 的消息、Session、Execution 和任务入队处于同一事务；关键更新会校验影响行数。
-- 本地 Schema 创建和加法迁移处于同一显式事务；迁移失败不会留下错误版本记录。
-- 较旧 Core 遇到更高版本的本地 Schema 时拒绝启动，避免旧代码写坏新结构。
-- 维护 worker 的认领或状态回写失败不会永久终止线程；过期租约可重新认领。
-- worker 关闭超时时保留线程引用，避免提前关闭仍被 handler 使用的 checkpoint 资源。
-- 未初始化的 CheckpointManager 不再把删除误报为成功，也不会把所有 Execution 误判为 checkpoint 缺失。
-- 后台摘要使用 `summary_through_turn` CAS；下一轮快速提交不会覆盖并发生成的新摘要。
-- 前台 Turn、后台维护和 checkpoint 使用独立最小协议，避免一个组件获得不需要的持久化能力。
-- `state.db` journal 模式每个 Core 实例只配置一次，普通最小提交连接不重复切换 WAL 模式。
+当前限制：
 
-残余风险：
+- 最终响应仍需等待一次短小的本地事务；磁盘异常或长写锁仍会造成延迟。
+- 两个 SQLite 数据库只能最终一致，不能实现真正的跨库原子提交。
+- 维护队列当前只有一个 worker，慢任务可能造成后台积压。
+- 当前没有面向用户的失败任务详情和手动重试命令。
+- 完整 TCP/CLI 的 p95/p99 延迟基准仍需在稳定机器上执行。
 
-- 当前延迟回归是进程内组件测试；完整 TCP/CLI p95/p99 基准仍需在稳定机器上执行。
-- 维护任务只有 Session 级数量查询，尚无面向用户的失败任务详情与手动重试命令。
-- 单 worker 不会影响前端响应，但可能形成后台积压，需要后续增加队列年龄指标与告警。
+## 10. 验证入口
 
-## 9. 验收标准
+关键自动测试位于 `tests/test_finalization_and_maintenance.py`，覆盖：
 
-- 慢摘要、记忆提取和 checkpoint 删除不得延迟最终响应。
-- 慢最小提交必须延迟 `done`，不能先向用户声明持久化成功。
-- Turn 提交任意中间步骤失败时，消息、Session、Execution 和维护任务全部回滚。
-- 后台摘要使用 `summary_through_turn` CAS，旧任务不能覆盖新摘要。
-- Core 重启后能识别可恢复、不可恢复和待清理 Execution。
-- 同一 Session 下一轮只依赖上一轮最小提交，不等待派生维护。
+- 最小提交任一步失败时整体回滚。
+- 慢后台维护不延迟响应和同 Session 下一轮。
+- 慢最小提交仍会阻止 `done` 提前返回。
+- 维护任务去重、租约恢复、重试和 worker 异常生存。
+- 摘要 CAS 冲突不覆盖更新状态。
+- Core 启动时对账存在、缺失和待清理 checkpoint。
+- 本地 Schema 加法迁移、失败回滚和新版本拒绝。

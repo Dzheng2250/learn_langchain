@@ -3,6 +3,10 @@
 关于为什么从对话卡顿问题引出本地优先设计、SQLite 不能保证无卡顿、当前真实关键路径和设计原则审查，见
 [`local-first-rationale-and-review.md`](local-first-rationale-and-review.md)。
 
+如果需要理解数据库表、外键、事务、WAL、Unit of Work、Transactional Outbox、CAS、Saga 和恢复协调器，
+请先阅读 [`database-state-and-consistency.md`](database-state-and-consistency.md)。本文只从 Session 和消息
+组织方式说明数据模型。
+
 ## 优化目标
 
 本轮优化首先解决三个实际问题：
@@ -41,6 +45,9 @@ learn-agent/
 - 即使以后替换 LangGraph，也不需要重写 Session 数据模型。
 
 ## 主要数据结构
+
+下面的结构图表达“谁属于谁”，不表达事务提交顺序。一次 Turn 如何原子提交，以及两个 SQLite 数据库
+如何恢复一致，请参阅[本地数据库设计与一致性机制](database-state-and-consistency.md)。
 
 ```mermaid
 flowchart LR
@@ -111,6 +118,9 @@ learn-agent-core gc-artifacts
 全部回滚，避免出现“回答已声明成功但消息未保存”或“Execution 已完成但清理任务丢失”的半完成状态。
 
 SQLite 使用 WAL 模式。WAL 可简单理解为“先把变更追加到日志，再合并到主文件”，它允许读操作与短写事务更好地并行。受限文件系统不支持 WAL 时会降级为 DELETE journal 模式。
+
+WAL 不是异步保存，也不能让 SQLite 同时执行多个写事务。真正缩短响应延迟的是：响应前只执行短小的
+最小业务事务，把摘要、记忆提取和 checkpoint 清理移到持久化后台任务。
 
 ## PostgreSQL 投影边界
 

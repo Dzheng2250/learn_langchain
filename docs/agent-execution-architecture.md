@@ -12,6 +12,8 @@
 >
 > Turn 最小提交、后台维护和跨 SQLite 恢复协调见
 > [`response-finalization-and-checkpoint-consistency.md`](response-finalization-and-checkpoint-consistency.md)。
+> 数据库表、事务边界和一致性术语见
+> [`database-state-and-consistency.md`](database-state-and-consistency.md)。
 
 ## 目标
 

@@ -1,5 +1,8 @@
 # 非功能性需求
 
+数据库事务、维护任务、CAS、Saga 和恢复协调器的定义及实现边界见
+[`database-state-and-consistency.md`](database-state-and-consistency.md)。
+
 本文定义 Learn Agent 除功能正确性之外必须满足的质量要求。功能测试通过不代表这些要求
 已经满足；每项要求必须通过可重复的性能或故障注入测试验收。
 

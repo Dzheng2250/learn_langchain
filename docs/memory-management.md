@@ -1,5 +1,9 @@
 # 记忆管理与加载机制
 
+本文中的完整消息、Session 上下文和长期记忆都存储在 `state.db`。数据库表、事务边界、维护任务和
+跨 `state.db` / `checkpoints.db` 的一致性机制见
+[`database-state-and-consistency.md`](database-state-and-consistency.md)。
+
 ## 三类数据不能混为一谈
 
 当前项目将记忆相关数据分为三层：
@@ -35,8 +39,8 @@ Workspace
 - 短期上下文和完整消息归档绑定 `workspace_id + session_id`。
 - 长期记忆绑定 `workspace_id`，同一 Workspace 的新 Session 可以继承相关项目知识。
 - 当前没有跨 Workspace 的全局用户记忆。
-- `memory_sources` 使用 Workspace 复合外键，数据库会拒绝把记忆关联到其他 Workspace
-  的消息。
+- `memory_sources` 的记忆侧使用 Workspace 复合外键；消息侧当前只校验全局唯一 `message_id`。
+  正常写入路径只使用当前 Session 的来源消息，但数据库层尚未完全强制消息来源属于同一 Workspace。
 
 ## 数据库结构
 
@@ -93,7 +97,8 @@ flowchart LR
 
 ### `memory_sources`
 
-将长期记忆关联到来源消息。它用于追踪记忆来源，并在数据库层阻止跨 Workspace 来源污染。
+将长期记忆关联到来源消息，用于追踪记忆来源。当前记忆侧复合外键可以阻止记忆本身跨 Workspace，
+消息侧的 Workspace 复合约束仍属于后续 Schema 加固项。
 
 ## 每轮如何加载
 
@@ -184,6 +189,10 @@ recent_messages: list
 - 发给总结模型的来源文本最多 `SUMMARY_SOURCE_CHAR_LIMIT=12000` 字符。
 - 摘要结果使用 `summary_through_turn` CAS 写回；旧任务不能覆盖更新后的摘要。
 
+这里的 CAS 是“比较后再更新”。摘要任务开始时记录旧的 `summary_through_turn`，写回时要求数据库中的
+值仍然等于旧值。如果其他任务已经生成更新摘要，本次写回会失败并放弃，而不是用完成时间更晚的旧任务
+覆盖新结果。它比较的是已摘要轮次，不是时间戳。
+
 如果总结失败，任务会有限重试并保留之前的 `summary`。完整消息始终保留在 `messages`；在摘要任务
 完成前，模型只会看到旧摘要和近期消息。
 
@@ -266,7 +275,7 @@ Core 重启后不会依赖进程内消息列表恢复会话。下一轮请求会
 - 同一 Session 通过 Session UUID 锁串行执行。
 - 长期记忆及来源关系在同一个数据库事务中保存。
 - `memory_saved` 只在记忆事务提交成功后发布。
-- Workspace 复合外键阻止跨 Workspace 消息和记忆来源关联。
+- Session、消息和记忆查询均带 Workspace 边界；`memory_sources` 消息侧复合外键仍需补充。
 
 ### 尚未保证
 

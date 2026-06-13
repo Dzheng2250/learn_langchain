@@ -1,5 +1,9 @@
 # 可恢复执行与预算控制
 
+本文聚焦 Execution、Grant、Slice 和 checkpoint 如何支持大任务继续执行。`state.db` 与
+`checkpoints.db` 为什么分离、`checkpoint_state` 如何对账，以及 Saga/恢复协调器的含义，见
+[`database-state-and-consistency.md`](database-state-and-consistency.md)。
+
 ## 为什么不能只设置“最大 12 步”
 
 一个大任务可能需要多次读取、修改和验证。如果图达到固定步数后直接失败，并且不保存执行断点，下一轮只能重新开始，任务可能永远无法完成。
