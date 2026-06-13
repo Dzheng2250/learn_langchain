@@ -5,14 +5,16 @@
 - [本地优先 Session 状态](docs/local-first-session-state.md)
 - [可恢复执行与预算控制](docs/resumable-execution.md)
 - [PostgreSQL 到本地状态迁移](docs/local-state-migration.md)
+- [本地优先优化的原因、风险与设计审查](docs/local-first-rationale-and-review.md)
 
-这是一个基于 LangChain、LangGraph 和 PostgreSQL 的本地 coding agent。
+这是一个基于 LangChain、LangGraph 和本地 SQLite 状态库的 coding agent。
 
 项目采用双进程结构：
 
 - `learn-agent`：前台 CLI，负责用户交互和流式展示。
 - `learn-agent-core`：后台 Core daemon，负责 Agent、工具、上下文和记忆。
-- PostgreSQL：保存 Workspace、Session、完整消息、长期记忆和观测事件。
+- SQLite：保存 Workspace、Session、完整消息、长期记忆和可恢复执行状态，是本地业务状态的权威来源。
+- PostgreSQL：作为可选的迁移来源、Telemetry Sink 和未来查询投影，不参与普通对话的必要提交。
 
 ## 快速开始
 

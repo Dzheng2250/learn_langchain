@@ -1,5 +1,8 @@
 # 本地优先 Session 状态设计
 
+关于为什么从对话卡顿问题引出本地优先设计、SQLite 不能保证无卡顿、当前真实关键路径和设计原则审查，见
+[`local-first-rationale-and-review.md`](local-first-rationale-and-review.md)。
+
 ## 优化目标
 
 本轮优化首先解决三个实际问题：

@@ -35,3 +35,4 @@ CoreApp
 - [`docs/resumable-execution.md`](../../docs/resumable-execution.md)
 - [`docs/local-state-migration.md`](../../docs/local-state-migration.md)
 - [`docs/local-first-testing.md`](../../docs/local-first-testing.md)
+- [`docs/local-first-rationale-and-review.md`](../../docs/local-first-rationale-and-review.md)
