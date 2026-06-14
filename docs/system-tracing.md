@@ -157,6 +157,11 @@ llm.request_failed
 默认只记录模型、用途、消息数量、工具数量、耗时、停止原因，以及服务商实际返回的 Token 数。
 服务商没有返回 Token usage 时保存 `null`，不会额外估算。
 
+父 Agent 使用流式模型调用。默认通过 `LEARN_AGENT_LLM_STREAM_USAGE_ENABLED=true`
+请求兼容服务商在流式响应中附带 Token usage；不支持
+`stream_options.include_usage` 的服务商可将该配置设为 `false`。即使开启该选项，
+服务商仍可能不返回 usage，此时 Trace 保持 `null`，不会使用本地估算值冒充计费数据。
+
 ### Tool 与 Telemetry
 
 现有 `ObservedToolNode` 继续集中产生 Tool Telemetry。`TelemetryTraceSink` 仅复制白名单摘要，

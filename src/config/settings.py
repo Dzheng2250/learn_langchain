@@ -29,6 +29,7 @@ BASH_PATH = "bash"
 MODEL = env_str("LEARN_AGENT_MODEL", "deepseek-v4-flash")
 LLM_API_KEY = env_str("LEARN_AGENT_LLM_API_KEY", env_str("ALIYUN_API_KEY", ""))
 LLM_BASE_URL = env_str("LEARN_AGENT_LLM_BASE_URL", env_str("ALIYUN_BASE_URL", ""))
+LLM_STREAM_USAGE_ENABLED = env_bool("LEARN_AGENT_LLM_STREAM_USAGE_ENABLED", True)
 
 # Container command sandbox limits. The Workspace is copied into a temporary
 # directory and mounted read-only; command output is truncated before LLM input.
