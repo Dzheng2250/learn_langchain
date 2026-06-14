@@ -120,23 +120,29 @@ class LocalStateMigration:
         """Back up PostgreSQL, build validated SQLite state, and optionally prune source."""
         report = self.inspect(workspace, keep_session)
         backup = create_database_backup()
-        temporary = self.target_path.with_suffix(".migration.tmp")
-        temporary.unlink(missing_ok=True)
+        self.target_path.parent.mkdir(parents=True, exist_ok=True)
+        temporary = self.target_path.with_name(
+            f".{self.target_path.name}.{uuid4().hex}.migration.tmp"
+        )
         database = LocalStateDatabase(temporary)
-        database.initialize()
         try:
+            database.initialize()
             self._copy(report, database)
             self._validate(report, database)
-            self.target_path.parent.mkdir(parents=True, exist_ok=True)
             if self.target_path.exists():
                 existing_backup = self.target_path.with_suffix(".pre_migration.bak")
                 shutil.copy2(self.target_path, existing_backup)
             os.replace(temporary, self.target_path)
             if prune_source:
                 self._prune_source(report)
-        except Exception:
-            temporary.unlink(missing_ok=True)
-            raise
+        finally:
+            database.close()
+            for path in (
+                temporary,
+                Path(f"{temporary}-wal"),
+                Path(f"{temporary}-shm"),
+            ):
+                path.unlink(missing_ok=True)
         return LocalStateMigrationReport(
             report.workspace,
             report.session_name,

@@ -107,6 +107,45 @@ class LocalStateTest(unittest.TestCase):
                 conn.execute("DELETE FROM artifact_references")
             self.assertEqual(1, artifacts.collect_garbage())
 
+    def test_vague_memory_recall_fallback_respects_retrieval_limit(self):
+        store = LocalStateStore(self.database, retrieval_limit=3)
+        with self.database.transaction() as conn:
+            for index in range(8):
+                conn.execute(
+                    """
+                    INSERT INTO memories(
+                        memory_id, workspace_id, kind, content, tags, importance, confidence
+                    ) VALUES (?, ?, 'project_fact', ?, '[]', ?, 1.0)
+                    """,
+                    (
+                        str(uuid4()),
+                        str(self.workspace.workspace_id),
+                        f"durable fact {index}",
+                        index,
+                    ),
+                )
+
+        memories = store.retrieve_relevant(
+            self.workspace.workspace_id,
+            "你还记得以前的事情吗？",
+        )
+
+        self.assertEqual(3, len(memories))
+
+    def test_unknown_message_role_emits_warning_before_archiving_as_unknown(self):
+        store = LocalStateStore(self.database)
+
+        class NewMessageType:
+            pass
+
+        with patch("src.core.state.store.emit_event") as emit:
+            role = store._message_role(NewMessageType())
+
+        self.assertEqual("unknown", role)
+        emit.assert_called_once()
+        self.assertEqual("unknown_message_role", emit.call_args.args[0])
+        self.assertEqual("warning", emit.call_args.kwargs["level"])
+
 
 class ExecutionBudgetTest(unittest.TestCase):
     def test_risk_budgets_are_independent_from_read_only_calls(self):

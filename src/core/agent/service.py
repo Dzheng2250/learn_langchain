@@ -448,6 +448,7 @@ class AgentTurnService:
         )
         run_context_token = None
         budget_token = None
+        budget = None
         active_slice_id = None
         try:
             # Persisted turn_index identifies the last completed turn. The
@@ -666,7 +667,7 @@ class AgentTurnService:
         except Exception as exc:
             if execution is not None and self.execution_repository is not None:
                 try:
-                    usage = budget.snapshot() if budget_token is not None else None
+                    usage = budget.snapshot() if budget is not None else None
                     if active_slice_id is not None:
                         self.execution_repository.finish_slice(
                             active_slice_id,
@@ -701,6 +702,7 @@ class AgentTurnService:
                 reset_execution_budget(budget_token)
             reset_context(context_token)
             store.close()
+
     def _stream_unconfigured_turn(
         self,
         session: SessionContext,

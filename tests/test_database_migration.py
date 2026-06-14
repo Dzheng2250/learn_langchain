@@ -253,6 +253,55 @@ class DatabaseMigrationTest(unittest.TestCase):
         self.assertIn("DELETE FROM AGENT_SESSIONS", statements)
         self.assertIn("DELETE FROM AGENT_WORKSPACES", statements)
 
+    def test_local_state_apply_uses_unique_temporary_file_in_target_directory(self):
+        target = ROOT / "state.review-test.db"
+
+        class SuccessfulMigration(LocalStateMigration):
+            def inspect(self, workspace, keep_session):
+                return LocalStateMigrationReport(
+                    ROOT,
+                    "default",
+                    1,
+                    0,
+                    0,
+                    0,
+                    target,
+                )
+
+            def _copy(self, report, database):
+                self.temporary_path = database.path
+
+            def _validate(self, report, database):
+                return None
+
+        class FakeLocalDatabase:
+            def __init__(self, path):
+                self.path = Path(path)
+                self.closed = False
+
+            def initialize(self):
+                return None
+
+            def close(self):
+                self.closed = True
+
+        migration = SuccessfulMigration(lambda: None, target_path=target)
+        with (
+            patch(
+                "src.core.state.migration.create_database_backup",
+                return_value=ROOT / "backup.dump",
+            ),
+            patch("src.core.state.migration.LocalStateDatabase", FakeLocalDatabase),
+            patch("src.core.state.migration.os.replace") as replace,
+        ):
+            report = migration.apply(ROOT)
+
+        self.assertEqual(target.parent, migration.temporary_path.parent)
+        self.assertNotEqual(target.with_suffix(".migration.tmp"), migration.temporary_path)
+        self.assertIn(".migration.tmp", migration.temporary_path.name)
+        replace.assert_called_once_with(migration.temporary_path, target)
+        self.assertTrue(report.applied)
+
 
 if __name__ == "__main__":
     unittest.main()

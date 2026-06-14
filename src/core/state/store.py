@@ -229,6 +229,7 @@ class LocalStateStore:
         return cur.rowcount == 1
 
     def retrieve_relevant(self, workspace_id: UUID, query: str, limit: int | None = None) -> list[RetrievedMemory]:
+        effective_limit = limit or self.retrieval_limit
         terms = self._normalize_search_query(query).casefold().split()
         if not terms:
             return []
@@ -244,8 +245,10 @@ class LocalStateStore:
             ).fetchall()
         selected = [row for row in rows if any(term in row["content"].casefold() for term in terms)]
         if not selected and self._is_memory_recall_query(query):
-            selected = rows
-        memories = [self._memory_from_row(row) for row in selected[: limit or self.retrieval_limit]]
+            # A vague recall request may need a relevance fallback, but it
+            # must never inject the entire Workspace memory collection.
+            selected = rows[:effective_limit]
+        memories = [self._memory_from_row(row) for row in selected[:effective_limit]]
         self._record_retrieval(workspace_id, query, memories, "relevant")
         return memories
 
@@ -477,12 +480,22 @@ class LocalStateStore:
         )
 
     def _message_role(self, message) -> str:
-        return {
+        role = {
             "HumanMessage": "user",
             "AIMessage": "assistant",
             "ToolMessage": "tool",
             "SystemMessage": "system",
-        }.get(message.__class__.__name__, "unknown")
+        }.get(message.__class__.__name__)
+        if role is None:
+            emit_event(
+                "unknown_message_role",
+                "local_state_store",
+                "Archived a message type without a known conversation role.",
+                {"message_type": message.__class__.__name__},
+                level="warning",
+            )
+            return "unknown"
+        return role
 
     def _message_content(self, message) -> str:
         content = getattr(message, "content", "")

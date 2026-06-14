@@ -28,6 +28,9 @@ CREATE TABLE IF NOT EXISTS sessions (
     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
     UNIQUE(workspace_id, session_name),
+    -- Required as the parent key for composite Workspace-isolated foreign
+    -- keys. session_id is globally unique, but that alone cannot validate
+    -- that child rows carry the matching workspace_id.
     UNIQUE(workspace_id, session_id)
 );
 

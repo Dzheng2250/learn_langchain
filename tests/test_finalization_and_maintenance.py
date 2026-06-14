@@ -412,6 +412,66 @@ class MaintenanceSchedulerTest(unittest.TestCase):
         self.assertTrue(scheduler.close(timeout_seconds=1))
         self.assertIsNone(scheduler._thread)
 
+    def test_concurrent_start_calls_create_exactly_one_worker(self):
+        scheduler = MaintenanceScheduler(
+            self.repository,
+            {},
+            poll_interval_seconds=0.05,
+        )
+        barrier = threading.Barrier(8)
+        observed_threads = []
+        observed_lock = threading.Lock()
+
+        def start_scheduler():
+            barrier.wait()
+            scheduler.start()
+            with observed_lock:
+                observed_threads.append(scheduler._thread)
+
+        callers = [threading.Thread(target=start_scheduler) for _ in range(8)]
+        for caller in callers:
+            caller.start()
+        for caller in callers:
+            caller.join(timeout=1)
+        try:
+            self.assertEqual(1, len({id(thread) for thread in observed_threads}))
+        finally:
+            self.assertTrue(scheduler.close(timeout_seconds=1))
+
+    def test_start_during_close_does_not_replace_worker(self):
+        started = threading.Event()
+        release = threading.Event()
+        close_finished = threading.Event()
+        self.repository.enqueue(self.spec("closing"))
+
+        def blocking_handler(_job):
+            started.set()
+            release.wait(timeout=2)
+
+        scheduler = MaintenanceScheduler(
+            self.repository,
+            {"test": blocking_handler},
+            poll_interval_seconds=0.01,
+        )
+        scheduler.start()
+        self.assertTrue(started.wait(timeout=1))
+        original_thread = scheduler._thread
+
+        def close_scheduler():
+            scheduler.close(timeout_seconds=1)
+            close_finished.set()
+
+        closer = threading.Thread(target=close_scheduler)
+        closer.start()
+        while not scheduler._closing:
+            time.sleep(0.001)
+        scheduler.start()
+        self.assertIs(original_thread, scheduler._thread)
+        release.set()
+        closer.join(timeout=1)
+        self.assertTrue(close_finished.is_set())
+        self.assertIsNone(scheduler._thread)
+
 
 class MaintenanceHandlerTest(unittest.TestCase):
     def test_context_summary_uses_injected_recent_message_limit(self):

@@ -1,7 +1,7 @@
 """Failure-isolated worker for durable maintenance jobs."""
 
 from collections.abc import Callable
-from threading import Event, Thread
+from threading import Event, Lock, Thread
 
 from src.config.maintenance import MaintenanceSettings
 from src.core.maintenance.models import MaintenanceJob
@@ -43,15 +43,18 @@ class MaintenanceScheduler:
         self.shutdown_timeout_seconds = policy.shutdown_timeout_seconds
         self._stop = Event()
         self._wake = Event()
+        self._lifecycle_lock = Lock()
         self._thread: Thread | None = None
+        self._closing = False
 
     def start(self) -> None:
         """Start exactly one daemon worker."""
-        if self._thread is not None and self._thread.is_alive():
-            return
-        self._stop.clear()
-        self._thread = Thread(target=self._run, name="agent-maintenance", daemon=True)
-        self._thread.start()
+        with self._lifecycle_lock:
+            if self._closing or (self._thread is not None and self._thread.is_alive()):
+                return
+            self._stop.clear()
+            self._thread = Thread(target=self._run, name="agent-maintenance", daemon=True)
+            self._thread.start()
 
     def wake(self) -> None:
         """Prompt the worker after a Turn enqueues new work."""
@@ -59,9 +62,11 @@ class MaintenanceScheduler:
 
     def close(self, timeout_seconds: float | None = None) -> bool:
         """Stop claiming new work; leased jobs recover after expiry on restart."""
-        self._stop.set()
-        self._wake.set()
-        thread = self._thread
+        with self._lifecycle_lock:
+            self._closing = True
+            self._stop.set()
+            self._wake.set()
+            thread = self._thread
         if thread is not None:
             timeout = (
                 self.shutdown_timeout_seconds
@@ -74,7 +79,13 @@ class MaintenanceScheduler:
         # still join the same worker, and callers know not to close resources
         # that an in-flight handler may still be using.
         if stopped:
-            self._thread = None
+            with self._lifecycle_lock:
+                if self._thread is thread:
+                    self._thread = None
+                self._closing = False
+        else:
+            with self._lifecycle_lock:
+                self._closing = False
         return stopped
 
     def run_once(self) -> bool:
