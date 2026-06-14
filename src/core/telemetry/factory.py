@@ -20,9 +20,13 @@ from src.core.telemetry.sinks import (
 )
 
 
-def create_event_bus(pool=None) -> EventBus:
+def create_event_bus(pool=None, *, include_trace_sink: bool = False) -> EventBus:
     """Build the fixed telemetry sink graph owned by one Core process."""
     sinks = []
+    if AGENT_EVENTS_ENABLED and include_trace_sink:
+        from src.core.tracing.adapters import TelemetryTraceSink
+
+        sinks.append(TelemetryTraceSink())
     if AGENT_EVENTS_ENABLED and AGENT_EVENTS_CONSOLE_ENABLED:
         sinks.append(ConsoleEventSink())
     if AGENT_EVENTS_ENABLED and AGENT_EVENTS_FILE_ENABLED:

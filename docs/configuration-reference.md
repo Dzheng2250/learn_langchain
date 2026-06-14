@@ -34,6 +34,7 @@ learn-agent start
 | `LEARN_AGENT_LLM_API_KEY` | 空 | OpenAI 兼容模型 API 密钥。为空时进入无状态诊断模式，不执行真实 Agent Turn。 |
 | `LEARN_AGENT_LLM_BASE_URL` | 空 | OpenAI 兼容 API 地址。留空时使用客户端默认地址。 |
 | `LEARN_AGENT_MODEL` | `deepseek-v4-flash` | 传给模型服务的模型名称，必须与服务端支持的名称一致。 |
+| `LEARN_AGENT_LLM_STREAM_USAGE_ENABLED` | `true` | 流式调用时请求服务商返回 Token usage。若兼容接口拒绝 `stream_options.include_usage`，设为 `false`。 |
 
 旧变量 `ALIYUN_API_KEY` 与 `ALIYUN_BASE_URL` 仅作为兼容回退，新配置应使用通用名称。
 
@@ -101,6 +102,21 @@ telemetry/      默认 JSONL 观测事件
 
 Telemetry 用于审计和诊断，不决定业务 Turn 成败。详细设计见
 [`event-system.md`](event-system.md)。
+
+### System Trace
+
+System Trace 默认启用，只保存经过脱敏和截断的跨层摘要。完整设计见
+[`system-tracing.md`](system-tracing.md)。
+
+| 环境变量 | 默认值 | 含义 |
+|---|---:|---|
+| `LEARN_AGENT_TRACE_ENABLED` | `true` | 是否记录本地系统 Trace |
+| `LEARN_AGENT_TRACE_DIR` | 空 | 显式 Trace 根目录；为空时使用本地状态目录下的 `traces` |
+| `LEARN_AGENT_TRACE_RETENTION_DAYS` | `14` | 按 UTC 日期轮转后的保留天数 |
+| `LEARN_AGENT_TRACE_BATCH_SIZE` | `100` | 后台 Writer 单批最大记录数 |
+| `LEARN_AGENT_TRACE_FLUSH_INTERVAL_SECONDS` | `0.5` | 未满批次时的最大等待秒数 |
+| `LEARN_AGENT_TRACE_QUEUE_MAX_SIZE` | `5000` | 有界内存队列容量；满时丢弃 Trace，不阻塞业务 |
+| `LEARN_AGENT_TRACE_DATA_PREVIEW_LIMIT` | `500` | 单个摘要字符串最大字符数 |
 
 | 环境变量 | 默认值 | 含义与影响 |
 |---|---:|---|

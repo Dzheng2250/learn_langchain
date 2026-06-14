@@ -13,6 +13,7 @@ from src.ipc.models import (
     JsonRpcRequest,
     JsonRpcSuccess,
 )
+from src.core.tracing import TraceDirection, TraceLayer, record_trace
 
 
 PARSE_ERROR = -32700
@@ -48,26 +49,62 @@ class RpcRouter:
         try:
             request = JsonRpcRequest.model_validate(raw)
         except ValidationError as exc:
+            record_trace(
+                TraceDirection.INTERNAL,
+                TraceLayer.IPC,
+                "ipc.request_rejected",
+                data={"reason": "invalid_request", "error_count": len(exc.errors())},
+            )
             return error_response(request_id, INVALID_REQUEST, "Invalid Request", exc.errors())
 
         registration = self._handlers.get(request.method)
         if registration is None:
+            record_trace(
+                TraceDirection.INTERNAL,
+                TraceLayer.IPC,
+                "ipc.request_rejected",
+                data={"reason": "method_not_found", "method": request.method},
+            )
             return error_response(request.id, METHOD_NOT_FOUND, "Method not found")
 
         params_model, handler = registration
         try:
             params = params_model.model_validate(request.params)
         except ValidationError as exc:
+            record_trace(
+                TraceDirection.INTERNAL,
+                TraceLayer.IPC,
+                "ipc.request_rejected",
+                data={"reason": "invalid_params", "method": request.method, "error_count": len(exc.errors())},
+            )
             return error_response(request.id, INVALID_PARAMS, "Invalid params", exc.errors())
 
         received_token = getattr(params, "auth_token", "")
         if not verify_token(self.auth_token, received_token):
+            record_trace(
+                TraceDirection.INTERNAL,
+                TraceLayer.IPC,
+                "ipc.request_rejected",
+                data={"reason": "unauthorized", "method": request.method},
+            )
             return error_response(request.id, UNAUTHORIZED, "Unauthorized")
 
+        record_trace(
+            TraceDirection.INTERNAL,
+            TraceLayer.IPC,
+            "ipc.request_validated",
+            data={"method": request.method},
+        )
         try:
             result = await handler(params, context)
         except Exception as exc:
             logger.exception("RPC handler failed method=%s: %s", request.method, exc)
+            record_trace(
+                TraceDirection.INTERNAL,
+                TraceLayer.IPC,
+                "ipc.handler_failed",
+                data={"method": request.method, "error_type": type(exc).__name__},
+            )
             return error_response(request.id, INTERNAL_ERROR, "Internal error")
         return JsonRpcSuccess(id=request.id, result=result)
 

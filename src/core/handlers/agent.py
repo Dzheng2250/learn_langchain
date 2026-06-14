@@ -7,6 +7,7 @@ from src.core.agent.contracts import AgentTurnRunner, ExecutionControl
 from src.core.bus.context import RequestContext
 from src.core.bus.router import RpcRouter
 from src.core.telemetry import record_error
+from src.core.tracing import bind_trace_context, reset_trace_context
 from src.ipc.models import AgentEventNotification, ChatParams, SessionParams, SessionResumeParams
 
 
@@ -28,14 +29,18 @@ class AgentHandlers:
         run_id = uuid4().hex
         control = ExecutionControl()
         on_event = self._notification_callback(context, run_id, control)
-        return await self.agent_service.run_turn(
-            params.workspace_root,
-            params.session_name,
-            params.message,
-            on_event,
-            run_id=run_id,
-            control=control,
-        )
+        token = bind_trace_context(run_id=run_id)
+        try:
+            return await self.agent_service.run_turn(
+                params.workspace_root,
+                params.session_name,
+                params.message,
+                on_event,
+                run_id=run_id,
+                control=control,
+            )
+        finally:
+            reset_trace_context(token)
 
     async def session_status(self, params: SessionParams, _context: RequestContext) -> dict:
         """Return the recoverable execution state for one Session."""
@@ -58,14 +63,18 @@ class AgentHandlers:
         run_id = uuid4().hex
         control = ExecutionControl()
         on_event = self._notification_callback(context, run_id, control)
-        return await self.agent_service.resume_execution(
-            params.workspace_root,
-            params.session_name,
-            params.instruction,
-            on_event,
-            run_id=run_id,
-            control=control,
-        )
+        token = bind_trace_context(run_id=run_id)
+        try:
+            return await self.agent_service.resume_execution(
+                params.workspace_root,
+                params.session_name,
+                params.instruction,
+                on_event,
+                run_id=run_id,
+                control=control,
+            )
+        finally:
+            reset_trace_context(token)
 
     def _notification_callback(
         self,

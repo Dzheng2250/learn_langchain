@@ -29,6 +29,7 @@ BASH_PATH = "bash"
 MODEL = env_str("LEARN_AGENT_MODEL", "deepseek-v4-flash")
 LLM_API_KEY = env_str("LEARN_AGENT_LLM_API_KEY", env_str("ALIYUN_API_KEY", ""))
 LLM_BASE_URL = env_str("LEARN_AGENT_LLM_BASE_URL", env_str("ALIYUN_BASE_URL", ""))
+LLM_STREAM_USAGE_ENABLED = env_bool("LEARN_AGENT_LLM_STREAM_USAGE_ENABLED", True)
 
 # Container command sandbox limits. The Workspace is copied into a temporary
 # directory and mounted read-only; command output is truncated before LLM input.
@@ -116,6 +117,16 @@ AGENT_EVENTS_ASYNC_WRITE = True
 AGENT_EVENTS_BATCH_SIZE = 50
 AGENT_EVENTS_FLUSH_INTERVAL_SECONDS = 1.0
 AGENT_EVENTS_QUEUE_MAX_SIZE = 1000
+
+# Cross-layer daemon trace. Trace is best-effort diagnostic data and never a
+# source of truth for Session state, recovery, billing, or compliance.
+TRACE_ENABLED = env_bool("LEARN_AGENT_TRACE_ENABLED", True)
+TRACE_DIR = env_str("LEARN_AGENT_TRACE_DIR", "")
+TRACE_RETENTION_DAYS = env_int("LEARN_AGENT_TRACE_RETENTION_DAYS", 14)
+TRACE_BATCH_SIZE = env_int("LEARN_AGENT_TRACE_BATCH_SIZE", 100)
+TRACE_FLUSH_INTERVAL_SECONDS = env_float("LEARN_AGENT_TRACE_FLUSH_INTERVAL_SECONDS", 0.5)
+TRACE_QUEUE_MAX_SIZE = env_int("LEARN_AGENT_TRACE_QUEUE_MAX_SIZE", 5000)
+TRACE_DATA_PREVIEW_LIMIT = env_int("LEARN_AGENT_TRACE_DATA_PREVIEW_LIMIT", 500)
 
 CORE_HOST = env_str("LEARN_AGENT_CORE_HOST", "127.0.0.1")
 CORE_PORT = env_int("LEARN_AGENT_CORE_PORT", 18765)

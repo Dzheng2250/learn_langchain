@@ -88,6 +88,7 @@ class AgentExecutionArchitectureTest(unittest.TestCase):
                 model="test-model",
                 api_key="key",
                 base_url="https://example.test",
+                stream_usage_enabled=True,
             ).create_chat_model(
                 LlmPurpose.PARENT_AGENT,
                 streaming=True,
@@ -101,7 +102,26 @@ class AgentExecutionArchitectureTest(unittest.TestCase):
             {"purpose": LlmPurpose.PARENT_AGENT.value},
             constructor.call_args.kwargs["metadata"],
         )
+        self.assertTrue(constructor.call_args.kwargs["stream_usage"])
         model.bind_tools.assert_called_once_with(["tool"])
+
+    def test_non_streaming_model_does_not_request_stream_usage(self):
+        with patch("src.core.llm.provider.ChatOpenAI") as constructor:
+            OpenAICompatibleProvider(
+                api_key="key",
+                stream_usage_enabled=True,
+            ).create_chat_model(LlmPurpose.MEMORY_EXTRACTION, streaming=False)
+
+        self.assertFalse(constructor.call_args.kwargs["stream_usage"])
+
+    def test_stream_usage_can_be_disabled_for_incompatible_provider(self):
+        with patch("src.core.llm.provider.ChatOpenAI") as constructor:
+            OpenAICompatibleProvider(
+                api_key="key",
+                stream_usage_enabled=False,
+            ).create_chat_model(LlmPurpose.PARENT_AGENT, streaming=True)
+
+        self.assertFalse(constructor.call_args.kwargs["stream_usage"])
 
     def test_provider_reports_missing_api_key_without_network_request(self):
         status = OpenAICompatibleProvider(api_key="", base_url="https://example.test").configuration_status()

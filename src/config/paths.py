@@ -65,3 +65,9 @@ def artifact_dir() -> Path:
 def telemetry_dir() -> Path:
     """Return the default local telemetry directory."""
     return local_state_dir() / "telemetry"
+
+
+def trace_dir() -> Path:
+    """Return system-trace storage, honoring an explicit override."""
+    override = os.getenv("LEARN_AGENT_TRACE_DIR")
+    return Path(override).expanduser().resolve() if override else local_state_dir() / "traces"
