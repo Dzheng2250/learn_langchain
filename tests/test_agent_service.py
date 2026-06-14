@@ -8,9 +8,12 @@ from unittest.mock import Mock, patch
 from uuid import uuid4
 
 from src.core.context.models import AgentContextState
+from src.core.errors import ErrorCategory
 from src.core.llm.provider import LlmConfigurationStatus
 from src.config.settings import CORE_AGENT_WORKERS
 from src.core.agent.service import AgentTurnService, SessionLockRegistry
+from src.core.state import ExecutionRepository, LocalStateDatabase, LocalStateStore
+from src.core.state.workspace import LocalWorkspaceRepository
 from src.core.workspace.models import SessionContext, WorkspaceContext
 
 
@@ -70,7 +73,7 @@ class AgentTurnExecutorTest(unittest.IsolatedAsyncioTestCase):
         return AgentTurnService(
             workspace_repository=Mock(),
             runtime_registry=Mock(),
-            memory_store_factory=Mock(),
+            state_store_factory=Mock(),
             turn_executor=executor,
             max_concurrent_turns=max_concurrent_turns,
         )
@@ -195,7 +198,7 @@ class DiagnosticTurnTest(unittest.TestCase):
         service = AgentTurnService(
             workspace_repository=Repository(),
             runtime_registry=runtime_registry,
-            memory_store_factory=lambda: store,
+            state_store_factory=lambda: store,
             model_configuration=MissingConfiguration(),
         )
         try:
@@ -218,6 +221,108 @@ class DiagnosticTurnTest(unittest.TestCase):
         runtime_registry.get.assert_not_called()
         self.assertEqual(2, store.loaded)
         self.assertTrue(store.closed)
+
+
+class ProviderErrorResolutionIntegrationTest(unittest.TestCase):
+    def setUp(self):
+        self.database = LocalStateDatabase(":memory:")
+        self.addCleanup(self.database.close)
+        self.database.initialize()
+        self.workspace_repository = LocalWorkspaceRepository(self.database)
+        self.execution_repository = ExecutionRepository(self.database)
+
+    def test_content_rejection_terminates_execution_and_releases_session(self):
+        class ConfiguredModel:
+            def configuration_status(self):
+                return LlmConfigurationStatus(True)
+
+        class RejectedGraph:
+            def stream(self, *_args, **_kwargs):
+                raise RuntimeError(
+                    "Error code: 400 - {'error': {'code': 'data_inspection_failed'}}"
+                )
+
+        runtime_registry = Mock()
+        runtime_registry.get.return_value = Mock(graph=RejectedGraph())
+        service = AgentTurnService(
+            workspace_repository=self.workspace_repository,
+            runtime_registry=runtime_registry,
+            state_store_factory=lambda: LocalStateStore(self.database),
+            model_configuration=ConfiguredModel(),
+            execution_repository=self.execution_repository,
+        )
+        try:
+            events = list(
+                service.stream_turn(
+                    str(Path("tests/fixtures/workspace_a").resolve()),
+                    "default",
+                    "rejected input",
+                    run_id="run-rejected",
+                )
+            )
+        finally:
+            service.close()
+
+        error = events[-1]["data"]
+        self.assertEqual("error", events[-1]["event"])
+        self.assertEqual(ErrorCategory.CONTENT_REJECTED, error["error_category"])
+        self.assertEqual("terminate", error["error_action"])
+        self.assertNotIn("data_inspection_failed", error["message"])
+
+        workspace = self.workspace_repository.resolve(
+            str(Path("tests/fixtures/workspace_a").resolve())
+        )
+        session, _ = self.workspace_repository.resolve_session(workspace, "default")
+        self.assertIsNone(self.execution_repository.get_attached(session))
+        next_execution = self.execution_repository.begin(session, "safe input")
+        self.assertIsNotNone(next_execution)
+
+    def test_rate_limit_pauses_execution_for_later_resume(self):
+        class ConfiguredModel:
+            def configuration_status(self):
+                return LlmConfigurationStatus(True)
+
+        class RateLimitError(Exception):
+            status_code = 429
+            body = {"error": {"code": "rate_limit"}}
+
+        class RateLimitedGraph:
+            def stream(self, *_args, **_kwargs):
+                raise RateLimitError("private provider response")
+
+        runtime_registry = Mock()
+        runtime_registry.get.return_value = Mock(graph=RateLimitedGraph())
+        service = AgentTurnService(
+            workspace_repository=self.workspace_repository,
+            runtime_registry=runtime_registry,
+            state_store_factory=lambda: LocalStateStore(self.database),
+            model_configuration=ConfiguredModel(),
+            execution_repository=self.execution_repository,
+        )
+        try:
+            events = list(
+                service.stream_turn(
+                    str(Path("tests/fixtures/workspace_a").resolve()),
+                    "rate-limited",
+                    "request",
+                    run_id="run-rate-limit",
+                )
+            )
+        finally:
+            service.close()
+
+        error = events[-1]["data"]
+        self.assertEqual("pause", error["error_action"])
+        self.assertTrue(error["retryable"])
+        self.assertNotIn("private provider response", error["message"])
+
+        workspace = self.workspace_repository.resolve(
+            str(Path("tests/fixtures/workspace_a").resolve())
+        )
+        session, _ = self.workspace_repository.resolve_session(workspace, "rate-limited")
+        pending = self.execution_repository.get_pending(session)
+        self.assertIsNotNone(pending)
+        self.assertEqual("paused_error", pending.status)
 
 
 if __name__ == "__main__":

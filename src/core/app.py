@@ -8,18 +8,36 @@ from typing import Protocol
 from src.core.agent.contracts import ManagedAgentService
 from src.core.agent.service import AgentTurnService
 from src.core.agent.models import RunLimits
+from src.config.maintenance import MaintenanceSettings
 from src.core.bus.router import RpcRouter
 from src.core.config.models import CoreConfig
 from src.core.handlers import AgentHandlers, CoreHandlers
-from src.core.hooks.events import set_event_publisher
-from src.core.hooks.publisher import EventPublisher
+from src.core.telemetry import EventBus, create_event_bus, install_event_bus
 from src.core.transport.socket_server import SocketServer
 from src.ipc.auth import ensure_runtime_dir, pid_path
 from src.core.database.connection import create_pool
-from src.core.memory.store import PostgresMemoryStore
+from src.core.state import (
+    CheckpointManager,
+    ExecutionRepository,
+    LocalStateDatabase,
+    LocalStateStore,
+    LocalWorkspaceRepository,
+)
+from src.core.finalization import CompletedTurnCommitter, TurnFinalizer
+from src.core.maintenance import (
+    ExecutionRecoveryCoordinator,
+    MaintenanceJobType,
+    MaintenanceRepository,
+    MaintenanceScheduler,
+)
+from src.core.maintenance.handlers import (
+    CheckpointCleanupHandler,
+    ContextSummaryHandler,
+    MemoryExtractionHandler,
+)
 from src.core.context.manager import AgentContextManager
+from src.core.errors import ProviderErrorHandler
 from src.core.llm.provider import OpenAICompatibleProvider
-from src.core.workspace.repository import WorkspaceRepository
 from src.core.workspace.runtime import WorkspaceRuntimeFactory, WorkspaceRuntimeRegistry
 
 
@@ -56,31 +74,95 @@ class CoreApp:
         *,
         agent_service: ManagedAgentService | None = None,
         transport_factory: TransportFactory = create_socket_transport,
-        event_publisher: EventPublisher | None = None,
+        event_bus: EventBus | None = None,
     ) -> None:
         self.config = config
         self.shutdown_event = asyncio.Event()
         self._pool = None
-        self._event_publisher = event_publisher
+        self._state_database = None
+        self._event_bus = event_bus
         if agent_service is None:
             # CoreApp is the process-level composition root. These objects are
             # intentionally shared across requests; workspace-specific graphs
             # and tools are created lazily by WorkspaceRuntimeRegistry.
-            self._pool = create_pool()
+            self._state_database = LocalStateDatabase()
+            checkpoint_manager = CheckpointManager()
+            # PostgreSQL is optional. It is opened only for explicitly enabled
+            # telemetry/projection features, never for authoritative Session IO.
+            from src.config.settings import AGENT_EVENTS_POSTGRES_ENABLED
+
+            self._pool = create_pool() if AGENT_EVENTS_POSTGRES_ENABLED else None
+            if self._event_bus is None:
+                self._event_bus = create_event_bus(self._pool)
             model_provider = OpenAICompatibleProvider()
             run_limits = RunLimits()
-            self.agent_service = AgentTurnService(
-                workspace_repository=WorkspaceRepository(self._pool),
-                runtime_registry=WorkspaceRuntimeRegistry(
-                    factory=WorkspaceRuntimeFactory(model_provider, run_limits),
-                ),
-                memory_store_factory=lambda: PostgresMemoryStore(
-                    pool=self._pool,
+            workspace_repository = LocalWorkspaceRepository(self._state_database)
+            execution_repository = ExecutionRepository(self._state_database)
+            maintenance_settings = MaintenanceSettings.load()
+            maintenance_repository = MaintenanceRepository(
+                self._state_database,
+                maintenance_settings,
+            )
+            context_manager = AgentContextManager(model_provider=model_provider)
+
+            def state_store_factory():
+                return LocalStateStore(
+                    self._state_database,
                     model_provider=model_provider,
+                )
+
+            maintenance_scheduler = MaintenanceScheduler(
+                maintenance_repository,
+                {
+                    MaintenanceJobType.CONTEXT_SUMMARY: ContextSummaryHandler(
+                        workspace_repository,
+                        state_store_factory,
+                        context_manager,
+                    ),
+                    MaintenanceJobType.MEMORY_EXTRACT: MemoryExtractionHandler(
+                        workspace_repository,
+                        state_store_factory,
+                    ),
+                    MaintenanceJobType.CHECKPOINT_CLEANUP: CheckpointCleanupHandler(
+                        checkpoint_manager,
+                        execution_repository,
+                    ),
+                },
+                settings=maintenance_settings,
+            )
+            turn_finalizer = TurnFinalizer(
+                context_manager,
+                CompletedTurnCommitter(
+                    self._state_database,
+                    execution_repository,
+                    maintenance_repository,
                 ),
-                context_manager=AgentContextManager(model_provider=model_provider),
+                maintenance_scheduler,
+            )
+            self.agent_service = AgentTurnService(
+                workspace_repository=workspace_repository,
+                runtime_registry=WorkspaceRuntimeRegistry(
+                    factory=WorkspaceRuntimeFactory(
+                        model_provider,
+                        run_limits,
+                        checkpointer_provider=checkpoint_manager.initialize,
+                    ),
+                ),
+                state_store_factory=state_store_factory,
+                context_manager=context_manager,
                 model_configuration=model_provider,
                 run_limits=run_limits,
+                execution_repository=execution_repository,
+                checkpoint_manager=checkpoint_manager,
+                turn_finalizer=turn_finalizer,
+                maintenance_repository=maintenance_repository,
+                maintenance_scheduler=maintenance_scheduler,
+                recovery_coordinator=ExecutionRecoveryCoordinator(
+                    execution_repository,
+                    checkpoint_manager,
+                    maintenance_repository,
+                ),
+                provider_error_handler=ProviderErrorHandler(),
             )
         else:
             self.agent_service = agent_service
@@ -100,8 +182,7 @@ class CoreApp:
         if self._started:
             return
         try:
-            if self._event_publisher is not None:
-                set_event_publisher(self._event_publisher)
+            install_event_bus(self._event_bus)
             self.agent_service.initialize()
             if self.config.manage_runtime_files:
                 ensure_runtime_dir(self.config.runtime_dir)
@@ -133,13 +214,15 @@ class CoreApp:
                 await asyncio.to_thread(self.agent_service.close)
             finally:
                 try:
-                    set_event_publisher(None)
+                    await asyncio.to_thread(install_event_bus, None)
                     if self._pool is not None:
                         await asyncio.to_thread(
                             self._pool.close,
                             timeout=self.config.shutdown_timeout_seconds,
                         )
                 finally:
+                    if self._state_database is not None:
+                        self._state_database.close()
                     if self.config.manage_runtime_files:
                         try:
                             pid_path(self.config.runtime_dir).unlink(missing_ok=True)

@@ -33,6 +33,22 @@ class AgentContextManagerTest(unittest.TestCase):
 
         self.assertEqual(["question", "answer"], [message.content for message in result.recent_messages])
 
+    def test_extract_turn_messages_ignores_synthetic_context_across_resume(self):
+        manager = AgentContextManager(recent_message_limit=2)
+        old = [HumanMessage(content="old user"), AIMessage(content="old answer")]
+        state = AgentContextState(summary="summary", recent_messages=old)
+        final = [
+            SystemMessage(content="Conversation context summary:\nsummary"),
+            SystemMessage(content="Relevant long-term memory for this workspace:\nfact"),
+            *old,
+            HumanMessage(content="new request"),
+            AIMessage(content="new answer"),
+        ]
+
+        extracted = manager.extract_turn_messages(state, final)
+
+        self.assertEqual(["new request", "new answer"], [message.content for message in extracted])
+
 
 if __name__ == "__main__":
     unittest.main()

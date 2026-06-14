@@ -60,7 +60,13 @@ def create_workspace_toolset(
     register(command, both, ToolRisk.CONTROLLED_EXECUTION)
 
     base_tools = registry.tools_for(ToolAudience.SUBAGENT)
-    delegate = create_delegate_tool(base_tools, provider, max_steps=subagent_max_steps)
+    base_risks = {spec.name: spec.risk for spec in registry.specs_for(ToolAudience.SUBAGENT)}
+    delegate = create_delegate_tool(
+        base_tools,
+        provider,
+        max_steps=subagent_max_steps,
+        risk_by_name=base_risks,
+    )
     register(delegate, {ToolAudience.PARENT}, ToolRisk.DELEGATION)
     registry.freeze()
     return WorkspaceToolset(

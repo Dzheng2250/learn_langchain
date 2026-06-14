@@ -1,16 +1,19 @@
 import unittest
-from unittest.mock import Mock, patch
 from uuid import uuid4
 
 from langchain_core.messages import AIMessage
 from langchain_core.tools import tool
 from langgraph.graph import END, START, MessagesState, StateGraph
 
-from src.core.hooks.events import (
-    AgentEvent,
+from src.core.telemetry import (
+    BaseEventSink,
+    BufferedEventSink,
+    EventBus,
+    TelemetryEvent,
+    bind_context,
     event_span,
     emit_event,
-    list_hook_helpers,
+    install_event_bus,
     record_command_failed,
     record_command_finished,
     record_command_started,
@@ -20,37 +23,34 @@ from src.core.hooks.events import (
     record_tool_finished,
     record_tool_started,
     sanitize_payload,
-    set_event_context,
-    set_event_sinks,
 )
 from src.core.tools.observed import ObservedToolNode
-from src.core.hooks.sinks import PostgresEventSink
 
 
-class MemorySink:
+class MemorySink(BaseEventSink):
     def __init__(self) -> None:
         self.events = []
 
-    def emit(self, event: AgentEvent) -> None:
+    def emit(self, event: TelemetryEvent) -> None:
         self.events.append(event)
 
 
-class FailingSink:
-    def emit(self, event: AgentEvent) -> None:
+class FailingSink(BaseEventSink):
+    def emit(self, event: TelemetryEvent) -> None:
         raise RuntimeError("sink failed")
 
 
-class AgentHooksTest(unittest.TestCase):
+class TelemetryTest(unittest.TestCase):
     def tearDown(self) -> None:
-        set_event_sinks(None)
-        set_event_context()
+        install_event_bus(None)
+        bind_context()
 
     def test_emit_event_writes_to_memory_sink(self) -> None:
         sink = MemorySink()
-        set_event_sinks([sink])
+        install_event_bus(EventBus([sink]))
         workspace_id = uuid4()
         session_id = uuid4()
-        set_event_context(
+        bind_context(
             workspace_id=workspace_id,
             session_id=session_id,
             turn_index=7,
@@ -71,9 +71,15 @@ class AgentHooksTest(unittest.TestCase):
         self.assertEqual(7, event.turn_index)
         self.assertEqual("run-a", event.run_id)
 
+    def test_legacy_hooks_imports_remain_available(self) -> None:
+        from src.core.hooks import AgentEvent, set_event_context
+
+        self.assertIs(AgentEvent, TelemetryEvent)
+        self.assertIs(set_event_context, bind_context)
+
     def test_failing_sink_does_not_interrupt_emit(self) -> None:
         sink = MemorySink()
-        set_event_sinks([FailingSink(), sink])
+        install_event_bus(EventBus([FailingSink(), sink]))
 
         event = emit_event("tool_started", "test", payload={"tool": "demo"})
 
@@ -102,7 +108,7 @@ class AgentHooksTest(unittest.TestCase):
 
     def test_event_span_records_started_and_finished(self) -> None:
         sink = MemorySink()
-        set_event_sinks([sink])
+        install_event_bus(EventBus([sink]))
 
         with event_span("demo_operation", "test", payload={"value": 1}):
             pass
@@ -114,7 +120,7 @@ class AgentHooksTest(unittest.TestCase):
 
     def test_event_span_records_failure_and_reraises(self) -> None:
         sink = MemorySink()
-        set_event_sinks([sink])
+        install_event_bus(EventBus([sink]))
 
         with self.assertRaises(ValueError):
             with event_span("demo_operation", "test"):
@@ -128,7 +134,7 @@ class AgentHooksTest(unittest.TestCase):
 
     def test_record_error_uses_consistent_payload(self) -> None:
         sink = MemorySink()
-        set_event_sinks([sink])
+        install_event_bus(EventBus([sink]))
 
         record_error("test", "demo", ValueError("bad"), payload={"safe": "ok"})
 
@@ -141,7 +147,7 @@ class AgentHooksTest(unittest.TestCase):
 
     def test_record_tool_started_uses_consistent_payload(self) -> None:
         sink = MemorySink()
-        set_event_sinks([sink])
+        install_event_bus(EventBus([sink]))
 
         record_tool_started("test", tool="read_file", tool_call_id="call-1", args={"path": "a.py"})
 
@@ -152,7 +158,7 @@ class AgentHooksTest(unittest.TestCase):
 
     def test_record_tool_finished_uses_consistent_payload(self) -> None:
         sink = MemorySink()
-        set_event_sinks([sink])
+        install_event_bus(EventBus([sink]))
 
         record_tool_finished("test", tool="read_file", tool_call_id="call-1", content="done")
 
@@ -164,7 +170,7 @@ class AgentHooksTest(unittest.TestCase):
 
     def test_record_tool_failed_uses_consistent_payload(self) -> None:
         sink = MemorySink()
-        set_event_sinks([sink])
+        install_event_bus(EventBus([sink]))
 
         record_tool_failed("test", tool="read_file", tool_call_id="call-1", error=ValueError("bad"))
 
@@ -176,7 +182,7 @@ class AgentHooksTest(unittest.TestCase):
 
     def test_record_memory_saved_uses_consistent_payload(self) -> None:
         sink = MemorySink()
-        set_event_sinks([sink])
+        install_event_bus(EventBus([sink]))
 
         record_memory_saved(
             "test",
@@ -194,7 +200,7 @@ class AgentHooksTest(unittest.TestCase):
 
     def test_record_command_helpers_use_consistent_payload(self) -> None:
         sink = MemorySink()
-        set_event_sinks([sink])
+        install_event_bus(EventBus([sink]))
 
         record_command_started("test", "python -V")
         record_command_finished("test", returncode=0, output="Python 3.11")
@@ -208,18 +214,9 @@ class AgentHooksTest(unittest.TestCase):
         self.assertEqual(0, sink.events[1].payload["returncode"])
         self.assertEqual("nonzero_exit", sink.events[2].payload["reason"])
 
-    def test_hook_helpers_are_registered(self) -> None:
-        helpers = list_hook_helpers()
-
-        self.assertIn("record_tool_started", helpers)
-        self.assertIn("record_tool_finished", helpers)
-        self.assertIn("record_tool_failed", helpers)
-        self.assertIn("record_command_started", helpers)
-        self.assertIn("record_memory_saved", helpers)
-
     def test_observed_tool_node_records_tool_boundary_events(self) -> None:
         sink = MemorySink()
-        set_event_sinks([sink])
+        install_event_bus(EventBus([sink]))
 
         @tool
         def echo(text: str) -> str:
@@ -256,17 +253,24 @@ class AgentHooksTest(unittest.TestCase):
         self.assertEqual("call-1", sink.events[0].payload["tool_call_id"])
         self.assertEqual("hello", output["messages"][-1].content)
 
-    def test_postgres_sink_preserves_explicit_empty_password(self) -> None:
-        pool = Mock()
-        with (
-            patch.object(PostgresEventSink, "_load_pool", return_value=pool),
-            patch.object(PostgresEventSink, "_load_jsonb_adapter", return_value=Mock()),
-        ):
-            sink = PostgresEventSink(password="", async_write=False)
+    def test_buffered_sink_batches_and_flushes_events(self) -> None:
+        class BatchSink(MemorySink):
+            def emit_batch(self, events) -> None:
+                self.events.extend(events)
 
-        self.assertEqual("", sink.password)
-        self.assertFalse(sink._use_default_connection)
+        target = BatchSink()
+        sink = BufferedEventSink(
+            target,
+            batch_size=10,
+            flush_interval_seconds=0.05,
+            queue_max_size=10,
+        )
+        sink.emit(TelemetryEvent("one", "test"))
+        sink.emit(TelemetryEvent("two", "test"))
+        sink.flush()
         sink.close()
+
+        self.assertEqual(["one", "two"], [event.event_type for event in target.events])
 
 
 if __name__ == "__main__":

@@ -7,7 +7,9 @@ from typing import Any
 from langchain_core.tools import BaseTool
 from langgraph.prebuilt import ToolNode
 
-from src.core.hooks.events import record_tool_failed, record_tool_finished, record_tool_started
+from src.core.telemetry import record_tool_failed, record_tool_finished, record_tool_started
+from src.core.agent.budget import current_execution_budget
+from src.core.tools.catalog import ToolRisk
 
 
 def _tool_call_name(request) -> str | None:
@@ -45,11 +47,19 @@ def _result_is_error(result) -> bool:
     return getattr(result, "status", None) == "error"
 
 
-def _observe_tool_call(source: str, request, execute: Callable[[Any], Any]):
+def _observe_tool_call(
+    source: str,
+    request,
+    execute: Callable[[Any], Any],
+    risk_by_name: dict[str, ToolRisk] | None = None,
+):
     """Execute one tool call while recording start, success, or failure."""
     tool = _tool_call_name(request)
     tool_call_id = _tool_call_id(request)
     started_at = time.monotonic()
+    budget = current_execution_budget()
+    if budget is not None:
+        budget.charge(tool or "unknown", (risk_by_name or {}).get(tool, ToolRisk.READ_ONLY))
 
     record_tool_started(
         source,
@@ -59,7 +69,11 @@ def _observe_tool_call(source: str, request, execute: Callable[[Any], Any]):
     )
 
     try:
-        result = execute(request)
+        if budget is None:
+            result = execute(request)
+        else:
+            with budget.tool_slot():
+                result = execute(request)
     except Exception as exc:
         duration_ms = int((time.monotonic() - started_at) * 1000)
         record_tool_failed(
@@ -103,6 +117,7 @@ class ObservedToolNode(ToolNode):
         tools: Sequence[BaseTool | Callable],
         *,
         event_source: str = "agent_tool_node",
+        risk_by_name: dict[str, ToolRisk] | None = None,
         **kwargs,
     ) -> None:
         existing_wrapper = kwargs.pop("wrap_tool_call", None)
@@ -110,12 +125,12 @@ class ObservedToolNode(ToolNode):
         def observed_wrapper(request, execute):
             """Compose centralized observation with an optional existing wrapper."""
             if existing_wrapper is None:
-                return _observe_tool_call(event_source, request, execute)
+                return _observe_tool_call(event_source, request, execute, risk_by_name)
 
             def wrapped_execute(observed_request):
                 """Preserve a caller-provided wrapper inside observation hooks."""
                 return existing_wrapper(observed_request, execute)
 
-            return _observe_tool_call(event_source, request, wrapped_execute)
+            return _observe_tool_call(event_source, request, wrapped_execute, risk_by_name)
 
         super().__init__(tools, wrap_tool_call=observed_wrapper, **kwargs)

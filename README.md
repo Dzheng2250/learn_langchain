@@ -1,19 +1,32 @@
 # Learn LangChain Agent
 
-这是一个基于 LangChain、LangGraph 和 PostgreSQL 的本地 coding agent。
+架构与运行机制：
+
+- [文档导航与版本状态](docs/README.md)
+- [本地优先 Session 状态](docs/local-first-session-state.md)
+- [本地数据库设计与一致性机制](docs/database-state-and-consistency.md)
+- [可恢复执行与预算控制](docs/resumable-execution.md)
+- [PostgreSQL 到本地状态迁移](docs/local-state-migration.md)
+- [本地优先优化的原因、风险与设计审查](docs/local-first-rationale-and-review.md)
+- [最终响应、后台维护与 Checkpoint 一致性](docs/response-finalization-and-checkpoint-consistency.md)
+- [配置参数参考](docs/configuration-reference.md)
+- [配置、领域常量与 Prompt 管理边界](docs/configuration-and-domain-constants.md)
+
+这是一个基于 LangChain、LangGraph 和本地 SQLite 状态库的 coding agent。
 
 项目采用双进程结构：
 
 - `learn-agent`：前台 CLI，负责用户交互和流式展示。
 - `learn-agent-core`：后台 Core daemon，负责 Agent、工具、上下文和记忆。
-- PostgreSQL：保存 Workspace、Session、完整消息、长期记忆和观测事件。
+- SQLite：保存 Workspace、Session、完整消息、长期记忆和可恢复执行状态，是本地业务状态的权威来源。
+- PostgreSQL：作为可选的迁移来源、Telemetry Sink 和未来查询投影，不参与普通对话的必要提交。
 
 ## 快速开始
 
 前置条件：
 
 - Python 3.11 或更高版本。
-- Docker 与 Docker Compose。
+- Docker 与 Docker Compose。仅使用容器命令沙箱、PostgreSQL 可选功能或数据库迁移时需要。
 - OpenAI 兼容模型 API。仅验证基础设施时可以暂不配置。
 
 ### 1. 安装项目
@@ -41,9 +54,7 @@ LEARN_AGENT_LLM_BASE_URL=https://your-openai-compatible-endpoint/v1
 Session 和数据库创建/读取链路，随后返回统一诊断提示，但不会调用 LLM 或工具，也不会写入
 对话历史或消耗业务轮次。
 
-开发环境默认数据库账号和密码均为 `postgres`。非本地环境必须修改密码。
-
-### 3. 启动 PostgreSQL
+### 3. 可选：启动 PostgreSQL
 
 ```shell
 docker compose up -d postgres
@@ -53,6 +64,10 @@ docker compose ps
 Compose 使用 `pgvector/pgvector:pg17`，数据保存在 Docker named volume
 `learn_agent_postgres_data` 中，并且只将数据库端口绑定到 `127.0.0.1`。该名称是 Compose
 文件中的逻辑名，实际 Docker 卷名通常带有 Compose 项目前缀。
+
+普通对话的权威状态保存在本地 `state.db`，不要求 PostgreSQL 运行。只有启用 PostgreSQL
+Telemetry、执行旧数据迁移或运行相关数据库集成测试时才需要启动它。开发环境默认数据库账号和
+密码均为 `postgres`，非本地环境必须修改密码。
 
 ### 4. 初始化用户级配置
 
@@ -80,11 +95,10 @@ learn-agent chat --session default "查看当前项目结构"
 
 ```shell
 learn-agent stop
-docker compose stop postgres
 ```
 
-Core 首次启动时会自动创建数据库 Schema。数据库未启动、凭据错误或检测到需要显式迁移的旧
-Schema 时，Core 会拒绝启动。
+Core 首次启动时会自动创建本地 SQLite Schema。若启用了 PostgreSQL 可选能力，数据库未启动、
+凭据错误或检测到需要显式迁移的旧 PostgreSQL Schema 时，对应能力会失败。
 
 ## 配置方式
 
@@ -105,10 +119,12 @@ Schema 时，Core 会拒绝启动。
 | `LEARN_AGENT_DATABASE_URL` | 空 | 可替代全部分项数据库配置 |
 | `LEARN_AGENT_ENV_FILE` | 用户配置目录下 `.env` | 显式指定 Core 配置文件 |
 | `LEARN_AGENT_RUNTIME_DIR` | 用户状态目录 | 显式指定 daemon 运行目录 |
+| `LEARN_AGENT_STATE_DIR` | 用户数据目录下 `state/` | 显式指定 SQLite、Artifact 和 Telemetry 的父目录 |
+| `LEARN_AGENT_CORE_HOST` | `127.0.0.1` | Core 本地监听地址；仅允许 loopback |
 | `LEARN_AGENT_CORE_PORT` | `18765` | CLI 与 Core 使用的本地 TCP 端口 |
 
-完整部署方式、已有 Docker 数据目录复用、故障排查和安全边界见
-[部署指南](docs/deployment.md)。
+全部参数的默认值、单位、调整影响和风险见[配置参数参考](docs/configuration-reference.md)。
+完整部署方式、已有 Docker 数据目录复用、故障排查和安全边界见[部署指南](docs/deployment.md)。
 
 旧变量 `ALIYUN_API_KEY` 和 `ALIYUN_BASE_URL` 暂时保留兼容，但已弃用；通用变量优先。
 
@@ -135,11 +151,13 @@ src/
     transport/       TCP 与 NDJSON 传输
     agent/           LangGraph 和 AgentTurnService
     workspace/       Workspace 身份与 Runtime
-    database/        Schema、SQL、连接和迁移
+    state/           本地 SQLite 权威状态、迁移与 Repository
+    database/        可选 PostgreSQL 连接、旧 Schema 和迁移支持
     context/         短期上下文管理
     memory/          消息归档和长期记忆
     tools/           Workspace 工具
-    hooks/           结构化观测事件
+    telemetry/       结构化观测事件、广播与持久化
+    hooks/           旧事件导入路径兼容层
 ```
 
 架构文档：
@@ -147,8 +165,14 @@ src/
 - [CLI 架构](docs/cli-architecture.md)
 - [Core 架构](docs/core-architecture.md)
 - [Agent 执行架构](docs/agent-execution-architecture.md)
+- [本地数据库设计与一致性机制](docs/database-state-and-consistency.md)
 - [记忆管理与加载机制](docs/memory-management.md)
+- [Event 系统设计与维护指南](docs/event-system.md)
+- [非功能性需求](docs/non-functional-requirements.md)
+- [非功能性测试与验收方案](docs/non-functional-testing.md)
 - [Workspace 隔离与数据库迁移](docs/workspace-isolation-and-migration.md)
+- [配置参数参考](docs/configuration-reference.md)
+- [配置、领域常量与 Prompt 管理边界](docs/configuration-and-domain-constants.md)
 
 ## 测试
 

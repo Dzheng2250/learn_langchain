@@ -8,15 +8,16 @@ from langchain_core.tools import tool
 
 from src.core.agent.models import AgentRunContext, RunLimits, StopReason
 from src.core.context.manager import AgentContextManager
-from src.core.hooks.events import (
+from src.core.telemetry import (
+    BaseEventSink,
+    EventBus,
+    bind_context,
+    bind_run_context,
+    current_context,
     emit_event,
-    get_event_context,
-    reset_event_context,
-    set_event_context,
-    set_event_publisher,
-    set_run_event_context,
+    install_event_bus,
+    reset_context,
 )
-from src.core.hooks.publisher import SinkEventPublisher
 from src.core.llm.provider import LlmPurpose, OpenAICompatibleProvider
 from src.core.memory.extractor import MemoryCandidateExtractor
 from src.core.streaming.events import stream_graph_events
@@ -41,7 +42,7 @@ class RecordingProvider:
         return FakeModel()
 
 
-class MemorySink:
+class MemorySink(BaseEventSink):
     def __init__(self):
         self.events = []
 
@@ -49,7 +50,7 @@ class MemorySink:
         self.events.append(event)
 
 
-class FailingSink:
+class FailingSink(BaseEventSink):
     def emit(self, _event):
         raise RuntimeError("sink failed")
 
@@ -64,8 +65,8 @@ class FakeGraph:
 
 class AgentExecutionArchitectureTest(unittest.TestCase):
     def tearDown(self):
-        set_event_publisher(None)
-        set_event_context()
+        install_event_bus(None)
+        bind_context()
 
     def test_model_provider_is_shared_by_non_agent_llm_workloads(self):
         provider = RecordingProvider()
@@ -148,12 +149,12 @@ class AgentExecutionArchitectureTest(unittest.TestCase):
 
     def test_run_context_sets_complete_event_identity(self):
         sink = MemorySink()
-        set_event_publisher(SinkEventPublisher([sink]))
+        install_event_bus(EventBus([sink]))
         workspace = WorkspaceContext(uuid4(), ROOT)
         session = SessionContext(uuid4(), "default", workspace)
         run_context = AgentRunContext("run-1", session, 3, RunLimits())
 
-        set_run_event_context(run_context)
+        bind_run_context(run_context)
         emit_event("turn_started", "test")
 
         event = sink.events[0]
@@ -163,19 +164,19 @@ class AgentExecutionArchitectureTest(unittest.TestCase):
         self.assertEqual("run-1", event.run_id)
 
     def test_event_context_can_be_restored_after_scoped_work(self):
-        set_event_context(run_id="outer")
-        token = set_event_context(run_id="inner")
-        self.assertEqual("inner", get_event_context().run_id)
+        bind_context(run_id="outer")
+        token = bind_context(run_id="inner")
+        self.assertEqual("inner", current_context().run_id)
 
-        reset_event_context(token)
+        reset_context(token)
 
-        self.assertEqual("outer", get_event_context().run_id)
+        self.assertEqual("outer", current_context().run_id)
 
     def test_event_publisher_isolates_failing_subscribers(self):
         sink = MemorySink()
-        publisher = SinkEventPublisher([FailingSink(), sink])
+        publisher = EventBus([FailingSink(), sink])
 
-        set_event_publisher(publisher)
+        install_event_bus(publisher)
         event = emit_event("demo", "test")
 
         self.assertEqual([event], sink.events)

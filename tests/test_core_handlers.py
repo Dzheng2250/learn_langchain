@@ -21,7 +21,16 @@ class FakeRequestContext:
 
 
 class FakeAgentService:
-    async def run_turn(self, workspace_root, session_name, message, on_event, *, run_id=None):
+    async def run_turn(
+        self,
+        workspace_root,
+        session_name,
+        message,
+        on_event,
+        *,
+        run_id=None,
+        control=None,
+    ):
         await asyncio.to_thread(on_event, {"event": "token", "data": {"content": "hello"}})
         return {
             "status": "ok",
@@ -77,16 +86,27 @@ class AgentHandlersTest(unittest.IsolatedAsyncioTestCase):
                 raise ConnectionError("client disconnected")
 
         class MultiEventService:
-            async def run_turn(self, _workspace, _session, _message, on_event, *, run_id=None):
+            async def run_turn(
+                self,
+                _workspace,
+                _session,
+                _message,
+                on_event,
+                *,
+                run_id=None,
+                control=None,
+            ):
                 nonlocal completed
                 await asyncio.to_thread(on_event, {"event": "token", "data": {}})
                 await asyncio.to_thread(on_event, {"event": "done", "data": {}})
+                self.control = control
                 completed = True
                 return {"status": "ok", "run_id": run_id}
 
         context = FailingContext()
+        service = MultiEventService()
         with patch("src.core.handlers.agent.record_error") as record_error:
-            result = await AgentHandlers(MultiEventService()).chat(
+            result = await AgentHandlers(service).chat(
                 ChatParams(auth_token="token", workspace_root=".", session_name="session", message="hello"),
                 context,
             )
@@ -94,6 +114,7 @@ class AgentHandlersTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual("ok", result["status"])
         self.assertTrue(completed)
         self.assertEqual(1, context.attempts)
+        self.assertTrue(service.control.pause_after_slice.is_set())
         record_error.assert_called_once()
 
 

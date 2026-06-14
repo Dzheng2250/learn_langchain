@@ -1,5 +1,8 @@
 # PR #3 Review 回复
 
+> 文档状态：Historical Review Response
+> 本文是对特定历史 Review 的回复，不作为当前功能或配置规范。
+
 感谢对 PR #3 的详细审查。我们逐项复核了建议，并完成了一轮增量可靠性加固。
 
 本轮没有全面异步化 LangGraph、工具和 psycopg Repository，而是在现有同步业务链路外建立了

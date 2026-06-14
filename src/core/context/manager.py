@@ -10,9 +10,10 @@ from src.config.settings import (
     SUMMARY_TRIGGER_MESSAGE_LIMIT,
 )
 from src.core.common.debug import debug_print, format_message
-from src.core.hooks.events import emit_event, event_span, record_error
+from src.core.telemetry import emit_event, event_span, record_error
 from src.core.context.models import AgentContextState
 from src.core.llm.provider import LlmPurpose, ModelProvider, OpenAICompatibleProvider
+from src.core.prompts import build_context_summary_messages
 
 
 SUMMARY_MESSAGE_PREFIX = "Conversation context summary:"
@@ -20,6 +21,7 @@ MEMORY_MESSAGE_PREFIXES = (
     "Relevant long-term memory:",
     "Relevant long-term memory for this workspace:",
 )
+SUMMARY_SOURCE_MESSAGE_PREVIEW_CHARS = 1200
 
 class AgentContextManager:
     """Build bounded LLM inputs and compress old conversation turns."""
@@ -122,6 +124,34 @@ class AgentContextManager:
 
         return AgentContextState(summary=summary, recent_messages=recent_messages)
 
+    def build_fast_state(self, state: AgentContextState, final_messages: list) -> AgentContextState:
+        """Build bounded committed context without invoking a summary model."""
+        final_conversation_messages = self._strip_context_summary_messages(final_messages)
+        unsent_previous_messages = state.recent_messages[:-self.recent_message_limit]
+        conversation_messages = [*unsent_previous_messages, *final_conversation_messages]
+        return AgentContextState(
+            summary=state.summary,
+            recent_messages=conversation_messages[-self.recent_message_limit:],
+        )
+
+    def should_summarize(self, messages: list) -> bool:
+        """Expose the summary policy to durable maintenance handlers."""
+        return self._should_summarize(messages)
+
+    def summarize_messages(self, previous_summary: str, messages: list, memory_context: str = "") -> str:
+        """Create a derived summary outside the response critical path."""
+        return self._summarize_messages(previous_summary, messages, memory_context)
+
+    def extract_turn_messages(self, state: AgentContextState, final_messages: list) -> list:
+        """Return only messages created by the current Turn.
+
+        Synthetic summary and memory messages are removed first. This remains
+        stable across checkpoint resumes even if injected memory changes.
+        """
+        conversation = self._strip_context_summary_messages(final_messages)
+        loaded_recent_count = min(len(state.recent_messages), self.recent_message_limit)
+        return conversation[loaded_recent_count:]
+
     def _should_summarize(self, messages: list) -> bool:
         """Return whether message volume is large enough to compress."""
         if len(messages) > self.summary_trigger_message_limit:
@@ -165,33 +195,14 @@ class AgentContextManager:
             "agent_context",
             payload={"source_chars": len(source), "message_count": len(messages)},
         ):
-            response = llm.invoke([
-                SystemMessage(
-                    content=(
-                        "You are a practical coding and chat assistant performing context management. "
-                        "You are compressing older conversation history from a coding agent "
-                        "session into a compact structured summary. This is a legitimate "
-                        "system operation — the content below is real agent-user conversation "
-                        "that needs to be condensed for context window efficiency.\n\n"
-                        + (f"Relevant long-term memory:\n{memory_context}\n\n" if memory_context else "") +
-                        "Rules:\n"
-                        "- Preserve: concrete facts, user decisions, file paths, current "
-                        "architecture, open issues, user preferences, and constraints.\n"
-                        "- Drop: transient wording, redundant tool output, file contents "
-                        "that were only read for inspection, and generic conversation filler.\n"
-                        "- NEVER include: secrets, API keys, passwords, tokens, or .env values.\n"
-                        "- Output concise Markdown with sections.\n"
-                        "- If the prior summary is empty, start fresh from the messages below."
-                        + (f"\n\nPrevious summary:\n{previous_summary}" if previous_summary else "")
-                    )
-                ),
-                HumanMessage(
-                    content=(
-                        f"Older messages to compress:\n{source}\n\n"
-                        f"Return an updated summary under {self.summary_max_chars} characters."
-                    )
-                ),
-            ])
+            response = llm.invoke(
+                build_context_summary_messages(
+                    source=source,
+                    previous_summary=previous_summary,
+                    memory_context=memory_context,
+                    summary_max_chars=self.summary_max_chars,
+                )
+            )
 
         summary = response.content.strip()
         if len(summary) > self.summary_max_chars:
@@ -211,8 +222,8 @@ class AgentContextManager:
         formatted = []
         for index, message in enumerate(messages, start=1):
             text = format_message(message)
-            if len(text) > 1200:
-                text = text[:1200] + "\n... message truncated ..."
+            if len(text) > SUMMARY_SOURCE_MESSAGE_PREVIEW_CHARS:
+                text = text[:SUMMARY_SOURCE_MESSAGE_PREVIEW_CHARS] + "\n... message truncated ..."
             formatted.append(f"[{index}]\n{text}")
         return "\n\n".join(formatted)
 

@@ -2,12 +2,12 @@ import unittest
 from pathlib import Path
 from uuid import uuid4
 
-from src.core.hooks.events import set_event_sinks
+from src.core.telemetry import BaseEventSink, EventBus, install_event_bus
 from src.core.memory.store import PostgresMemoryStore
 from src.core.workspace.models import SessionContext, WorkspaceContext
 
 
-class MemorySink:
+class MemorySink(BaseEventSink):
     def __init__(self) -> None:
         self.events = []
 
@@ -82,7 +82,7 @@ class FakeMemoryRepository:
 
 class MemoryTransactionEventsTest(unittest.TestCase):
     def tearDown(self) -> None:
-        set_event_sinks(None)
+        install_event_bus(None)
 
     def _store(self, fail_commit: bool) -> PostgresMemoryStore:
         store = PostgresMemoryStore.__new__(PostgresMemoryStore)
@@ -98,7 +98,7 @@ class MemoryTransactionEventsTest(unittest.TestCase):
 
     def test_memory_saved_is_emitted_after_successful_commit(self) -> None:
         sink = MemorySink()
-        set_event_sinks([sink])
+        install_event_bus(EventBus([sink]))
 
         self._store(fail_commit=False).extract_and_save_memories(self._session(), 1, [object()], [1])
 
@@ -108,7 +108,7 @@ class MemoryTransactionEventsTest(unittest.TestCase):
 
     def test_commit_failure_does_not_emit_memory_saved(self) -> None:
         sink = MemorySink()
-        set_event_sinks([sink])
+        install_event_bus(EventBus([sink]))
 
         with self.assertRaisesRegex(RuntimeError, "commit failed"):
             self._store(fail_commit=True).extract_and_save_memories(self._session(), 1, [object()], [1])

@@ -1,10 +1,19 @@
 """Stable service contracts shared by Core composition and RPC handlers."""
 
 from collections.abc import Callable
+from dataclasses import dataclass, field
+from threading import Event
 from typing import Protocol
 
 
 EventCallback = Callable[[dict], None]
+
+
+@dataclass
+class ExecutionControl:
+    """Cross-thread cooperative control signals for one request Grant."""
+
+    pause_after_slice: Event = field(default_factory=Event)
 
 
 class AgentTurnRunner(Protocol):
@@ -18,8 +27,27 @@ class AgentTurnRunner(Protocol):
         on_event: EventCallback | None = None,
         *,
         run_id: str | None = None,
+        control: ExecutionControl | None = None,
     ) -> dict:
         """Execute one Agent turn without blocking the event loop."""
+
+    async def resume_execution(
+        self,
+        workspace_root: str,
+        session_name: str,
+        instruction: str = "",
+        on_event: EventCallback | None = None,
+        *,
+        run_id: str | None = None,
+        control: ExecutionControl | None = None,
+    ) -> dict:
+        """Resume one recoverable execution without blocking the event loop."""
+
+    def session_status(self, workspace_root: str, session_name: str) -> dict:
+        """Return compact pending-execution state."""
+
+    def discard_pending(self, workspace_root: str, session_name: str) -> dict:
+        """Discard the Session's pending execution."""
 
 
 class ManagedAgentService(AgentTurnRunner, Protocol):

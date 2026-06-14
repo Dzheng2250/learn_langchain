@@ -3,12 +3,14 @@
 import json
 import re
 
-from langchain_core.messages import HumanMessage, SystemMessage
-
 from src.core.common.debug import debug_print, format_message
 from src.config.settings import MEMORY_EXTRACT_SOURCE_CHAR_LIMIT
-from src.core.hooks.events import event_span
+from src.core.telemetry import event_span
 from src.core.llm.provider import LlmPurpose, ModelProvider, OpenAICompatibleProvider
+from src.core.prompts import build_memory_extraction_messages
+
+
+MEMORY_SOURCE_MESSAGE_PREVIEW_CHARS = 1200
 
 
 class MemoryCandidateExtractor:
@@ -22,8 +24,8 @@ class MemoryCandidateExtractor:
         formatted = []
         for index, message in enumerate(messages, start=1):
             text = format_message(message)
-            if len(text) > 1200:
-                text = text[:1200] + "\n... message truncated ..."
+            if len(text) > MEMORY_SOURCE_MESSAGE_PREVIEW_CHARS:
+                text = text[:MEMORY_SOURCE_MESSAGE_PREVIEW_CHARS] + "\n... message truncated ..."
             formatted.append(f"[{index}]\n{text}")
 
         source = "\n\n".join(formatted)
@@ -39,26 +41,7 @@ class MemoryCandidateExtractor:
             "agent_memory",
             payload={"source_chars": len(source)},
         ):
-            response = llm.invoke(
-                [
-                    SystemMessage(
-                        content=(
-                            "Extract durable long-term memories for a local coding agent. "
-                            "Return strict JSON only: an array of objects with keys "
-                            "kind, content, tags, importance, confidence. "
-                            "Only include stable user preferences, project facts, architecture "
-                            "decisions, task state, or reusable troubleshooting notes. "
-                            "If the user explicitly asks to remember something, extract the "
-                            "thing they asked to remember as a durable memory unless it is "
-                            "sensitive or unsafe. "
-                            "Do not include secrets, API keys, passwords, .env values, transient "
-                            "tool output, or generic conversation filler. "
-                            "If nothing should be remembered, return []."
-                        )
-                    ),
-                    HumanMessage(content=f"Conversation turn:\n{source}"),
-                ]
-            )
+            response = llm.invoke(build_memory_extraction_messages(source))
 
         content = str(response.content).strip()
         try:

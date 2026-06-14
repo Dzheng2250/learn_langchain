@@ -3,33 +3,81 @@
 import asyncio
 from uuid import uuid4
 
-from src.core.agent.contracts import AgentTurnRunner
+from src.core.agent.contracts import AgentTurnRunner, ExecutionControl
 from src.core.bus.context import RequestContext
 from src.core.bus.router import RpcRouter
-from src.core.hooks.events import record_error
-from src.ipc.models import AgentEventNotification, ChatParams
+from src.core.telemetry import record_error
+from src.ipc.models import AgentEventNotification, ChatParams, SessionParams, SessionResumeParams
 
 
 class AgentHandlers:
-    """Adapt agent application services to RPC methods."""
+    """Adapt Agent application services to validated RPC methods."""
 
     def __init__(self, agent_service: AgentTurnRunner) -> None:
         self.agent_service = agent_service
 
     def register(self, router: RpcRouter) -> None:
-        """Expose the validated ``agent.chat`` RPC method."""
+        """Expose chat and explicit Session recovery methods."""
         router.register("agent.chat", ChatParams, self.chat)
+        router.register("session.status", SessionParams, self.session_status)
+        router.register("session.resume", SessionResumeParams, self.session_resume)
+        router.register("session.discard", SessionParams, self.session_discard)
 
     async def chat(self, params: ChatParams, context: RequestContext) -> dict:
         """Execute one Turn and bridge worker events to RPC notifications."""
-        loop = asyncio.get_running_loop()
         run_id = uuid4().hex
+        control = ExecutionControl()
+        on_event = self._notification_callback(context, run_id, control)
+        return await self.agent_service.run_turn(
+            params.workspace_root,
+            params.session_name,
+            params.message,
+            on_event,
+            run_id=run_id,
+            control=control,
+        )
+
+    async def session_status(self, params: SessionParams, _context: RequestContext) -> dict:
+        """Return the recoverable execution state for one Session."""
+        return await asyncio.to_thread(
+            self.agent_service.session_status,
+            params.workspace_root,
+            params.session_name,
+        )
+
+    async def session_discard(self, params: SessionParams, _context: RequestContext) -> dict:
+        """Discard one pending execution without deleting its audit history."""
+        return await asyncio.to_thread(
+            self.agent_service.discard_pending,
+            params.workspace_root,
+            params.session_name,
+        )
+
+    async def session_resume(self, params: SessionResumeParams, context: RequestContext) -> dict:
+        """Resume one pending execution and stream its new Slice events."""
+        run_id = uuid4().hex
+        control = ExecutionControl()
+        on_event = self._notification_callback(context, run_id, control)
+        return await self.agent_service.resume_execution(
+            params.workspace_root,
+            params.session_name,
+            params.instruction,
+            on_event,
+            run_id=run_id,
+            control=control,
+        )
+
+    def _notification_callback(
+        self,
+        context: RequestContext,
+        run_id: str,
+        control: ExecutionControl,
+    ):
+        """Create a worker-safe callback that pauses after a disconnected Slice."""
+        loop = asyncio.get_running_loop()
         notification_failed = False
 
         def on_event(item: dict) -> None:
-            """Forward one worker-thread stream item to the request connection."""
-            # AgentTurnService executes in a worker thread. Marshal each stream
-            # event back onto the Core asyncio loop before touching the socket.
             nonlocal notification_failed
             if notification_failed:
                 return
@@ -41,32 +89,21 @@ class AgentHandlers:
                     "data": item["data"],
                 }
             )
-            future = asyncio.run_coroutine_threadsafe(
-                context.send_notification(notification),
-                loop,
-            )
+            future = asyncio.run_coroutine_threadsafe(context.send_notification(notification), loop)
             try:
                 future.result()
             except Exception as exc:
-                # A broken client stream must not cancel a turn that may still
-                # need to persist messages, context, and long-term memory.
+                # The current bounded Slice may finish, but Core must not start
+                # another Slice after its client can no longer observe output.
                 notification_failed = True
+                control.pause_after_slice.set()
                 record_error(
                     "agent_handler",
                     "stream_notification",
                     exc,
                     "Stopped streaming notifications after client delivery failed.",
-                    {
-                        "request_id": context.request_id,
-                        "run_id": run_id,
-                    },
+                    {"request_id": context.request_id, "run_id": run_id},
                     event_type="stream_notification_failed",
                 )
 
-        return await self.agent_service.run_turn(
-            params.workspace_root,
-            params.session_name,
-            params.message,
-            on_event,
-            run_id=run_id,
-        )
+        return on_event

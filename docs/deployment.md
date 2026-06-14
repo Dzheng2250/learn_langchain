@@ -1,5 +1,8 @@
 # 部署指南
 
+> 文档状态：Current
+> 配置参数默认值、单位和调整风险见 [`configuration-reference.md`](configuration-reference.md)。
+
 ## 推荐部署模型
 
 推荐使用以下组合：
@@ -8,9 +11,9 @@
 宿主机
   ├── learn-agent CLI
   ├── learn-agent-core daemon
-  └── Docker
-       ├── PostgreSQL + pgvector
-       └── Agent 命令执行沙箱
+  └── Docker（按需）
+       ├── PostgreSQL + pgvector（可选）
+       └── Agent 命令执行沙箱（使用容器命令工具时需要）
 ```
 
 项目没有默认将整个 Agent 放入容器，原因是 coding agent 需要访问当前宿主机 Workspace，并且
@@ -21,16 +24,16 @@
 - 用户级 daemon 的端口、token 和运行目录映射。
 - Windows、Linux 和 macOS 不一致的宿主路径语义。
 
-因此，当前 `compose.yaml` 只负责稳定部署数据库基础设施。这是本地 coding agent 最简单且
-跨平台的部署方式。
+因此，当前 `compose.yaml` 只负责可选 PostgreSQL 基础设施。普通对话状态保存在本地 SQLite，
+不需要先启动 PostgreSQL。
 
 ## 从零部署
 
 ### 前置条件
 
 - Python 3.11 或更高版本。
-- Docker Engine 或 Docker Desktop。
-- Docker Compose v2，即 `docker compose` 命令。
+- Docker Engine 或 Docker Desktop。使用容器命令工具、PostgreSQL 可选能力或迁移时需要。
+- Docker Compose v2，即 `docker compose` 命令。启动项目提供的 PostgreSQL 时需要。
 - OpenAI 兼容模型 API。仅验证基础设施时可以暂不配置。
 
 ### 创建配置
@@ -49,7 +52,7 @@ python -c "from shutil import copyfile; copyfile('.env.example', '.env')"
 `init-user-config` 后，同一份配置会被复制到用户级目录，供任意工作目录启动的 CLI 与 Core
 读取。
 
-### 启动数据库
+### 可选：启动 PostgreSQL
 
 ```shell
 docker compose up -d postgres
@@ -65,8 +68,12 @@ Compose 提供：
 - Compose 逻辑名为 `learn_agent_postgres_data` 的 Docker named volume。
 - 仅绑定到 `127.0.0.1` 的数据库端口。
 
-Core 首次成功连接数据库时会自动创建项目 Schema。当前业务尚未使用向量字段，因此无需手动
-执行 `CREATE EXTENSION vector`。
+PostgreSQL 当前用于旧数据迁移、可选事件 Sink 和未来查询投影。普通 Session、消息、长期记忆、
+Execution 与维护任务以本地 `state.db` 为准，因此未启用 PostgreSQL 能力时可以跳过本节。
+
+普通 Core 启动不会初始化 PostgreSQL 业务 Schema。PostgreSQL 当前主要用于保留旧数据、执行
+显式迁移，以及在已有 `agent_events` 表时作为可选 Event Sink。当前业务尚未使用向量字段，
+因此无需手动执行 `CREATE EXTENSION vector`。
 
 Compose 默认会为卷名增加项目名前缀。可通过 `docker volume ls` 查看实际名称，不应根据逻辑名
 直接删除或搬运卷。
@@ -88,11 +95,11 @@ learn-agent status
 
 1. 接收并验证 JSON-RPC 请求。
 2. 解析或创建当前 Workspace 与 Session。
-3. 读取 Session，验证数据库创建与读取链路。
+3. 读取 Session，验证本地 SQLite Schema 与读写链路。
 4. 发送流式 token 与完成事件。
 5. 返回 `stop_reason=llm_not_configured`。
 
-这条路径用于确认 CLI/Core 通信、daemon、数据库 Schema、Workspace 隔离、Session 和事件链路
+这条路径用于确认 CLI/Core 通信、daemon、本地 SQLite Schema、Workspace 隔离、Session 和事件链路
 正常工作。它不会写入对话历史或递增 `turn_index`，因此重复诊断不会影响首次真实 LLM Turn 的
 bootstrap memory。它不验证模型网络连接、工具调用、长期记忆提取或上下文总结。
 
@@ -115,7 +122,7 @@ LEARN_AGENT_MODEL=your-model
 旧 `ALIYUN_API_KEY` 与 `ALIYUN_BASE_URL` 仅作为兼容回退，已弃用。若新旧变量同时存在，通用变量
 优先。
 
-## 数据库配置
+## 可选 PostgreSQL 配置
 
 支持两种配置方式。
 
@@ -135,8 +142,8 @@ LEARN_AGENT_DB_PASSWORD=replace-with-a-strong-password
 LEARN_AGENT_DATABASE_URL=postgresql://postgres:password@127.0.0.1:5432/learn_agent
 ```
 
-设置 `LEARN_AGENT_DATABASE_URL` 后，它优先于分项变量。Agent 主连接池、事件 sink、迁移和备份
-均使用同一数据库配置来源。
+设置 `LEARN_AGENT_DATABASE_URL` 后，它优先于分项变量。PostgreSQL Event Sink、旧数据迁移和
+备份使用同一数据库配置来源；普通对话的本地 SQLite 提交不使用该连接。
 
 连接 URL 中的用户名和密码若包含 `@`、`:`、`/` 等保留字符，必须先进行 URL 编码；不确定时
 优先使用分项变量。

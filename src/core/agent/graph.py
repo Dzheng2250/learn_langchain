@@ -6,8 +6,9 @@ from langgraph.prebuilt import tools_condition
 
 from src.config.settings import FILE_READ_CHUNK_LINES
 from src.core.common.debug import debug_print, format_message, format_messages
-from src.core.hooks.events import emit_event, record_error
+from src.core.telemetry import emit_event, record_error
 from src.core.llm.provider import LlmPurpose, ModelProvider, OpenAICompatibleProvider
+from src.core.prompts import build_parent_system_prompt
 from src.core.tools.observed import ObservedToolNode
 
 
@@ -15,6 +16,9 @@ def create_parent_graph(
     parent_tools: list,
     skill_manifest: str,
     model_provider: ModelProvider | None = None,
+    *,
+    checkpointer=None,
+    risk_by_name=None,
 ):
     """Create one compiled graph permanently bound to a WorkspaceRuntime."""
     provider = model_provider or OpenAICompatibleProvider()
@@ -29,15 +33,7 @@ def create_parent_graph(
         """Call the parent LLM with system policy and current graph messages."""
         llm_messages = [
             SystemMessage(
-                content=(
-                    "You are a practical coding assistant working inside one strictly isolated "
-                    "local workspace. Never claim access outside that workspace.\n\n"
-                    "Use relevant long-term memory as background, but prefer the current request. "
-                    "Use read_workspace_file_lite only for targeted snippets and delegate broad "
-                    "inspection to delegate_to_subagent. Use run_command_in_container for commands. "
-                    f"The sub-agent reads chunks of at most {FILE_READ_CHUNK_LINES} lines.\n\n"
-                    f"Local skill manifest:\n{skill_manifest}"
-                )
+                content=build_parent_system_prompt(skill_manifest, FILE_READ_CHUNK_LINES)
             ),
             *state["messages"],
         ]
@@ -64,10 +60,10 @@ def create_parent_graph(
 
     builder = StateGraph(MessagesState)
     builder.add_node("agent", agent_node)
-    builder.add_node("tools", ObservedToolNode(parent_tools))
+    builder.add_node("tools", ObservedToolNode(parent_tools, risk_by_name=risk_by_name))
     # The graph is the AgentLoop: LLM output without tool calls terminates;
     # tool calls execute centrally, append ToolMessages, then return to LLM.
     builder.add_edge(START, "agent")
     builder.add_conditional_edges("agent", tools_condition, {"tools": "tools", "__end__": END})
     builder.add_edge("tools", "agent")
-    return builder.compile()
+    return builder.compile(checkpointer=checkpointer)

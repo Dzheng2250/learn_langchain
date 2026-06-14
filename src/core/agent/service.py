@@ -7,23 +7,30 @@ from functools import partial
 from threading import Lock, RLock
 from uuid import UUID, uuid4
 
-from src.config.settings import CORE_AGENT_WORKERS, MEMORY_ENABLED, MEMORY_EXTRACTION_ASYNC
-from src.core.agent.contracts import EventCallback
+from src.config.settings import (
+    CORE_AGENT_WORKERS,
+    MAX_AUTO_SLICES_PER_GRANT,
+    MEMORY_ENABLED,
+)
+from src.core.agent.contracts import EventCallback, ExecutionControl
+from src.core.agent.coordinator import TurnCoordinator
+from src.core.agent.budget import ExecutionBudget, bind_execution_budget, reset_execution_budget
 from src.core.agent.models import AgentRunContext, RunLimits, StopReason
+from src.core.state.contracts import StateStore
+from src.core.state.types import ExecutionStatus
 from src.core.context.manager import AgentContextManager
-from src.core.hooks.events import (
+from src.core.errors import ErrorAction, ProviderErrorHandler
+from src.core.telemetry import (
+    bind_context,
+    bind_run_context,
     emit_event,
     record_error,
-    reset_event_context,
-    set_event_context,
-    set_run_event_context,
+    reset_context,
 )
-from src.core.memory.policy import has_explicit_memory_request, memory_extraction_reason, turn_message_chars
-from src.core.memory.store import PostgresMemoryStore
 from src.core.llm.provider import ModelConfiguration, OpenAICompatibleProvider
 from src.core.streaming.events import stream_graph_events
 from src.core.workspace.models import SessionContext
-from src.core.workspace.repository import WorkspaceRepository
+from src.core.workspace.contracts import WorkspaceIdentityRepository
 from src.core.workspace.runtime import WorkspaceRuntimeRegistry
 
 
@@ -51,9 +58,9 @@ class AgentTurnService:
     def __init__(
         self,
         *,
-        workspace_repository: WorkspaceRepository,
+        workspace_repository: WorkspaceIdentityRepository,
         runtime_registry: WorkspaceRuntimeRegistry,
-        memory_store_factory: Callable[[], PostgresMemoryStore],
+        state_store_factory: Callable[[], StateStore],
         context_manager: AgentContextManager | None = None,
         model_configuration: ModelConfiguration | None = None,
         memory_enabled: bool = MEMORY_ENABLED,
@@ -61,12 +68,21 @@ class AgentTurnService:
         run_limits: RunLimits | None = None,
         turn_executor: Executor | None = None,
         max_concurrent_turns: int = CORE_AGENT_WORKERS,
+        execution_repository=None,
+        checkpoint_manager=None,
+        turn_finalizer=None,
+        maintenance_repository=None,
+        maintenance_scheduler=None,
+        recovery_coordinator=None,
+        turn_coordinator=None,
+        max_auto_slices: int = MAX_AUTO_SLICES_PER_GRANT,
+        provider_error_handler: ProviderErrorHandler | None = None,
     ) -> None:
         if max_concurrent_turns <= 0:
             raise ValueError("max_concurrent_turns must be greater than zero")
         self.workspace_repository = workspace_repository
         self.runtime_registry = runtime_registry
-        self.memory_store_factory = memory_store_factory
+        self.state_store_factory = state_store_factory
         self.context_manager = context_manager or AgentContextManager()
         self.model_configuration = model_configuration or OpenAICompatibleProvider()
         self.memory_enabled = memory_enabled
@@ -78,13 +94,31 @@ class AgentTurnService:
             thread_name_prefix="agent-turn",
         )
         self._owns_turn_executor = turn_executor is None
-        self._memory_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="agent-memory")
+        self.execution_repository = execution_repository
+        self.checkpoint_manager = checkpoint_manager
+        self.turn_finalizer = turn_finalizer
+        self.maintenance_repository = maintenance_repository
+        self.maintenance_scheduler = maintenance_scheduler
+        self.recovery_coordinator = recovery_coordinator
+        self.turn_coordinator = turn_coordinator or TurnCoordinator(
+            self.context_manager,
+            self.turn_finalizer,
+            memory_enabled=self.memory_enabled,
+        )
+        self.max_auto_slices = max(1, int(max_auto_slices))
+        self.provider_error_handler = provider_error_handler or ProviderErrorHandler()
 
     def initialize(self) -> None:
         """Initialize durable schema dependencies before accepting requests."""
-        store = self.memory_store_factory()
+        store = self.state_store_factory()
         try:
             store.initialize()
+            if self.checkpoint_manager is not None:
+                self.checkpoint_manager.initialize()
+            if self.recovery_coordinator is not None:
+                self.recovery_coordinator.reconcile()
+            if self.maintenance_scheduler is not None:
+                self.maintenance_scheduler.start()
         finally:
             store.close()
 
@@ -96,6 +130,7 @@ class AgentTurnService:
         on_event: EventCallback | None = None,
         *,
         run_id: str | None = None,
+        control: ExecutionControl | None = None,
     ) -> dict:
         """Schedule one synchronous turn on the bounded Agent executor.
 
@@ -115,6 +150,7 @@ class AgentTurnService:
                     user_input,
                     on_event,
                     run_id=run_id,
+                    control=control,
                 )
             )
         except Exception:
@@ -132,6 +168,44 @@ class AgentTurnService:
         worker_future.add_done_callback(release_slot)
         return await asyncio.wrap_future(worker_future)
 
+    async def resume_execution(
+        self,
+        workspace_root: str,
+        session_name: str,
+        instruction: str = "",
+        on_event: EventCallback | None = None,
+        *,
+        run_id: str | None = None,
+        control: ExecutionControl | None = None,
+    ) -> dict:
+        """Schedule a recoverable execution resume on the bounded executor."""
+        loop = asyncio.get_running_loop()
+        await self._turn_slots.acquire()
+        try:
+            worker_future = self._turn_executor.submit(
+                partial(
+                    self._run_resume_sync,
+                    workspace_root,
+                    session_name,
+                    instruction,
+                    on_event,
+                    run_id=run_id,
+                    control=control,
+                )
+            )
+        except Exception:
+            self._turn_slots.release()
+            raise
+
+        def release_slot(_future) -> None:
+            try:
+                loop.call_soon_threadsafe(self._turn_slots.release)
+            except RuntimeError:
+                pass
+
+        worker_future.add_done_callback(release_slot)
+        return await asyncio.wrap_future(worker_future)
+
     def _run_turn_sync(
         self,
         workspace_root: str,
@@ -140,10 +214,17 @@ class AgentTurnService:
         on_event: EventCallback | None = None,
         *,
         run_id: str | None = None,
+        control: ExecutionControl | None = None,
     ) -> dict:
         """Consume one synchronous event stream and aggregate its final result."""
         result = {"status": "error", "run_id": run_id or uuid4().hex}
-        for item in self.stream_turn(workspace_root, session_name, user_input, run_id=result["run_id"]):
+        for item in self.stream_turn(
+            workspace_root,
+            session_name,
+            user_input,
+            run_id=result["run_id"],
+            control=control,
+        ):
             if on_event:
                 on_event(item)
             if item["event"] == "done":
@@ -155,6 +236,54 @@ class AgentTurnService:
                     "stop_reason",
                     StopReason.TURN_ERROR.value,
                 )
+                for field in (
+                    "error_category",
+                    "error_action",
+                    "retryable",
+                    "provider",
+                    "provider_code",
+                    "http_status",
+                ):
+                    if field in item["data"]:
+                        result[field] = item["data"][field]
+        return result
+
+    def _run_resume_sync(
+        self,
+        workspace_root: str,
+        session_name: str,
+        instruction: str = "",
+        on_event: EventCallback | None = None,
+        *,
+        run_id: str | None = None,
+        control: ExecutionControl | None = None,
+    ) -> dict:
+        """Consume one resumed execution stream and aggregate its final result."""
+        result = {"status": "error", "run_id": run_id or uuid4().hex}
+        for item in self.stream_resume(
+            workspace_root,
+            session_name,
+            instruction=instruction,
+            run_id=result["run_id"],
+            control=control,
+        ):
+            if on_event:
+                on_event(item)
+            if item["event"] == "done":
+                result.update(item["data"])
+            elif item["event"] == "error":
+                result["error"] = item["data"].get("message", "Agent resume failed.")
+                result["stop_reason"] = item["data"].get("stop_reason", StopReason.TURN_ERROR.value)
+                for field in (
+                    "error_category",
+                    "error_action",
+                    "retryable",
+                    "provider",
+                    "provider_code",
+                    "http_status",
+                ):
+                    if field in item["data"]:
+                        result[field] = item["data"][field]
         return result
 
     def stream_turn(
@@ -164,6 +293,7 @@ class AgentTurnService:
         user_input: str,
         *,
         run_id: str,
+        control: ExecutionControl | None = None,
     ) -> Iterator[dict]:
         """Resolve request identity, serialize the Session, and stream one turn."""
         normalized = user_input.strip()
@@ -178,14 +308,148 @@ class AgentTurnService:
             if not status.configured:
                 yield from self._stream_unconfigured_turn(session, run_id, status.missing)
                 return
-            runtime = self.runtime_registry.get(workspace)
-            yield from self._stream_locked_turn(session, runtime.graph, normalized, run_id)
+            execution = None
+            if self.execution_repository is not None:
+                if self.execution_repository.get_pending(session) is not None:
+                    raise RuntimeError(
+                        "Session has a pending execution. Use 'learn-agent session resume' "
+                        "or 'learn-agent session discard' before starting a new chat."
+                    )
+                execution = self.execution_repository.begin(session, normalized)
+            try:
+                runtime = self.runtime_registry.get(workspace)
+            except Exception as exc:
+                if execution is not None and self.execution_repository is not None:
+                    self.execution_repository.pause(
+                        execution.execution_id,
+                        ExecutionStatus.PAUSED_ERROR,
+                        StopReason.TURN_ERROR.value,
+                        f"Workspace runtime creation failed: {exc}",
+                    )
+                raise
+            yield from self._stream_locked_turn(
+                session,
+                runtime.graph,
+                normalized,
+                run_id,
+                execution=execution,
+                control=control,
+            )
+
+    def stream_resume(
+        self,
+        workspace_root: str,
+        session_name: str,
+        *,
+        run_id: str,
+        instruction: str = "",
+        control: ExecutionControl | None = None,
+    ) -> Iterator[dict]:
+        """Resume the Session's pending execution with a new bounded Grant."""
+        if self.execution_repository is None:
+            raise RuntimeError("Resumable execution is not configured.")
+        workspace = self.workspace_repository.resolve(workspace_root)
+        session, _ = self.workspace_repository.resolve_session(workspace, session_name)
+        with self.lock_registry.get(session.session_id):
+            pending = self.execution_repository.resume(session)
+            try:
+                runtime = self.runtime_registry.get(workspace)
+                if instruction.strip():
+                    from langchain_core.messages import HumanMessage
+
+                    runtime.graph.update_state(
+                        {"configurable": {"thread_id": pending.checkpoint_thread_id}},
+                        {
+                            "messages": [
+                                HumanMessage(
+                                    content=f"Additional resume instruction: {instruction.strip()}"
+                                )
+                            ]
+                        },
+                        as_node="agent",
+                    )
+            except Exception as exc:
+                self.execution_repository.pause(
+                    pending.execution_id,
+                    ExecutionStatus.PAUSED_ERROR,
+                    StopReason.TURN_ERROR.value,
+                    f"Execution resume preparation failed: {exc}",
+                )
+                raise
+            yield from self._stream_locked_turn(
+                session,
+                runtime.graph,
+                pending.original_input,
+                run_id,
+                execution=pending,
+                resume=True,
+                control=control,
+            )
+
+    def session_status(self, workspace_root: str, session_name: str) -> dict:
+        """Return compact pending-execution state without running the graph."""
+        workspace = self.workspace_repository.resolve(workspace_root)
+        session, _ = self.workspace_repository.resolve_session(workspace, session_name)
+        pending = self.execution_repository.get_attached(session) if self.execution_repository else None
+        maintenance = (
+            self.maintenance_repository.counts_for_session(
+                str(workspace.workspace_id),
+                str(session.session_id),
+            )
+            if self.maintenance_repository is not None
+            else {"pending": 0, "running": 0, "failed": 0}
+        )
+        return {
+            "workspace_id": str(workspace.workspace_id),
+            "session_id": str(session.session_id),
+            "session_name": session.session_name,
+            "pending_execution": pending.__dict__ if pending else None,
+            "execution_recoverable": pending.recoverable if pending else False,
+            "checkpoint_state": pending.checkpoint_state if pending else None,
+            "maintenance": maintenance,
+        }
+
+    def discard_pending(self, workspace_root: str, session_name: str) -> dict:
+        """Discard the pending execution while retaining its audit rows."""
+        if self.execution_repository is None:
+            raise RuntimeError("Resumable execution is not configured.")
+        workspace = self.workspace_repository.resolve(workspace_root)
+        session, _ = self.workspace_repository.resolve_session(workspace, session_name)
+        with self.lock_registry.get(session.session_id):
+            pending = self.execution_repository.discard(session)
+            if self.maintenance_repository is not None:
+                from src.core.maintenance.models import MaintenanceJobSpec
+                from src.core.maintenance.types import (
+                    MaintenanceJobType,
+                    MaintenancePriority,
+                )
+
+                self.maintenance_repository.enqueue(
+                    MaintenanceJobSpec(
+                        MaintenanceJobType.CHECKPOINT_CLEANUP,
+                        f"checkpoint_cleanup:{pending.execution_id}",
+                        str(session.workspace.workspace_id),
+                        str(session.session_id),
+                        {"checkpoint_thread_id": pending.checkpoint_thread_id},
+                        execution_id=pending.execution_id,
+                        priority=MaintenancePriority.CHECKPOINT_CLEANUP,
+                    )
+                )
+                if self.maintenance_scheduler is not None:
+                    self.maintenance_scheduler.wake()
+        return {"status": "discarded", "execution_id": pending.execution_id}
 
     def close(self) -> None:
-        """Wait for service-owned Turn and memory executors to finish."""
+        """Stop foreground Turn workers, then stop durable maintenance safely."""
         if self._owns_turn_executor:
             self._turn_executor.shutdown(wait=True, cancel_futures=False)
-        self._memory_executor.shutdown(wait=True, cancel_futures=False)
+        maintenance_stopped = (
+            self.maintenance_scheduler.close()
+            if self.maintenance_scheduler is not None
+            else True
+        )
+        if self.checkpoint_manager is not None and maintenance_stopped:
+            self.checkpoint_manager.close()
 
     def _stream_locked_turn(
         self,
@@ -193,27 +457,36 @@ class AgentTurnService:
         graph,
         user_input: str,
         run_id: str,
+        *,
+        execution=None,
+        resume: bool = False,
+        control: ExecutionControl | None = None,
     ) -> Iterator[dict]:
-        """Execute and persist one configured-LLM Turn while its Session is locked."""
-        store = self.memory_store_factory()
-        context_token = set_event_context(
+        """Run bounded Slices and persist either completion or recoverable pause."""
+        store = self.state_store_factory()
+        context_token = bind_context(
             workspace_id=session.workspace.workspace_id,
             session_id=session.session_id,
             run_id=run_id,
         )
         run_context_token = None
+        budget_token = None
+        budget = None
+        active_slice_id = None
         try:
             # Persisted turn_index identifies the last completed turn. The
             # current turn is assigned only after the Session lock is held.
-            state, turn_index = store.load_session(session)
-            current_turn = turn_index + 1
-            run_context = AgentRunContext(
-                run_id=run_id,
+            prepared = self.turn_coordinator.prepare(
+                store=store,
                 session=session,
-                turn_index=current_turn,
+                user_input=user_input,
+                run_id=run_id,
                 limits=self.run_limits,
             )
-            run_context_token = set_run_event_context(run_context)
+            state = prepared.state
+            current_turn = prepared.turn_index
+            run_context = prepared.run_context
+            run_context_token = bind_run_context(run_context)
             emit_event(
                 "turn_started",
                 "agent_service",
@@ -227,84 +500,240 @@ class AgentTurnService:
                     },
                 },
             )
-            memories = (
-                store.retrieve_for_turn(
-                    session.workspace.workspace_id,
-                    user_input,
-                    new_session=turn_index == 0,
-                )
-                if self.memory_enabled
-                else []
-            )
-            memory_message = store.build_memory_message(memories)
-            extras = [memory_message] if memory_message else []
-            memory_text = memory_message.content if memory_message else ""
-            input_messages = self.context_manager.build_input_messages(
-                state,
-                user_input,
-                extra_system_messages=extras,
-            )
-            # stream_graph_events adapts LangGraph's messages/values stream into
-            # the stable token/step/error/done contract consumed by RPC.
-            for item in stream_graph_events(graph, input_messages, run_context):
-                if item["event"] == "error":
-                    emit_event(
-                        "turn_failed",
-                        "agent_service",
-                        "Workspace Agent turn stopped before completion.",
-                        {
-                            "stop_reason": item["data"].get(
-                                "stop_reason",
-                                StopReason.TURN_ERROR.value,
-                            ),
-                            "error_type": item["data"].get("type", "unknown"),
-                        },
-                        level="error",
+            input_messages = prepared.input_messages
+            checkpoint_thread_id = execution.checkpoint_thread_id if execution else None
+            total_tool_calls = 0
+            budget = ExecutionBudget()
+            budget_token = bind_execution_budget(budget)
+            exhausted_reason = StopReason.GRAPH_STEP_LIMIT.value
+            for slice_number in range(1, self.max_auto_slices + 1):
+                if budget.wall_time_exhausted():
+                    exhausted_reason = StopReason.GRANT_WALL_TIME_LIMIT.value
+                    break
+                slice_id = None
+                if execution is not None and self.execution_repository is not None:
+                    slice_id = self.execution_repository.start_slice(
+                        execution.execution_id,
+                        execution.grant_index,
+                        slice_number,
                     )
-                    yield item
+                    active_slice_id = slice_id
+                slice_input = None if resume or slice_number > 1 else input_messages
+                paused_for_budget = False
+                for item in stream_graph_events(
+                    graph,
+                    slice_input,
+                    run_context,
+                    checkpoint_thread_id=checkpoint_thread_id,
+                    provider_error_handler=self.provider_error_handler,
+                ):
+                    total_tool_calls += int(item.get("data", {}).get("tool_call_count", 0)) if item["event"] in {"paused", "done"} else 0
+                    if item["event"] == "paused":
+                        paused_for_budget = True
+                        exhausted_reason = item["data"].get(
+                            "stop_reason",
+                            StopReason.GRAPH_STEP_LIMIT.value,
+                        )
+                        if slice_id:
+                            usage = budget.snapshot()
+                            self.execution_repository.finish_slice(
+                                slice_id,
+                                execution.execution_id,
+                                status=ExecutionStatus.PAUSED_BUDGET,
+                                stop_reason=exhausted_reason,
+                                graph_steps_used=int(item["data"].get("graph_steps_used", 0)),
+                                usage=usage,
+                            )
+                            active_slice_id = None
+                        break
+                    if item["event"] == "error":
+                        if execution is not None and self.execution_repository is not None:
+                            usage = budget.snapshot()
+                            if slice_id:
+                                self.execution_repository.finish_slice(
+                                    slice_id,
+                                    execution.execution_id,
+                                    status=ExecutionStatus.PAUSED_ERROR,
+                                    stop_reason=item["data"].get(
+                                        "stop_reason",
+                                        StopReason.TURN_ERROR.value,
+                                    ),
+                                    graph_steps_used=int(
+                                        item["data"].get("graph_steps_used", 0)
+                                    ),
+                                    usage=usage,
+                                )
+                                active_slice_id = None
+                            if item["data"].get("error_action") == ErrorAction.TERMINATE:
+                                self._terminate_execution_after_error(
+                                    session,
+                                    execution,
+                                    item["data"].get(
+                                        "error_category",
+                                        StopReason.TURN_ERROR.value,
+                                    ),
+                                )
+                            else:
+                                self.execution_repository.pause(
+                                    execution.execution_id,
+                                    ExecutionStatus.PAUSED_ERROR,
+                                    item["data"].get(
+                                        "stop_reason",
+                                        StopReason.TURN_ERROR.value,
+                                    ),
+                                    item["data"].get("message", ""),
+                                    usage=usage,
+                                )
+                        terminated = (
+                            item["data"].get("error_action") == ErrorAction.TERMINATE
+                        )
+                        emit_event(
+                            "turn_terminated" if terminated else "turn_paused",
+                            "agent_service",
+                            (
+                                "Workspace Agent execution terminated after a "
+                                "non-retryable error."
+                                if terminated
+                                else "Workspace Agent execution paused after an error."
+                            ),
+                            {
+                                "stop_reason": item["data"].get(
+                                    "stop_reason",
+                                    StopReason.TURN_ERROR.value,
+                                ),
+                                "error_type": item["data"].get("type", "unknown"),
+                                "error_category": item["data"].get(
+                                    "error_category",
+                                    "unknown",
+                                ),
+                            },
+                            level="error",
+                        )
+                        yield item
+                        return
+                    if item["event"] != "done":
+                        yield item
+                        continue
+
+                    final_messages = item["data"]["messages"]
+                    finalization = self.turn_coordinator.finalize(
+                        store=store,
+                        session=session,
+                        turn_index=current_turn,
+                        previous_state=state,
+                        final_messages=final_messages,
+                        user_input=user_input,
+                        execution=execution,
+                        slice_id=slice_id,
+                        graph_steps_used=int(item["data"].get("graph_steps_used", 0)),
+                        usage=budget.snapshot(),
+                    )
+                    active_slice_id = None
+                    emit_event(
+                        "turn_finished",
+                        "agent_service",
+                        "Finished workspace Agent turn.",
+                        {
+                            "stop_reason": StopReason.COMPLETED.value,
+                            "tool_call_count": total_tool_calls,
+                            "slice_count": slice_number,
+                        },
+                    )
+                    yield {
+                        "event": "done",
+                        "data": {
+                            "run_id": run_id,
+                            "status": "ok",
+                            "workspace_id": str(session.workspace.workspace_id),
+                            "session_id": str(session.session_id),
+                            "session_name": session.session_name,
+                            "execution_id": execution.execution_id if execution else None,
+                            "stop_reason": StopReason.COMPLETED.value,
+                            "tool_call_count": total_tool_calls,
+                            "slices_used": slice_number,
+                            "durability": "committed",
+                            "maintenance_status": finalization.maintenance_status,
+                            "memory_status": finalization.memory_status,
+                            "memory_request_explicit": finalization.memory_request_explicit,
+                        },
+                    }
                     return
-                if item["event"] != "done":
-                    yield item
-                    continue
-                final_messages = item["data"]["messages"]
-                # input_messages already contains old context and the new user
-                # message. Persist only the current user message and messages
-                # appended by the graph, never synthetic summary/memory input.
-                turn_messages = final_messages[len(input_messages) - 1:]
-                source_ids = store.archive_turn_messages(session, current_turn, turn_messages)
-                state = self.context_manager.update_after_turn(state, final_messages, memory_context=memory_text)
-                store.save_session(session, state, current_turn)
-                # Extraction runs after message and Session persistence so its
-                # source_message_ids always refer to committed message rows.
-                self._handle_extraction(store, session, current_turn, run_id, user_input, turn_messages, source_ids)
-                emit_event(
-                    "turn_finished",
-                    "agent_service",
-                    "Finished workspace Agent turn.",
-                    {
-                        "stop_reason": item["data"].get(
-                            "stop_reason",
-                            StopReason.COMPLETED.value,
-                        ),
-                        "tool_call_count": item["data"].get("tool_call_count", 0),
-                    },
+                if not paused_for_budget:
+                    return
+                if exhausted_reason == StopReason.BUDGET_LIMIT.value:
+                    break
+                if checkpoint_thread_id is None:
+                    # Compatibility services without a checkpointer cannot
+                    # safely continue from input=None. Production Core always
+                    # provides a durable checkpoint thread.
+                    break
+                if control is not None and control.pause_after_slice.is_set():
+                    exhausted_reason = StopReason.CLIENT_DISCONNECTED.value
+                    break
+                if budget.wall_time_exhausted():
+                    exhausted_reason = StopReason.GRANT_WALL_TIME_LIMIT.value
+                    break
+                resume = True
+
+            snapshot = budget.snapshot()
+            summary = (
+                f"Execution paused because {exhausted_reason}. "
+                f"Used {slice_number} Slice(s), {snapshot['tool_calls']} tool call(s), "
+                f"{snapshot['controlled_executions']} controlled execution(s), and "
+                f"{snapshot['delegations']} delegation(s)."
+            )
+            if execution is not None and self.execution_repository is not None:
+                self.execution_repository.pause(
+                    execution.execution_id,
+                    ExecutionStatus.PAUSED_CONFIRMATION
+                    if exhausted_reason == StopReason.BUDGET_LIMIT.value
+                    else ExecutionStatus.PAUSED_BUDGET,
+                    exhausted_reason,
+                    summary,
+                    usage=snapshot,
                 )
-                yield {
-                    "event": "done",
-                    "data": {
-                        "run_id": run_id,
-                        "status": "ok",
-                        "workspace_id": str(session.workspace.workspace_id),
-                        "session_id": str(session.session_id),
-                        "session_name": session.session_name,
-                        "stop_reason": item["data"].get(
-                            "stop_reason",
-                            StopReason.COMPLETED.value,
-                        ),
-                        "tool_call_count": item["data"].get("tool_call_count", 0),
-                    },
-                }
+            emit_event(
+                "turn_paused",
+                "agent_service",
+                summary,
+                {"slice_count": slice_number, **snapshot},
+            )
+            yield {
+                "event": "done",
+                "data": {
+                    "run_id": run_id,
+                    "status": "paused",
+                    "workspace_id": str(session.workspace.workspace_id),
+                    "session_id": str(session.session_id),
+                    "session_name": session.session_name,
+                    "execution_id": execution.execution_id if execution else None,
+                    "stop_reason": exhausted_reason,
+                    "tool_call_count": total_tool_calls,
+                    "slices_used": slice_number,
+                    "message": summary,
+                },
+            }
         except Exception as exc:
+            if execution is not None and self.execution_repository is not None:
+                try:
+                    usage = budget.snapshot() if budget is not None else None
+                    if active_slice_id is not None:
+                        self.execution_repository.finish_slice(
+                            active_slice_id,
+                            execution.execution_id,
+                            status=ExecutionStatus.PAUSED_ERROR,
+                            stop_reason=StopReason.TURN_ERROR.value,
+                            usage=usage,
+                        )
+                    self.execution_repository.pause(
+                        execution.execution_id,
+                        ExecutionStatus.PAUSED_ERROR,
+                        StopReason.TURN_ERROR.value,
+                        str(exc),
+                        usage=usage,
+                    )
+                except Exception:
+                    pass
             record_error("agent_service", "turn", exc, "Agent turn failed.", event_type="turn_failed")
             yield {
                 "event": "error",
@@ -317,9 +746,44 @@ class AgentTurnService:
             }
         finally:
             if run_context_token is not None:
-                reset_event_context(run_context_token)
-            reset_event_context(context_token)
+                reset_context(run_context_token)
+            if budget_token is not None:
+                reset_execution_budget(budget_token)
+            reset_context(context_token)
             store.close()
+
+    def _terminate_execution_after_error(self, session, execution, reason: str) -> None:
+        """Release a Session after a deterministic, non-retryable provider error."""
+        self.execution_repository.terminate(session, execution.execution_id, reason)
+        if self.maintenance_repository is None:
+            return
+        from src.core.maintenance.models import MaintenanceJobSpec
+        from src.core.maintenance.types import MaintenanceJobType, MaintenancePriority
+
+        try:
+            self.maintenance_repository.enqueue(
+                MaintenanceJobSpec(
+                    MaintenanceJobType.CHECKPOINT_CLEANUP,
+                    f"checkpoint_cleanup:{execution.execution_id}",
+                    str(session.workspace.workspace_id),
+                    str(session.session_id),
+                    {"checkpoint_thread_id": execution.checkpoint_thread_id},
+                    execution_id=execution.execution_id,
+                    priority=MaintenancePriority.CHECKPOINT_CLEANUP,
+                )
+            )
+            if self.maintenance_scheduler is not None:
+                self.maintenance_scheduler.wake()
+        except Exception as exc:
+            # The Session has already been safely released. A cleanup enqueue
+            # failure must not reattach or pause a terminal execution.
+            record_error(
+                "agent_service",
+                "terminal_checkpoint_cleanup",
+                exc,
+                "Terminal execution released, but checkpoint cleanup could not be queued.",
+                {"execution_id": execution.execution_id},
+            )
 
     def _stream_unconfigured_turn(
         self,
@@ -328,8 +792,8 @@ class AgentTurnService:
         missing: tuple[str, ...],
     ) -> Iterator[dict]:
         """Validate infrastructure without mutating conversation state."""
-        store = self.memory_store_factory()
-        context_token = set_event_context(
+        store = self.state_store_factory()
+        context_token = bind_context(
             workspace_id=session.workspace.workspace_id,
             session_id=session.session_id,
             run_id=run_id,
@@ -343,7 +807,7 @@ class AgentTurnService:
                 turn_index=turn_index,
                 limits=self.run_limits,
             )
-            run_context_token = set_run_event_context(run_context)
+            run_context_token = bind_run_context(run_context)
             emit_event(
                 "diagnostic_started",
                 "agent_service",
@@ -406,76 +870,6 @@ class AgentTurnService:
             }
         finally:
             if run_context_token is not None:
-                reset_event_context(run_context_token)
-            reset_event_context(context_token)
-            store.close()
-
-    def _handle_extraction(
-        self,
-        store: PostgresMemoryStore,
-        session: SessionContext,
-        turn_index: int,
-        run_id: str,
-        user_input: str,
-        messages: list,
-        source_ids: list[int],
-    ) -> None:
-        """Apply memory extraction policy and choose sync or background execution."""
-        if not self.memory_enabled:
-            emit_event(
-                "memory_extract_skipped",
-                "agent_service",
-                "Long-term memory extraction skipped.",
-                {"reason": "disabled_by_service"},
-            )
-            return
-        reason = memory_extraction_reason(user_input, turn_index, messages)
-        if reason in {"not_triggered", "disabled"}:
-            emit_event(
-                "memory_extract_skipped",
-                "agent_service",
-                "Long-term memory extraction skipped.",
-                {"reason": reason, "turn_message_chars": turn_message_chars(messages)},
-            )
-            return
-        if MEMORY_EXTRACTION_ASYNC and not has_explicit_memory_request(user_input):
-            self._memory_executor.submit(
-                self._extract_in_background,
-                session,
-                turn_index,
-                run_id,
-                messages,
-                source_ids,
-            )
-        else:
-            store.extract_and_save_memories(session, turn_index, messages, source_ids)
-
-    def _extract_in_background(
-        self,
-        session: SessionContext,
-        turn_index: int,
-        run_id: str,
-        messages: list,
-        source_ids: list[int],
-    ) -> None:
-        """Run memory extraction with restored Turn event identity."""
-        context_token = set_event_context(
-            workspace_id=session.workspace.workspace_id,
-            session_id=session.session_id,
-            turn_index=turn_index,
-            run_id=run_id,
-        )
-        store = self.memory_store_factory()
-        try:
-            store.extract_and_save_memories(session, turn_index, messages, source_ids)
-        except Exception as exc:
-            record_error(
-                "agent_service",
-                "memory_background_extract",
-                exc,
-                "Background long-term memory extraction failed.",
-                event_type="memory_failed",
-            )
-        finally:
-            reset_event_context(context_token)
+                reset_context(run_context_token)
+            reset_context(context_token)
             store.close()

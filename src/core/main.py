@@ -19,6 +19,7 @@ from src.core.app import CoreApp
 from src.core.config.models import CoreConfig
 from src.core.database.connection import connection_info
 from src.core.database.migration import WorkspaceMigration
+from src.core.state import ArtifactStore, LocalStateDatabase, LocalStateMigration
 from src.config.settings import CORE_HOST, CORE_PORT
 from src.ipc.auth import create_token, daemon_pid_is_running, read_token, token_path
 
@@ -49,6 +50,19 @@ def main(argv: list[str] | None = None) -> int:
     migration_parser.add_argument("--workspace", required=True)
     migration_parser.add_argument("--keep-session", default="default")
     migration_parser.add_argument("--apply", action="store_true")
+    local_parser = subparsers.add_parser(
+        "migrate-local-state",
+        help="import one PostgreSQL Session into authoritative local SQLite state",
+    )
+    local_parser.add_argument("--workspace", required=True)
+    local_parser.add_argument("--keep-session", default="default")
+    local_parser.add_argument("--apply", action="store_true")
+    local_parser.add_argument(
+        "--prune-source",
+        action="store_true",
+        help="after a validated import, delete PostgreSQL rows unrelated to the retained Session",
+    )
+    gc_parser = subparsers.add_parser("gc-artifacts", help="delete unreferenced local artifacts")
     args = parser.parse_args(argv)
 
     if args.command == "serve":
@@ -84,6 +98,42 @@ def main(argv: list[str] | None = None) -> int:
         )
         if report.backup_path:
             print(f"Backup: {report.backup_path}")
+        return 0
+    if args.command == "migrate-local-state":
+        if args.prune_source and not args.apply:
+            raise RuntimeError("--prune-source requires --apply.")
+        runtime = CoreConfig.load().runtime_dir
+        if daemon_pid_is_running(runtime):
+            raise RuntimeError("Core daemon is running. Stop the daemon before migration.")
+        migration = LocalStateMigration(lambda: psycopg.connect(connection_info()))
+        report = (
+            migration.apply(
+                args.workspace,
+                args.keep_session,
+                prune_source=args.prune_source,
+            )
+            if args.apply
+            else migration.inspect(args.workspace, args.keep_session)
+        )
+        print(
+            f"{'Applied' if report.applied else 'Dry-run'} local-state migration for "
+            f"{report.workspace}/{report.session_name}: sessions={report.sessions}, "
+            f"messages={report.messages}, memories={report.memories}, events={report.events}"
+        )
+        print(
+            "Would delete from PostgreSQL: "
+            + ", ".join(f"{name}={count}" for name, count in report.deleted_counts.items())
+        )
+        print(f"Local state: {report.target_path}")
+        if report.source_pruned:
+            print("PostgreSQL source was pruned to the retained Session.")
+        if report.backup_path:
+            print(f"PostgreSQL backup: {report.backup_path}")
+        return 0
+    if args.command == "gc-artifacts":
+        database = LocalStateDatabase()
+        database.initialize()
+        print(f"Deleted {ArtifactStore(database).collect_garbage()} unreferenced artifacts.")
         return 0
     return 1
 

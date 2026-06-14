@@ -35,6 +35,8 @@ def chat_once(client: CoreClient, session_name: str, message: str, workspace: st
         on_event=render_agent_event,
     )
     print()
+    if result.get("memory_status") == "pending" and result.get("memory_request_explicit"):
+        print("Memory save has been queued and can be checked with 'learn-agent session status'.")
     if result.get("status") != "ok":
         raise CoreRequestError(result.get("error", "Agent turn failed."))
 

@@ -1,5 +1,11 @@
 # Workspace 隔离与数据库迁移设计
 
+> 文档状态：Historical + Current Boundary
+> 本文前半部分的 Workspace 隔离原则仍然有效；PostgreSQL 表结构与迁移流程记录的是迁移到
+> 本地优先状态之前的历史方案。当前权威状态、事务和恢复机制见
+> [`database-state-and-consistency.md`](database-state-and-consistency.md) 与
+> [`local-state-migration.md`](local-state-migration.md)。
+
 > 当前记忆数据分层、每轮加载顺序、提取策略与一致性边界见
 > [`memory-management.md`](memory-management.md)。
 
@@ -66,16 +72,17 @@ workspace B / default -> session UUID B
 
 ### Composition Root
 
-`CoreApp` 是组合根，负责创建连接池、WorkspaceRepository、WorkspaceRuntimeRegistry
-和 AgentTurnService。Transport、Handler 与 Agent 业务保持单向依赖。
+`CoreApp` 是组合根，负责创建本地状态数据库、可选 PostgreSQL 连接池、
+`LocalWorkspaceRepository`、`WorkspaceRuntimeRegistry` 和 `AgentTurnService`。
+Transport、Handler 与 Agent 业务保持单向依赖。
 
 ### Repository
 
-- `WorkspaceRepository`：注册 Workspace、解析 Workspace 内 Session。
-- `SessionRepository`：读取和更新短期上下文。
-- `MessageRepository`：归档完整消息。
-- `MemoryRepository`：按 Workspace 检索和保存长期记忆。
-- `PostgresEventSink`：批量写入结构化事件。
+- `LocalWorkspaceRepository`：在 `state.db` 注册 Workspace、解析 Workspace 内 Session。
+- `LocalStateStore`：读取 Session、归档消息并检索或保存长期记忆。
+- `ExecutionRepository`：管理可恢复 Execution 与 Slice。
+- `MaintenanceRepository`：持久化后台摘要、记忆提取和 checkpoint 清理任务。
+- `PostgresEventSink`：仅在显式启用时批量写入结构化观测事件。
 
 ### Factory 与 Registry
 
@@ -102,7 +109,9 @@ learn-agent chat --session default
   -> 获取 Session UUID 锁
   -> 加载短期上下文与 Workspace 记忆
   -> 执行 Workspace 绑定 graph/tools
-  -> 保存消息、上下文、记忆和事件
+  -> 在 state.db 原子提交消息、Session、Execution 与维护任务
+  -> 返回响应
+  -> 后台执行摘要、记忆提取和 checkpoint 清理
 ```
 
 ## 路径与安全边界
@@ -138,7 +147,9 @@ learn-agent-core init-user-config --from-env .env
 
 默认拒绝覆盖已有用户配置。
 
-## 数据库结构
+## 历史 PostgreSQL 数据库结构
+
+以下结构用于解释旧数据来源及迁移，不再是普通对话的权威状态模型：
 
 ```text
 agent_workspaces
@@ -159,17 +170,18 @@ agent_workspaces
 - `agent_memory_sources` 使用关系表保存记忆来源，并通过 Workspace 复合外键阻止
   记忆关联其他 Workspace 的消息
 
-## 显式迁移与恢复
+## 历史 PostgreSQL 迁移与当前本地恢复
 
-旧数据库不会自动升级。检测到旧结构时，Core 拒绝启动并提示：
+旧 PostgreSQL 数据不会自动成为当前权威状态。需要保留旧 Session 时，使用当前本地状态迁移命令：
 
 ```powershell
-learn-agent-core migrate-workspace `
+learn-agent-core migrate-local-state `
   --workspace D:\Desktop_logo\github\myprojects\learn_langchain `
   --keep-session default
 ```
 
-默认只执行 dry-run。正式迁移增加 `--apply`。
+默认只执行 dry-run。正式迁移增加 `--apply`；需要删除其他 PostgreSQL 数据时再显式增加
+`--prune-source`。完整流程见 [`local-state-migration.md`](local-state-migration.md)。
 
 正式迁移要求 daemon 已停止，并在事务前创建完整 `pg_dump`：
 

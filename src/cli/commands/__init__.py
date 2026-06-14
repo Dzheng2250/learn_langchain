@@ -4,6 +4,7 @@ from .chat import register as register_chat
 from .start import register as register_start
 from .status import register as register_status
 from .stop import register as register_stop
+from .session import register as register_session
 
 
 def register_commands(subparsers, config) -> None:
@@ -12,6 +13,7 @@ def register_commands(subparsers, config) -> None:
     register_stop(subparsers, config)
     register_status(subparsers, config)
     register_chat(subparsers, config)
+    register_session(subparsers, config)
 
 
 __all__ = ["register_commands"]

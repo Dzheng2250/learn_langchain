@@ -39,3 +39,29 @@ def env_file() -> Path:
 def backup_dir() -> Path:
     """Return the default directory for database migration backups."""
     return user_data_dir() / "backups"
+
+
+def local_state_dir() -> Path:
+    """Return durable local-first state storage, honoring an explicit override."""
+    override = os.getenv("LEARN_AGENT_STATE_DIR")
+    return Path(override).expanduser().resolve() if override else user_data_dir() / "state"
+
+
+def local_state_db() -> Path:
+    """Return the authoritative SQLite business-state database path."""
+    return local_state_dir() / "state.db"
+
+
+def checkpoint_db() -> Path:
+    """Return the LangGraph execution-checkpoint SQLite database path."""
+    return local_state_dir() / "checkpoints.db"
+
+
+def artifact_dir() -> Path:
+    """Return the content-addressed directory used for large durable payloads."""
+    return local_state_dir() / "artifacts"
+
+
+def telemetry_dir() -> Path:
+    """Return the default local telemetry directory."""
+    return local_state_dir() / "telemetry"

@@ -107,31 +107,31 @@ class CoreAppTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(1, events.count("transport.close"))
         self.assertEqual(1, events.count("agent.close"))
 
-    async def test_event_publisher_is_installed_only_during_app_lifecycle(self):
+    async def test_event_bus_is_installed_only_during_app_lifecycle(self):
         events = []
         publisher = object()
-        with patch("src.core.app.set_event_publisher") as set_publisher:
+        with patch("src.core.app.install_event_bus") as install_bus:
             app = CoreApp(
                 self._config(),
                 "token",
                 agent_service=FakeAgentService(events),
                 transport_factory=lambda _config, _router: FakeTransport(events),
-                event_publisher=publisher,
+                event_bus=publisher,
             )
-            set_publisher.assert_not_called()
+            install_bus.assert_not_called()
 
             await app.start()
-            set_publisher.assert_called_once_with(publisher)
+            install_bus.assert_called_once_with(publisher)
 
             await app.close()
             self.assertEqual(
                 [call(publisher), call(None)],
-                set_publisher.call_args_list,
+                install_bus.call_args_list,
             )
 
-    async def test_close_releases_lazily_created_default_event_publisher(self):
+    async def test_close_resets_event_bus_when_no_custom_bus_was_installed(self):
         events = []
-        with patch("src.core.app.set_event_publisher") as set_publisher:
+        with patch("src.core.app.install_event_bus") as install_bus:
             app = CoreApp(
                 self._config(),
                 "token",
@@ -141,7 +141,7 @@ class CoreAppTest(unittest.IsolatedAsyncioTestCase):
             await app.start()
             await app.close()
 
-            set_publisher.assert_called_once_with(None)
+            self.assertEqual([call(None), call(None)], install_bus.call_args_list)
 
     async def test_close_passes_shutdown_timeout_to_pool(self):
         events = []
@@ -178,6 +178,27 @@ class CoreAppTest(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(close_task.done())
         await close_task
 
+    async def test_blocking_event_bus_close_does_not_block_event_loop(self):
+        events = []
+
+        class SlowEventBus:
+            def close(self):
+                time.sleep(0.05)
+
+        app = CoreApp(
+            self._config(),
+            "token",
+            agent_service=FakeAgentService(events),
+            transport_factory=lambda _config, _router: FakeTransport(events),
+            event_bus=SlowEventBus(),
+        )
+        await app.start()
+
+        close_task = asyncio.create_task(app.close())
+        await asyncio.sleep(0.01)
+        self.assertFalse(close_task.done())
+        await close_task
+
     async def test_close_releases_remaining_resources_when_agent_close_fails(self):
         events = []
         pool = FakePool()
@@ -187,7 +208,7 @@ class CoreAppTest(unittest.IsolatedAsyncioTestCase):
                 super().close()
                 raise RuntimeError("agent close failed")
 
-        with patch("src.core.app.set_event_publisher") as set_publisher:
+        with patch("src.core.app.install_event_bus") as install_bus:
             app = CoreApp(
                 self._config(),
                 "token",
@@ -199,7 +220,7 @@ class CoreAppTest(unittest.IsolatedAsyncioTestCase):
             with self.assertRaisesRegex(RuntimeError, "agent close failed"):
                 await app.close()
 
-            set_publisher.assert_called_once_with(None)
+            install_bus.assert_called_once_with(None)
             self.assertEqual([app.config.shutdown_timeout_seconds], pool.close_timeouts)
 
     def test_core_config_rejects_non_loopback_host(self):

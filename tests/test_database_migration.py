@@ -1,11 +1,13 @@
 import unittest
 from pathlib import Path
 import shutil
+import subprocess
 from unittest.mock import patch
 from uuid import uuid4
 
 from src.core.database.migration import MigrationReport, WorkspaceMigration, create_database_backup
 from src.core.database.schema import LegacySchemaError, SchemaManager
+from src.core.state.migration import LocalStateMigration, LocalStateMigrationReport
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -181,6 +183,124 @@ class DatabaseMigrationTest(unittest.TestCase):
             backup = create_database_backup()
 
         self.assertEqual(b"backup", backup.read_bytes())
+
+    def test_failed_docker_backup_removes_empty_file_and_reports_error(self):
+        target_dir = ROOT / ".test_tmp" / f"backup-failure-{uuid4().hex}"
+        target_dir.mkdir(parents=True)
+        self.addCleanup(shutil.rmtree, target_dir, True)
+
+        with (
+            patch("src.core.database.migration.backup_dir", return_value=target_dir),
+            patch("src.core.database.migration.shutil.which", side_effect=[None, "docker"]),
+            patch("pathlib.Path.unlink") as unlink,
+            patch(
+                "src.core.database.migration.subprocess.run",
+                side_effect=subprocess.CalledProcessError(
+                    1,
+                    ["docker", "exec"],
+                    stderr=b"No such container: configured-name",
+                ),
+            ),
+            self.assertRaisesRegex(RuntimeError, "No such container"),
+        ):
+            create_database_backup()
+
+        unlink.assert_called_once_with(missing_ok=True)
+
+    def test_local_state_report_exposes_rows_deleted_by_source_prune(self):
+        report = LocalStateMigrationReport(
+            ROOT,
+            "default",
+            1,
+            503,
+            7,
+            1611,
+            ROOT / "state.db",
+            source_sessions=3,
+            source_messages=533,
+            source_memories=9,
+            source_events=1735,
+        )
+
+        self.assertEqual(
+            {"sessions": 2, "messages": 30, "memories": 2, "events": 124},
+            report.deleted_counts,
+        )
+
+    def test_local_source_prune_rolls_back_when_validation_fails(self):
+        cursor = FakeCursor([("workspace-id", "session-id")])
+        connection = FakeConnection(cursor)
+        report = LocalStateMigrationReport(
+            ROOT,
+            "default",
+            1,
+            2,
+            3,
+            4,
+            ROOT / "state.db",
+        )
+
+        class FailingPrune(LocalStateMigration):
+            def _validate_source_prune(self, cur, expected):
+                raise RuntimeError("prune validation failed")
+
+        migration = FailingPrune(lambda: connection)
+        with self.assertRaisesRegex(RuntimeError, "prune validation failed"):
+            migration._prune_source(report)
+
+        self.assertEqual([RuntimeError], connection.transaction_errors)
+        statements = " ".join(query for query, _params in cursor.queries).upper()
+        self.assertIn("DELETE FROM AGENT_SESSIONS", statements)
+        self.assertIn("DELETE FROM AGENT_WORKSPACES", statements)
+
+    def test_local_state_apply_uses_unique_temporary_file_in_target_directory(self):
+        target = ROOT / "state.review-test.db"
+
+        class SuccessfulMigration(LocalStateMigration):
+            def inspect(self, workspace, keep_session):
+                return LocalStateMigrationReport(
+                    ROOT,
+                    "default",
+                    1,
+                    0,
+                    0,
+                    0,
+                    target,
+                )
+
+            def _copy(self, report, database):
+                self.temporary_path = database.path
+
+            def _validate(self, report, database):
+                return None
+
+        class FakeLocalDatabase:
+            def __init__(self, path):
+                self.path = Path(path)
+                self.closed = False
+
+            def initialize(self):
+                return None
+
+            def close(self):
+                self.closed = True
+
+        migration = SuccessfulMigration(lambda: None, target_path=target)
+        with (
+            patch(
+                "src.core.state.migration.create_database_backup",
+                return_value=ROOT / "backup.dump",
+            ),
+            patch("src.core.state.migration.LocalStateDatabase", FakeLocalDatabase),
+            patch("src.core.state.migration.os.replace") as replace,
+        ):
+            report = migration.apply(ROOT)
+
+        self.assertEqual(target.parent, migration.temporary_path.parent)
+        self.assertNotEqual(target.with_suffix(".migration.tmp"), migration.temporary_path)
+        self.assertIn(".migration.tmp", migration.temporary_path.name)
+        replace.assert_called_once_with(migration.temporary_path, target)
+        self.assertTrue(report.applied)
 
 
 if __name__ == "__main__":

@@ -218,49 +218,57 @@ def create_database_backup() -> Path:
     dbname = str(config.get("dbname", "learn_agent"))
     password = str(config.get("password") or "")
     native = PG_DUMP_PATH or shutil.which("pg_dump")
-    if native:
-        command = [
-            native,
-            "-Fc",
-            "-h",
-            host,
-            "-p",
-            port,
-            "-U",
-            user,
-            "-d",
-            dbname,
-            "-f",
-            str(target),
-        ]
-        env = os.environ.copy()
-        if password:
-            env["PGPASSWORD"] = password
-        subprocess.run(command, check=True, env=env, capture_output=True)
-    elif shutil.which("docker"):
-        docker_command = ["docker", "exec"]
-        if password:
-            docker_command.extend(["-e", f"PGPASSWORD={password}"])
-        docker_command.extend(
-            [
-                POSTGRES_DOCKER_CONTAINER,
-                "pg_dump",
+    try:
+        if native:
+            command = [
+                native,
                 "-Fc",
+                "-h",
+                host,
+                "-p",
+                port,
                 "-U",
                 user,
                 "-d",
                 dbname,
+                "-f",
+                str(target),
             ]
-        )
-        with target.open("wb") as output:
-            subprocess.run(
-                docker_command,
-                check=True,
-                stdout=output,
-                stderr=subprocess.PIPE,
+            env = os.environ.copy()
+            if password:
+                env["PGPASSWORD"] = password
+            subprocess.run(command, check=True, env=env, capture_output=True)
+        elif shutil.which("docker"):
+            docker_command = ["docker", "exec"]
+            if password:
+                docker_command.extend(["-e", f"PGPASSWORD={password}"])
+            docker_command.extend(
+                [
+                    POSTGRES_DOCKER_CONTAINER,
+                    "pg_dump",
+                    "-Fc",
+                    "-U",
+                    user,
+                    "-d",
+                    dbname,
+                ]
             )
-    else:
-        raise RuntimeError("No pg_dump executable or Docker fallback is available.")
+            with target.open("wb") as output:
+                subprocess.run(
+                    docker_command,
+                    check=True,
+                    stdout=output,
+                    stderr=subprocess.PIPE,
+                )
+        else:
+            raise RuntimeError("No pg_dump executable or Docker fallback is available.")
+    except subprocess.CalledProcessError as exc:
+        target.unlink(missing_ok=True)
+        details = (exc.stderr or b"").decode("utf-8", errors="replace").strip()
+        raise RuntimeError(f"Database backup command failed: {details or exc}") from exc
+    except Exception:
+        target.unlink(missing_ok=True)
+        raise
     if not target.exists() or target.stat().st_size == 0:
         raise RuntimeError("Database backup failed or produced an empty file.")
     return target
