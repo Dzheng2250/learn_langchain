@@ -15,7 +15,7 @@ from src.core.bus.router import (
     RpcRouter,
 )
 from src.core.transport.socket_server import SocketRequestContext
-from src.core.tracing import TraceDirection, TraceLayer, TraceRecorder, record_trace
+from src.core.tracing import TraceRecorder
 
 
 TOKEN = "test-token"
@@ -48,10 +48,8 @@ class FakeAgentService:
         run_id=None,
         control=None,
     ):
-        record_trace(TraceDirection.INTERNAL, TraceLayer.AGENT, "agent.run_started")
         await asyncio.to_thread(on_event, {"event": "token", "data": {"content": "hello"}})
         await asyncio.to_thread(on_event, {"event": "done", "data": {"status": "ok"}})
-        record_trace(TraceDirection.INTERNAL, TraceLayer.AGENT, "agent.run_finished")
         return {"status": "ok", "run_id": run_id}
 
 
@@ -238,8 +236,6 @@ class CoreServerIntegrationTest(unittest.IsolatedAsyncioTestCase):
             {
                 "ipc.request_received",
                 "ipc.request_validated",
-                "agent.run_started",
-                "agent.run_finished",
                 "ipc.notification_sent",
                 "ipc.response_sent",
             }.issubset(kinds)

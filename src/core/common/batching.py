@@ -70,6 +70,8 @@ class BoundedBatchWorker(Generic[ItemT]):
         self._thread.join(timeout=max(0.01, timeout_seconds))
 
     def _run(self) -> None:
+        # `_closed` only rejects new producers. The consumer exits exclusively
+        # after reading the sentinel so already-queued items retain FIFO order.
         while True:
             item = self._queue.get()
             if item is None:

@@ -49,6 +49,8 @@ class TraceRecord:
         """Return a JSON-compatible representation."""
         value = asdict(self)
         value["timestamp"] = self.timestamp.astimezone(timezone.utc).isoformat()
+        # Keep the wire format explicit if the internal model implementation
+        # later changes, for example from dataclass to Pydantic.
         value["direction"] = self.direction.value
         value["layer"] = self.layer.value
         return value

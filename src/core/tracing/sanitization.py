@@ -3,6 +3,9 @@
 from src.config.settings import TRACE_DATA_PREVIEW_LIMIT
 
 
+TRACE_DATA_MAX_DEPTH = 20
+MAX_DEPTH_MARKER = "[TRACE_MAX_DEPTH_EXCEEDED]"
+
 SENSITIVE_KEYS = {
     "api_key",
     "apikey",
@@ -26,15 +29,21 @@ SENSITIVE_KEYS = {
 }
 
 
-def sanitize_trace_data(value):
-    """Remove content-bearing fields and bound every remaining string."""
+def sanitize_trace_data(value, *, _depth: int = 0):
+    """Remove content-bearing fields and bound size and nesting depth."""
+    if _depth >= TRACE_DATA_MAX_DEPTH:
+        return MAX_DEPTH_MARKER
     if isinstance(value, dict):
         return {
-            str(key): "[REDACTED]" if _sensitive(str(key)) else sanitize_trace_data(item)
+            str(key): (
+                "[REDACTED]"
+                if _sensitive(str(key))
+                else sanitize_trace_data(item, _depth=_depth + 1)
+            )
             for key, item in value.items()
         }
     if isinstance(value, (list, tuple)):
-        return [sanitize_trace_data(item) for item in value[:50]]
+        return [sanitize_trace_data(item, _depth=_depth + 1) for item in value[:50]]
     if isinstance(value, str):
         return _truncate(value)
     if isinstance(value, (int, float, bool)) or value is None:

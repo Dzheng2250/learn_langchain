@@ -20,7 +20,7 @@ from src.core.tracing import (
     record_trace,
     reset_trace_context,
 )
-from src.core.tracing.sanitization import sanitize_trace_data
+from src.core.tracing.sanitization import MAX_DEPTH_MARKER, sanitize_trace_data
 from src.core.tracing.llm import LlmTraceCallback
 
 
@@ -90,6 +90,47 @@ class TracingTest(unittest.TestCase):
         self.assertEqual(12, value["input_tokens"])
         self.assertEqual(5, value["output_tokens"])
         self.assertIn("trace data truncated", value["safe"])
+
+    def test_trace_data_stops_at_bounded_nesting_depth(self):
+        value = "leaf"
+        for _ in range(100):
+            value = {"nested": value}
+
+        sanitized = sanitize_trace_data(value)
+        for _ in range(20):
+            sanitized = sanitized["nested"]
+        self.assertEqual(MAX_DEPTH_MARKER, sanitized)
+
+    def test_duration_is_normalized_without_breaking_trace(self):
+        writer = MemoryWriter()
+        recorder = TraceRecorder(writer)
+
+        self.assertEqual(
+            12,
+            recorder.record(
+                TraceDirection.INTERNAL,
+                TraceLayer.AGENT,
+                "agent.float_duration",
+                duration_ms=12.9,
+            ).duration_ms,
+        )
+        self.assertEqual(
+            0,
+            recorder.record(
+                TraceDirection.INTERNAL,
+                TraceLayer.AGENT,
+                "agent.negative_duration",
+                duration_ms=-5,
+            ).duration_ms,
+        )
+        self.assertIsNone(
+            recorder.record(
+                TraceDirection.INTERNAL,
+                TraceLayer.AGENT,
+                "agent.invalid_duration",
+                duration_ms="invalid",
+            ).duration_ms
+        )
 
     def test_writer_failure_does_not_escape_business_call(self):
         recorder = TraceRecorder(FailingWriter())

@@ -77,26 +77,35 @@ def _print_record(record: dict, *, raw: bool) -> None:
     )
 
 
-def _follow(root, args) -> None:
-    path = _today_path(root)
+def _follow(root, args, *, path_provider=None, sleep=None) -> None:
+    """Follow complete JSONL records and switch files at the UTC date boundary."""
+    path_provider = path_provider or (lambda: _today_path(root))
+    sleep = sleep or time.sleep
+    path = path_provider()
     offset = path.stat().st_size if path.exists() else 0
     try:
         while True:
-            next_path = _today_path(root)
+            next_path = path_provider()
             if next_path != path:
                 path, offset = next_path, 0
             if path.exists():
                 with path.open("r", encoding="utf-8") as stream:
                     stream.seek(offset)
-                    for line in stream:
+                    while line := stream.readline():
+                        line_start = offset
+                        # A concurrently appended final line may be visible
+                        # before its newline. Re-read it on the next poll.
+                        if not line.endswith("\n"):
+                            offset = line_start
+                            break
+                        offset = stream.tell()
                         try:
                             record = json.loads(line)
                         except json.JSONDecodeError:
                             continue
                         if isinstance(record, dict) and _matches(record, args):
                             _print_record(record, raw=args.raw)
-                    offset = stream.tell()
-            time.sleep(0.25)
+            sleep(0.25)
     except KeyboardInterrupt:
         return
 

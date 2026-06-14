@@ -90,6 +90,9 @@ C:\Users\<user>\AppData\Local\learn-agent\state\traces\2026-06-14\daemon.jsonl
 
 只保留 `run_id` 无法重建跨 resume 的任务；只保留 `execution_id` 又无法区分不同客户端请求。
 
+`trace_id` 与 `run_id` 由 Core 在请求验证和 Agent Handler 中生成，客户端不能通过
+`ChatParams` 指定它们。这是有意的信任边界：避免客户端伪造、碰撞或污染其他请求的诊断身份。
+
 ## 4. 数据流与设计模式
 
 ```text
@@ -207,6 +210,10 @@ learn-agent trace --limit 200
 - `--follow` 从当天文件末尾开始持续读取，并在 UTC 日期变化后切换文件。
 - `--raw` 输出原始 JSONL，便于交给 `jq` 等工具处理。
 - CLI 直接读取用户级文件，不要求 daemon 正常运行。
+
+daemon 运行期间也允许读取 Trace。Writer 按完整 JSONL 行追加；CLI 只处理带换行符且能够解析的
+完整记录。如果最后一行正在写入，`--follow` 会保留原 offset 并在下一轮重新读取，不会把半行
+误判为永久损坏。Trace 仍是 best-effort 诊断数据，不提供事务性审计保证。
 
 ## 8. 当前边界与未来方向
 

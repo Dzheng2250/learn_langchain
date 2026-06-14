@@ -61,7 +61,7 @@ class TraceRecorder:
                 span_id=identity.get("span_id", context.span_id),
                 parent_span_id=identity.get("parent_span_id", context.parent_span_id),
                 client_id=identity.get("client_id", context.client_id),
-                duration_ms=duration_ms,
+                duration_ms=_normalize_duration_ms(duration_ms),
                 data=sanitize_trace_data(data or {}),
             )
             try:
@@ -90,3 +90,13 @@ def install_trace_recorder(recorder=None) -> None:
 def record_trace(direction, layer, kind: str, **kwargs):
     """Record one trace without exposing recorder ownership to business modules."""
     return _recorder.record(direction, layer, kind, **kwargs)
+
+
+def _normalize_duration_ms(value) -> int | None:
+    """Return a non-negative integer duration without breaking best-effort Trace."""
+    if value is None:
+        return None
+    try:
+        return max(0, int(value))
+    except (TypeError, ValueError, OverflowError):
+        return None
