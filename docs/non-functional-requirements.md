@@ -59,6 +59,7 @@
 |---|---|---:|
 | `stream_forward_latency_ms` | Core 收到 token 到开始写入客户端连接 | p95 < 20 ms，p99 < 50 ms |
 | `telemetry_publish_latency_ms` | 业务线程调用 `emit_event()` 的耗时 | p95 < 2 ms，p99 < 10 ms |
+| `trace_record_latency_ms` | 任意业务线程调用 `record_trace()` 的耗时 | p95 < 2 ms，p99 < 10 ms |
 | `response_release_latency_ms` | 最后一个可见 token 到 CLI 可再次接受输入 | p95 < 100 ms，p99 < 250 ms |
 | `minimal_commit_latency_ms` | 消息、Session、Execution 和维护任务原子提交耗时 | p95 < 100 ms；是响应前耐久性屏障 |
 | `same_session_handoff_ms` | 下一轮解析已提交上一轮状态的额外耗时 | p95 < 50 ms |

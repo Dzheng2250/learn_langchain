@@ -39,6 +39,16 @@ from src.core.context.manager import AgentContextManager
 from src.core.errors import ProviderErrorHandler
 from src.core.llm.provider import OpenAICompatibleProvider
 from src.core.workspace.runtime import WorkspaceRuntimeFactory, WorkspaceRuntimeRegistry
+from src.config.paths import trace_dir
+from src.core.tracing import (
+    TraceDirection,
+    TraceLayer,
+    TraceRecorder,
+    TraceWriter,
+    TracingModelProvider,
+    install_trace_recorder,
+    record_trace,
+)
 
 
 class CoreTransport(Protocol):
@@ -75,12 +85,33 @@ class CoreApp:
         agent_service: ManagedAgentService | None = None,
         transport_factory: TransportFactory = create_socket_transport,
         event_bus: EventBus | None = None,
+        trace_recorder=None,
     ) -> None:
         self.config = config
         self.shutdown_event = asyncio.Event()
         self._pool = None
         self._state_database = None
         self._event_bus = event_bus
+        self._trace_recorder = trace_recorder
+        if self._trace_recorder is None:
+            from src.config.settings import (
+                TRACE_BATCH_SIZE,
+                TRACE_ENABLED,
+                TRACE_FLUSH_INTERVAL_SECONDS,
+                TRACE_QUEUE_MAX_SIZE,
+                TRACE_RETENTION_DAYS,
+            )
+
+            if TRACE_ENABLED and self.config.manage_runtime_files:
+                writer = TraceWriter(
+                    trace_dir(),
+                    retention_days=TRACE_RETENTION_DAYS,
+                    batch_size=TRACE_BATCH_SIZE,
+                    flush_interval_seconds=TRACE_FLUSH_INTERVAL_SECONDS,
+                    queue_max_size=TRACE_QUEUE_MAX_SIZE,
+                )
+                writer.cleanup()
+                self._trace_recorder = TraceRecorder(writer)
         if agent_service is None:
             # CoreApp is the process-level composition root. These objects are
             # intentionally shared across requests; workspace-specific graphs
@@ -93,8 +124,16 @@ class CoreApp:
 
             self._pool = create_pool() if AGENT_EVENTS_POSTGRES_ENABLED else None
             if self._event_bus is None:
-                self._event_bus = create_event_bus(self._pool)
-            model_provider = OpenAICompatibleProvider()
+                self._event_bus = create_event_bus(
+                    self._pool,
+                    include_trace_sink=self._trace_recorder is not None,
+                )
+            base_model_provider = OpenAICompatibleProvider()
+            model_provider = (
+                TracingModelProvider(base_model_provider)
+                if self._trace_recorder is not None
+                else base_model_provider
+            )
             run_limits = RunLimits()
             workspace_repository = LocalWorkspaceRepository(self._state_database)
             execution_repository = ExecutionRepository(self._state_database)
@@ -182,14 +221,26 @@ class CoreApp:
         if self._started:
             return
         try:
+            install_trace_recorder(self._trace_recorder)
+            record_trace(
+                TraceDirection.INTERNAL,
+                TraceLayer.LIFECYCLE,
+                "core.starting",
+            )
             install_event_bus(self._event_bus)
             self.agent_service.initialize()
             if self.config.manage_runtime_files:
                 ensure_runtime_dir(self.config.runtime_dir)
-            await self.transport.start()
+            bound_port = await self.transport.start()
             if self.config.manage_runtime_files:
                 pid_path(self.config.runtime_dir).write_text(str(os.getpid()), encoding="ascii")
             self._started = True
+            record_trace(
+                TraceDirection.INTERNAL,
+                TraceLayer.LIFECYCLE,
+                "core.started",
+                data={"host": self.config.host, "port": bound_port},
+            )
         except Exception:
             await self.close()
             raise
@@ -207,6 +258,11 @@ class CoreApp:
         if self._closed:
             return
         self._closed = True
+        record_trace(
+            TraceDirection.INTERNAL,
+            TraceLayer.LIFECYCLE,
+            "core.stopping",
+        )
         try:
             await self.transport.close(self.config.shutdown_timeout_seconds)
         finally:
@@ -214,12 +270,27 @@ class CoreApp:
                 await asyncio.to_thread(self.agent_service.close)
             finally:
                 try:
-                    await asyncio.to_thread(install_event_bus, None)
-                    if self._pool is not None:
-                        await asyncio.to_thread(
-                            self._pool.close,
-                            timeout=self.config.shutdown_timeout_seconds,
+                    try:
+                        await asyncio.to_thread(install_event_bus, None)
+                        record_trace(
+                            TraceDirection.INTERNAL,
+                            TraceLayer.LIFECYCLE,
+                            "core.stopped",
                         )
+                    finally:
+                        try:
+                            if self._trace_recorder is not None:
+                                await asyncio.to_thread(
+                                    self._trace_recorder.close,
+                                    self.config.shutdown_timeout_seconds,
+                                )
+                        finally:
+                            install_trace_recorder(None)
+                            if self._pool is not None:
+                                await asyncio.to_thread(
+                                    self._pool.close,
+                                    timeout=self.config.shutdown_timeout_seconds,
+                                )
                 finally:
                     if self._state_database is not None:
                         self._state_database.close()

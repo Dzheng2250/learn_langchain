@@ -1,5 +1,9 @@
 # Event 系统设计与维护指南
 
+> 本文解释领域 Telemetry Event。跨 IPC、Agent、LLM 和 Tool 的统一排障时间线见
+> [`system-tracing.md`](system-tracing.md)。Trace 不替代 Telemetry，Telemetry 也不是业务状态的
+> 权威来源。
+
 本文只解释事件系统。Agent 的完整执行链见
 [`agent-execution-architecture.md`](agent-execution-architecture.md)。
 延迟、故障隔离和性能验收要求见

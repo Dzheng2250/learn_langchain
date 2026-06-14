@@ -9,6 +9,9 @@
 > Telemetry Event、EventBus、Sink 和可靠性边界见
 > [`event-system.md`](event-system.md)。
 >
+> IPC、Agent、LLM、Tool 和响应写回的跨层排障时间线见
+> [`system-tracing.md`](system-tracing.md)。
+>
 > 用户可感知延迟、后台处理边界与验收方法见
 > [`non-functional-requirements.md`](non-functional-requirements.md) 和
 > [`non-functional-testing.md`](non-functional-testing.md)。

@@ -2,7 +2,7 @@
 
 from src.cli.client import CoreClient
 from src.cli.errors import CliError, CoreRequestError
-from src.cli.render import render_agent_event, render_cli_error
+from src.cli.render import AgentEventRenderer, render_cli_error
 from src.cli.workspace import discover_workspace_root
 
 
@@ -28,11 +28,12 @@ def run(args, config) -> int:
 def chat_once(client: CoreClient, session_name: str, message: str, workspace: str | None = None) -> None:
     """Send one Workspace-scoped message to Core and render its event stream."""
     workspace_root = discover_workspace_root(workspace)
+    renderer = AgentEventRenderer()
     print("AI: ", end="", flush=True)
     result = client.request(
         "agent.chat",
         {"workspace_root": str(workspace_root), "session_name": session_name, "message": message},
-        on_event=render_agent_event,
+        on_event=renderer.render,
     )
     print()
     if result.get("memory_status") == "pending" and result.get("memory_request_explicit"):

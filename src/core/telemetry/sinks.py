@@ -2,12 +2,9 @@
 
 import json
 import os
-import queue
-import threading
-import time
-
 from src.config.settings import AGENT_EVENTS_FILE_PATH
 from src.config.paths import telemetry_dir
+from src.core.common.batching import BoundedBatchWorker
 from src.core.common.debug import debug_print
 from src.core.telemetry.models import BatchEventSink, TelemetryEvent
 from src.core.telemetry.serialization import event_to_dict
@@ -117,75 +114,32 @@ class BufferedEventSink:
         queue_max_size: int,
     ) -> None:
         self.sink = sink
-        self.batch_size = max(1, int(batch_size))
-        self.flush_interval_seconds = max(0.05, float(flush_interval_seconds))
-        self._queue: queue.Queue[TelemetryEvent | None] = queue.Queue(
-            maxsize=max(1, int(queue_max_size))
-        )
         self._closed = False
-        self._worker = threading.Thread(
-            target=self._run_writer,
+        self._worker = BoundedBatchWorker(
+            sink.emit_batch,
+            batch_size=batch_size,
+            flush_interval_seconds=flush_interval_seconds,
+            queue_max_size=queue_max_size,
             name="telemetry-buffer-writer",
-            daemon=True,
+            on_error=lambda exc: debug_print("TELEMETRY BATCH WRITE ERROR", str(exc)),
+            on_drop=lambda event: debug_print(
+                "TELEMETRY QUEUE FULL",
+                f"dropped event_type={event.event_type}, level={event.level}",
+            ),
         )
-        self._worker.start()
 
     def emit(self, event: TelemetryEvent) -> None:
         if self._closed:
             return
-        try:
-            self._queue.put_nowait(event)
-        except queue.Full:
-            debug_print(
-                "TELEMETRY QUEUE FULL",
-                f"dropped event_type={event.event_type}, level={event.level}",
-            )
+        self._worker.submit(event)
 
     def flush(self) -> None:
-        self._queue.join()
+        self._worker.flush()
         self.sink.flush()
 
     def close(self) -> None:
         if self._closed:
             return
         self._closed = True
-        self._queue.put(None)
-        self._queue.join()
-        if self._worker.is_alive():
-            self._worker.join(timeout=2)
+        self._worker.close(timeout_seconds=2)
         self.sink.close()
-
-    def _run_writer(self) -> None:
-        while True:
-            event = self._queue.get()
-            if event is None:
-                self._queue.task_done()
-                return
-
-            batch = [event]
-            stop_after_batch = False
-            deadline = time.monotonic() + self.flush_interval_seconds
-            while len(batch) < self.batch_size:
-                timeout = max(0, deadline - time.monotonic())
-                if timeout == 0:
-                    break
-                try:
-                    next_event = self._queue.get(timeout=timeout)
-                except queue.Empty:
-                    break
-                if next_event is None:
-                    self._queue.task_done()
-                    stop_after_batch = True
-                    break
-                batch.append(next_event)
-
-            try:
-                self.sink.emit_batch(batch)
-            except Exception as exc:
-                debug_print("TELEMETRY BATCH WRITE ERROR", str(exc))
-            finally:
-                for _item in batch:
-                    self._queue.task_done()
-
-            if stop_after_batch:
-                return

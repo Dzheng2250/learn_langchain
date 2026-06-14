@@ -29,6 +29,16 @@
 
 ## 3. 必须补充的自动测试
 
+### 3.0 System Trace 不得阻塞业务
+
+构造慢 Trace Writer、容量为 1 的队列和大量并发 Trace 记录，验收：
+
+- `record_trace()` 满足 `trace_record_latency_ms`；
+- 队列满时允许丢弃 Trace，但 token 和 JSON-RPC 响应继续；
+- Writer 异常不会改变 Agent 结果；
+- Trace 不保存 auth token、完整消息、Prompt、文件内容和工具结果；
+- 同一请求跨 IPC、Agent、LLM 的记录具有相同 `trace_id`。
+
 ### 3.1 慢 Telemetry 数据库不影响 token
 
 构造：

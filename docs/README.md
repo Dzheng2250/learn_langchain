@@ -17,6 +17,7 @@
 | 可恢复执行与预算 | [`resumable-execution.md`](resumable-execution.md) |
 | 记忆管理 | [`memory-management.md`](memory-management.md) |
 | Telemetry Event 系统 | [`event-system.md`](event-system.md) |
+| 系统级 Trace 时间线 | [`system-tracing.md`](system-tracing.md) |
 | 部署 | [`deployment.md`](deployment.md) |
 
 ## Current Design Note：当前设计说明

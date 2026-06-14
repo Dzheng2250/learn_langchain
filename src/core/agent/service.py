@@ -1,6 +1,7 @@
 """Workspace-aware application service for one complete Agent turn."""
 
 import asyncio
+from contextvars import copy_context
 from collections.abc import Callable, Iterator
 from concurrent.futures import Executor, ThreadPoolExecutor
 from functools import partial
@@ -32,6 +33,22 @@ from src.core.streaming.events import stream_graph_events
 from src.core.workspace.models import SessionContext
 from src.core.workspace.contracts import WorkspaceIdentityRepository
 from src.core.workspace.runtime import WorkspaceRuntimeRegistry
+from src.core.tracing import (
+    TraceDirection,
+    TraceLayer,
+    bind_trace_context,
+    record_trace,
+    reset_trace_context,
+)
+
+
+def _trace_slice(events, slice_id):
+    """Bind one Slice identity around graph streaming and LLM callbacks."""
+    token = bind_trace_context(slice_id=slice_id)
+    try:
+        yield from events
+    finally:
+        reset_trace_context(token)
 
 
 class SessionLockRegistry:
@@ -142,7 +159,9 @@ class AgentTurnService:
         # an unbounded queue from accumulating in ThreadPoolExecutor.
         await self._turn_slots.acquire()
         try:
+            worker_context = copy_context()
             worker_future = self._turn_executor.submit(
+                worker_context.run,
                 partial(
                     self._run_turn_sync,
                     workspace_root,
@@ -182,7 +201,9 @@ class AgentTurnService:
         loop = asyncio.get_running_loop()
         await self._turn_slots.acquire()
         try:
+            worker_context = copy_context()
             worker_future = self._turn_executor.submit(
+                worker_context.run,
                 partial(
                     self._run_resume_sync,
                     workspace_root,
@@ -316,6 +337,13 @@ class AgentTurnService:
                         "or 'learn-agent session discard' before starting a new chat."
                     )
                 execution = self.execution_repository.begin(session, normalized)
+                record_trace(
+                    TraceDirection.INTERNAL,
+                    TraceLayer.AGENT,
+                    "agent.execution_attached",
+                    execution_id=execution.execution_id,
+                    data={"status": execution.status.value},
+                )
             try:
                 runtime = self.runtime_registry.get(workspace)
             except Exception as exc:
@@ -352,6 +380,13 @@ class AgentTurnService:
         session, _ = self.workspace_repository.resolve_session(workspace, session_name)
         with self.lock_registry.get(session.session_id):
             pending = self.execution_repository.resume(session)
+            record_trace(
+                TraceDirection.INTERNAL,
+                TraceLayer.AGENT,
+                "agent.execution_attached",
+                execution_id=pending.execution_id,
+                data={"status": pending.status.value, "resume": True},
+            )
             try:
                 runtime = self.runtime_registry.get(workspace)
                 if instruction.strip():
@@ -470,6 +505,7 @@ class AgentTurnService:
             run_id=run_id,
         )
         run_context_token = None
+        execution_trace_token = None
         budget_token = None
         budget = None
         active_slice_id = None
@@ -487,6 +523,14 @@ class AgentTurnService:
             current_turn = prepared.turn_index
             run_context = prepared.run_context
             run_context_token = bind_run_context(run_context)
+            if execution is not None:
+                execution_trace_token = bind_trace_context(execution_id=execution.execution_id)
+            record_trace(
+                TraceDirection.INTERNAL,
+                TraceLayer.AGENT,
+                "agent.run_started",
+                data={"turn_index": current_turn, "resume": resume},
+            )
             emit_event(
                 "turn_started",
                 "agent_service",
@@ -518,14 +562,24 @@ class AgentTurnService:
                         slice_number,
                     )
                     active_slice_id = slice_id
+                record_trace(
+                    TraceDirection.INTERNAL,
+                    TraceLayer.AGENT,
+                    "agent.slice_started",
+                    slice_id=slice_id,
+                    data={"slice_number": slice_number},
+                )
                 slice_input = None if resume or slice_number > 1 else input_messages
                 paused_for_budget = False
-                for item in stream_graph_events(
-                    graph,
-                    slice_input,
-                    run_context,
-                    checkpoint_thread_id=checkpoint_thread_id,
-                    provider_error_handler=self.provider_error_handler,
+                for item in _trace_slice(
+                    stream_graph_events(
+                        graph,
+                        slice_input,
+                        run_context,
+                        checkpoint_thread_id=checkpoint_thread_id,
+                        provider_error_handler=self.provider_error_handler,
+                    ),
+                    slice_id,
                 ):
                     total_tool_calls += int(item.get("data", {}).get("tool_call_count", 0)) if item["event"] in {"paused", "done"} else 0
                     if item["event"] == "paused":
@@ -545,8 +599,25 @@ class AgentTurnService:
                                 usage=usage,
                             )
                             active_slice_id = None
+                        record_trace(
+                            TraceDirection.INTERNAL,
+                            TraceLayer.AGENT,
+                            "agent.slice_finished",
+                            slice_id=slice_id,
+                            data={"status": "paused", "stop_reason": exhausted_reason},
+                        )
                         break
                     if item["event"] == "error":
+                        record_trace(
+                            TraceDirection.INTERNAL,
+                            TraceLayer.AGENT,
+                            "agent.slice_finished",
+                            slice_id=slice_id,
+                            data={
+                                "status": "error",
+                                "stop_reason": item["data"].get("stop_reason"),
+                            },
+                        )
                         if execution is not None and self.execution_repository is not None:
                             usage = budget.snapshot()
                             if slice_id:
@@ -609,6 +680,12 @@ class AgentTurnService:
                             },
                             level="error",
                         )
+                        record_trace(
+                            TraceDirection.INTERNAL,
+                            TraceLayer.AGENT,
+                            "agent.run_failed",
+                            data={"stop_reason": item["data"].get("stop_reason")},
+                        )
                         yield item
                         return
                     if item["event"] != "done":
@@ -629,6 +706,13 @@ class AgentTurnService:
                         usage=budget.snapshot(),
                     )
                     active_slice_id = None
+                    record_trace(
+                        TraceDirection.INTERNAL,
+                        TraceLayer.AGENT,
+                        "agent.slice_finished",
+                        slice_id=slice_id,
+                        data={"status": "completed"},
+                    )
                     emit_event(
                         "turn_finished",
                         "agent_service",
@@ -638,6 +722,12 @@ class AgentTurnService:
                             "tool_call_count": total_tool_calls,
                             "slice_count": slice_number,
                         },
+                    )
+                    record_trace(
+                        TraceDirection.INTERNAL,
+                        TraceLayer.AGENT,
+                        "agent.run_finished",
+                        data={"status": "ok", "slice_count": slice_number},
                     )
                     yield {
                         "event": "done",
@@ -698,6 +788,12 @@ class AgentTurnService:
                 summary,
                 {"slice_count": slice_number, **snapshot},
             )
+            record_trace(
+                TraceDirection.INTERNAL,
+                TraceLayer.AGENT,
+                "agent.run_paused",
+                data={"stop_reason": exhausted_reason, "slice_count": slice_number},
+            )
             yield {
                 "event": "done",
                 "data": {
@@ -735,6 +831,12 @@ class AgentTurnService:
                 except Exception:
                     pass
             record_error("agent_service", "turn", exc, "Agent turn failed.", event_type="turn_failed")
+            record_trace(
+                TraceDirection.INTERNAL,
+                TraceLayer.AGENT,
+                "agent.run_failed",
+                data={"error_type": type(exc).__name__},
+            )
             yield {
                 "event": "error",
                 "data": {
@@ -747,6 +849,8 @@ class AgentTurnService:
         finally:
             if run_context_token is not None:
                 reset_context(run_context_token)
+            if execution_trace_token is not None:
+                reset_trace_context(execution_trace_token)
             if budget_token is not None:
                 reset_execution_budget(budget_token)
             reset_context(context_token)

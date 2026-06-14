@@ -15,6 +15,7 @@ from src.core.bus.router import (
     RpcRouter,
 )
 from src.core.transport.socket_server import SocketRequestContext
+from src.core.tracing import TraceDirection, TraceLayer, TraceRecorder, record_trace
 
 
 TOKEN = "test-token"
@@ -47,9 +48,25 @@ class FakeAgentService:
         run_id=None,
         control=None,
     ):
+        record_trace(TraceDirection.INTERNAL, TraceLayer.AGENT, "agent.run_started")
         await asyncio.to_thread(on_event, {"event": "token", "data": {"content": "hello"}})
         await asyncio.to_thread(on_event, {"event": "done", "data": {"status": "ok"}})
+        record_trace(TraceDirection.INTERNAL, TraceLayer.AGENT, "agent.run_finished")
         return {"status": "ok", "run_id": run_id}
+
+
+class MemoryTraceWriter:
+    def __init__(self):
+        self.records = []
+
+    def emit(self, record):
+        self.records.append(record)
+
+    def flush(self):
+        pass
+
+    def close(self, _timeout=2):
+        pass
 
 
 class RouterTest(unittest.IsolatedAsyncioTestCase):
@@ -155,10 +172,12 @@ class CoreServerIntegrationTest(unittest.IsolatedAsyncioTestCase):
             port=0,
             manage_runtime_files=False,
         )
+        self.trace_writer = MemoryTraceWriter()
         self.app = CoreApp(
             config,
             TOKEN,
             agent_service=FakeAgentService(),
+            trace_recorder=TraceRecorder(self.trace_writer, daemon_id="test-daemon"),
         )
         await self.app.start()
 
@@ -208,6 +227,29 @@ class CoreServerIntegrationTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(["token", "done"], [item["params"]["event"] for item in notifications])
         self.assertTrue(all(item["params"]["request_id"] == "request-1" for item in notifications))
         self.assertEqual("ok", messages[-1]["result"]["status"])
+
+        relevant = [
+            record
+            for record in self.trace_writer.records
+            if record.request_id == "request-1"
+        ]
+        kinds = {record.kind for record in relevant}
+        self.assertTrue(
+            {
+                "ipc.request_received",
+                "ipc.request_validated",
+                "agent.run_started",
+                "agent.run_finished",
+                "ipc.notification_sent",
+                "ipc.response_sent",
+            }.issubset(kinds)
+        )
+        self.assertEqual(1, len({record.trace_id for record in relevant}))
+        self.assertEqual(1, len({record.run_id for record in relevant if record.run_id}))
+        request_received = next(
+            record for record in relevant if record.kind == "ipc.request_received"
+        )
+        self.assertGreater(request_received.data["bytes"], 0)
 
     async def test_shutdown_returns_response_and_sets_shutdown_event(self):
         messages = await self._request("core.shutdown", {"auth_token": TOKEN})
