@@ -2,15 +2,18 @@
 
 架构与运行机制：
 
-- [文档导航与版本状态](docs/README.md)
-- [本地优先 Session 状态](docs/local-first-session-state.md)
-- [本地数据库设计与一致性机制](docs/database-state-and-consistency.md)
-- [可恢复执行与预算控制](docs/resumable-execution.md)
-- [PostgreSQL 到本地状态迁移](docs/local-state-migration.md)
-- [本地优先优化的原因、风险与设计审查](docs/local-first-rationale-and-review.md)
-- [最终响应、后台维护与 Checkpoint 一致性](docs/response-finalization-and-checkpoint-consistency.md)
-- [配置参数参考](docs/configuration-reference.md)
-- [配置、领域常量与 Prompt 管理边界](docs/configuration-and-domain-constants.md)
+- [文档中心](/docs/README.md)
+- [前端与 TUI 接入指南](/docs/api/tui-client-guide.md)
+- [RPC 方法参考](/docs/api/rpc-reference.md)
+- [流式事件参考](/docs/api/streaming-events.md)
+- [本地优先 Session 状态](/docs/architecture/local-first-session-state.md)
+- [本地数据库设计与一致性机制](/docs/architecture/database-state-and-consistency.md)
+- [可恢复执行与预算控制](/docs/architecture/resumable-execution.md)
+- [PostgreSQL 到本地状态迁移](/docs/operations/local-state-migration.md)
+- [本地优先优化的原因、风险与设计审查](/docs/decisions/local-first-rationale-and-review.md)
+- [最终响应、后台维护与 Checkpoint 一致性](/docs/architecture/response-finalization-and-checkpoint-consistency.md)
+- [配置参数参考](/docs/reference/configuration-reference.md)
+- [配置、领域常量与 Prompt 管理边界](/docs/decisions/configuration-and-domain-constants.md)
 
 这是一个基于 LangChain、LangGraph 和本地 SQLite 状态库的 coding agent。
 
@@ -123,8 +126,8 @@ Core 首次启动时会自动创建本地 SQLite Schema。若启用了 PostgreSQ
 | `LEARN_AGENT_CORE_HOST` | `127.0.0.1` | Core 本地监听地址；仅允许 loopback |
 | `LEARN_AGENT_CORE_PORT` | `18765` | CLI 与 Core 使用的本地 TCP 端口 |
 
-全部参数的默认值、单位、调整影响和风险见[配置参数参考](docs/configuration-reference.md)。
-完整部署方式、已有 Docker 数据目录复用、故障排查和安全边界见[部署指南](docs/deployment.md)。
+全部参数的默认值、单位、调整影响和风险见[配置参数参考](/docs/reference/configuration-reference.md)。
+完整部署方式、已有 Docker 数据目录复用、故障排查和安全边界见[部署指南](/docs/operations/deployment.md)。
 
 旧变量 `ALIYUN_API_KEY` 和 `ALIYUN_BASE_URL` 暂时保留兼容，但已弃用；通用变量优先。
 
@@ -162,23 +165,34 @@ src/
 
 架构文档：
 
-- [CLI 架构](docs/cli-architecture.md)
-- [Core 架构](docs/core-architecture.md)
-- [Agent 执行架构](docs/agent-execution-architecture.md)
-- [本地数据库设计与一致性机制](docs/database-state-and-consistency.md)
-- [记忆管理与加载机制](docs/memory-management.md)
-- [Event 系统设计与维护指南](docs/event-system.md)
-- [非功能性需求](docs/non-functional-requirements.md)
-- [非功能性测试与验收方案](docs/non-functional-testing.md)
-- [Workspace 隔离与数据库迁移](docs/workspace-isolation-and-migration.md)
-- [配置参数参考](docs/configuration-reference.md)
-- [配置、领域常量与 Prompt 管理边界](docs/configuration-and-domain-constants.md)
+- [CLI 架构](/docs/architecture/cli-architecture.md)
+- [Core 架构](/docs/architecture/core-architecture.md)
+- [Agent 执行架构](/docs/architecture/agent-execution-architecture.md)
+- [本地数据库设计与一致性机制](/docs/architecture/database-state-and-consistency.md)
+- [记忆管理与加载机制](/docs/architecture/memory-management.md)
+- [Event 系统设计与维护指南](/docs/architecture/event-system.md)
+- [非功能性需求](/docs/quality/non-functional-requirements.md)
+- [非功能性测试与验收方案](/docs/quality/non-functional-testing.md)
+- [Workspace 隔离与数据库迁移](/docs/decisions/workspace-isolation-and-migration.md)
+- [配置参数参考](/docs/reference/configuration-reference.md)
+- [配置、领域常量与 Prompt 管理边界](/docs/decisions/configuration-and-domain-constants.md)
 
 ## 测试
 
 ```shell
 python -B -m unittest discover -s tests -v
 ```
+
+默认测试不要求启动可选 PostgreSQL。需要验证真实 PostgreSQL 读写时，显式运行：
+
+```powershell
+$env:LEARN_AGENT_RUN_POSTGRES_INTEGRATION_TESTS = "1"
+python -B -m unittest tests.optional.test_memory_store -v
+```
+
+测试目录分类、运行方式和新增测试归属规则见
+[测试结构与运行指南](/docs/quality/testing-guide.md)；性能与可靠性验收规则见
+[非功能测试文档](/docs/quality/non-functional-testing.md)。
 
 数据库集成测试需要先启动 PostgreSQL：
 
