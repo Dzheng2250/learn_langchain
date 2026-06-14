@@ -374,11 +374,19 @@ class ExecutionRepository:
         return [dict(row) for row in rows]
 
     def discard(self, session: SessionContext) -> PendingExecution:
-        pending = self.get_attached(session)
-        if not pending:
-            raise RuntimeError("Session has no pending execution to discard.")
         with self.database.transaction() as conn:
-            conn.execute(
+            row = conn.execute(
+                """
+                SELECT e.* FROM sessions s
+                JOIN executions e ON e.execution_id = s.pending_execution_id
+                WHERE s.workspace_id=? AND s.session_id=?
+                """,
+                (str(session.workspace.workspace_id), str(session.session_id)),
+            ).fetchone()
+            if not row:
+                raise RuntimeError("Session has no pending execution to discard.")
+            pending = self._from_row(row)
+            execution_update = conn.execute(
                 """
                 UPDATE executions SET status=?, stop_reason=?,
                     checkpoint_state=?, completed_at=CURRENT_TIMESTAMP,
@@ -391,11 +399,51 @@ class ExecutionRepository:
                     pending.execution_id,
                 ),
             )
-            conn.execute(
-                "UPDATE sessions SET pending_execution_id=NULL, updated_at=CURRENT_TIMESTAMP WHERE session_id=?",
-                (str(session.session_id),),
+            if execution_update.rowcount != 1:
+                raise RuntimeError("Discard did not update exactly one Execution.")
+            session_update = conn.execute(
+                """
+                UPDATE sessions SET pending_execution_id=NULL, updated_at=CURRENT_TIMESTAMP
+                WHERE session_id=? AND pending_execution_id=?
+                """,
+                (str(session.session_id), pending.execution_id),
             )
+            if session_update.rowcount != 1:
+                raise RuntimeError("Discard did not release exactly one Session.")
         return pending
+
+    def terminate(self, session: SessionContext, execution_id: str, reason: str) -> None:
+        """Terminate a non-retryable execution and release its Session atomically."""
+        with self.database.transaction() as conn:
+            execution_update = conn.execute(
+                """
+                UPDATE executions
+                SET status=?, stop_reason=?, progress_summary=?,
+                    original_input='[REDACTED]',
+                    checkpoint_state=?, completed_at=CURRENT_TIMESTAMP,
+                    updated_at=CURRENT_TIMESTAMP
+                WHERE execution_id=? AND session_id=?
+                """,
+                (
+                    ExecutionStatus.DISCARDED,
+                    reason,
+                    "Execution terminated after a non-retryable provider error.",
+                    CheckpointState.CLEANUP_PENDING,
+                    execution_id,
+                    str(session.session_id),
+                ),
+            )
+            if execution_update.rowcount != 1:
+                raise RuntimeError("Terminal error did not update exactly one Execution.")
+            session_update = conn.execute(
+                """
+                UPDATE sessions SET pending_execution_id=NULL, updated_at=CURRENT_TIMESTAMP
+                WHERE session_id=? AND pending_execution_id=?
+                """,
+                (str(session.session_id), execution_id),
+            )
+            if session_update.rowcount != 1:
+                raise RuntimeError("Terminal error did not release exactly one Session.")
 
     def _from_row(self, row) -> PendingExecution:
         return PendingExecution(

@@ -36,6 +36,7 @@ from src.core.maintenance.handlers import (
     MemoryExtractionHandler,
 )
 from src.core.context.manager import AgentContextManager
+from src.core.errors import ProviderErrorHandler
 from src.core.llm.provider import OpenAICompatibleProvider
 from src.core.workspace.runtime import WorkspaceRuntimeFactory, WorkspaceRuntimeRegistry
 
@@ -161,6 +162,7 @@ class CoreApp:
                     checkpoint_manager,
                     maintenance_repository,
                 ),
+                provider_error_handler=ProviderErrorHandler(),
             )
         else:
             self.agent_service = agent_service

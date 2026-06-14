@@ -5,6 +5,7 @@ from langchain_core.messages import HumanMessage
 from langgraph.errors import GraphRecursionError
 
 from src.core.agent.models import AgentRunContext, RunLimits, StopReason
+from src.core.errors import ProviderErrorHandler
 from src.core.telemetry import emit_event, record_error
 from src.core.agent.budget import ToolBudgetExceeded
 
@@ -77,6 +78,7 @@ def stream_graph_events(
     run_context: AgentRunContext | None = None,
     *,
     checkpoint_thread_id: str | None = None,
+    provider_error_handler: ProviderErrorHandler | None = None,
 ):
     """Yield events for one Slice; step-limit exhaustion remains recoverable."""
     limits = run_context.limits if run_context else RunLimits()
@@ -192,20 +194,23 @@ def stream_graph_events(
         }
         return
     except Exception as exc:
+        resolution = (provider_error_handler or ProviderErrorHandler()).resolve(exc)
         record_error(
             "agent_stream",
             "llm_or_graph",
-            exc,
+            RuntimeError(resolution.public_message),
             "Graph execution failed.",
+            resolution.event_data(),
             event_type="llm_or_graph_failed",
         )
         yield {
             "event": "error",
             "data": {
-                "type": "graph_execution_error",
+                "type": "provider_error",
                 "stop_reason": StopReason.GRAPH_ERROR.value,
-                "message": str(exc),
+                "message": resolution.public_message,
                 "graph_steps_used": graph_steps_used,
+                **resolution.event_data(),
             },
         }
         return

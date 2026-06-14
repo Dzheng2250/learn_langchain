@@ -19,6 +19,7 @@ from src.core.agent.models import AgentRunContext, RunLimits, StopReason
 from src.core.state.contracts import StateStore
 from src.core.state.types import ExecutionStatus
 from src.core.context.manager import AgentContextManager
+from src.core.errors import ErrorAction, ProviderErrorHandler
 from src.core.telemetry import (
     bind_context,
     bind_run_context,
@@ -75,6 +76,7 @@ class AgentTurnService:
         recovery_coordinator=None,
         turn_coordinator=None,
         max_auto_slices: int = MAX_AUTO_SLICES_PER_GRANT,
+        provider_error_handler: ProviderErrorHandler | None = None,
     ) -> None:
         if max_concurrent_turns <= 0:
             raise ValueError("max_concurrent_turns must be greater than zero")
@@ -104,6 +106,7 @@ class AgentTurnService:
             memory_enabled=self.memory_enabled,
         )
         self.max_auto_slices = max(1, int(max_auto_slices))
+        self.provider_error_handler = provider_error_handler or ProviderErrorHandler()
 
     def initialize(self) -> None:
         """Initialize durable schema dependencies before accepting requests."""
@@ -233,6 +236,16 @@ class AgentTurnService:
                     "stop_reason",
                     StopReason.TURN_ERROR.value,
                 )
+                for field in (
+                    "error_category",
+                    "error_action",
+                    "retryable",
+                    "provider",
+                    "provider_code",
+                    "http_status",
+                ):
+                    if field in item["data"]:
+                        result[field] = item["data"][field]
         return result
 
     def _run_resume_sync(
@@ -261,6 +274,16 @@ class AgentTurnService:
             elif item["event"] == "error":
                 result["error"] = item["data"].get("message", "Agent resume failed.")
                 result["stop_reason"] = item["data"].get("stop_reason", StopReason.TURN_ERROR.value)
+                for field in (
+                    "error_category",
+                    "error_action",
+                    "retryable",
+                    "provider",
+                    "provider_code",
+                    "http_status",
+                ):
+                    if field in item["data"]:
+                        result[field] = item["data"][field]
         return result
 
     def stream_turn(
@@ -502,6 +525,7 @@ class AgentTurnService:
                     slice_input,
                     run_context,
                     checkpoint_thread_id=checkpoint_thread_id,
+                    provider_error_handler=self.provider_error_handler,
                 ):
                     total_tool_calls += int(item.get("data", {}).get("tool_call_count", 0)) if item["event"] in {"paused", "done"} else 0
                     if item["event"] == "paused":
@@ -540,23 +564,48 @@ class AgentTurnService:
                                     usage=usage,
                                 )
                                 active_slice_id = None
-                            self.execution_repository.pause(
-                                execution.execution_id,
-                                ExecutionStatus.PAUSED_ERROR,
-                                item["data"].get("stop_reason", StopReason.TURN_ERROR.value),
-                                item["data"].get("message", ""),
-                                usage=usage,
-                            )
+                            if item["data"].get("error_action") == ErrorAction.TERMINATE:
+                                self._terminate_execution_after_error(
+                                    session,
+                                    execution,
+                                    item["data"].get(
+                                        "error_category",
+                                        StopReason.TURN_ERROR.value,
+                                    ),
+                                )
+                            else:
+                                self.execution_repository.pause(
+                                    execution.execution_id,
+                                    ExecutionStatus.PAUSED_ERROR,
+                                    item["data"].get(
+                                        "stop_reason",
+                                        StopReason.TURN_ERROR.value,
+                                    ),
+                                    item["data"].get("message", ""),
+                                    usage=usage,
+                                )
+                        terminated = (
+                            item["data"].get("error_action") == ErrorAction.TERMINATE
+                        )
                         emit_event(
-                            "turn_paused",
+                            "turn_terminated" if terminated else "turn_paused",
                             "agent_service",
-                            "Workspace Agent execution paused after an error.",
+                            (
+                                "Workspace Agent execution terminated after a "
+                                "non-retryable error."
+                                if terminated
+                                else "Workspace Agent execution paused after an error."
+                            ),
                             {
                                 "stop_reason": item["data"].get(
                                     "stop_reason",
                                     StopReason.TURN_ERROR.value,
                                 ),
                                 "error_type": item["data"].get("type", "unknown"),
+                                "error_category": item["data"].get(
+                                    "error_category",
+                                    "unknown",
+                                ),
                             },
                             level="error",
                         )
@@ -702,6 +751,39 @@ class AgentTurnService:
                 reset_execution_budget(budget_token)
             reset_context(context_token)
             store.close()
+
+    def _terminate_execution_after_error(self, session, execution, reason: str) -> None:
+        """Release a Session after a deterministic, non-retryable provider error."""
+        self.execution_repository.terminate(session, execution.execution_id, reason)
+        if self.maintenance_repository is None:
+            return
+        from src.core.maintenance.models import MaintenanceJobSpec
+        from src.core.maintenance.types import MaintenanceJobType, MaintenancePriority
+
+        try:
+            self.maintenance_repository.enqueue(
+                MaintenanceJobSpec(
+                    MaintenanceJobType.CHECKPOINT_CLEANUP,
+                    f"checkpoint_cleanup:{execution.execution_id}",
+                    str(session.workspace.workspace_id),
+                    str(session.session_id),
+                    {"checkpoint_thread_id": execution.checkpoint_thread_id},
+                    execution_id=execution.execution_id,
+                    priority=MaintenancePriority.CHECKPOINT_CLEANUP,
+                )
+            )
+            if self.maintenance_scheduler is not None:
+                self.maintenance_scheduler.wake()
+        except Exception as exc:
+            # The Session has already been safely released. A cleanup enqueue
+            # failure must not reattach or pause a terminal execution.
+            record_error(
+                "agent_service",
+                "terminal_checkpoint_cleanup",
+                exc,
+                "Terminal execution released, but checkpoint cleanup could not be queued.",
+                {"execution_id": execution.execution_id},
+            )
 
     def _stream_unconfigured_turn(
         self,

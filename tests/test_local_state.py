@@ -74,6 +74,16 @@ class LocalStateTest(unittest.TestCase):
         executions.discard(self.session)
         self.assertIsNone(executions.get_pending(self.session))
 
+    def test_discard_atomically_releases_attached_error_execution(self):
+        executions = ExecutionRepository(self.database)
+        pending = executions.begin(self.session, "failed task")
+        executions.pause(pending.execution_id, "paused_error", "graph_error", "failed")
+
+        discarded = executions.discard(self.session)
+
+        self.assertEqual(pending.execution_id, discarded.execution_id)
+        self.assertIsNone(executions.get_attached(self.session))
+
     def test_execution_repository_persists_slice_budget_usage(self):
         executions = ExecutionRepository(self.database)
         pending = executions.begin(self.session, "large task")
@@ -94,6 +104,29 @@ class LocalStateTest(unittest.TestCase):
         self.assertEqual(5, updated.tool_calls_used)
         self.assertEqual(2, updated.controlled_executions_used)
         self.assertEqual(1, updated.delegations_used)
+
+    def test_terminal_provider_error_releases_session_and_redacts_input(self):
+        executions = ExecutionRepository(self.database)
+        pending = executions.begin(self.session, "sensitive input")
+
+        executions.terminate(self.session, pending.execution_id, "content_rejected")
+
+        self.assertIsNone(executions.get_attached(self.session))
+        with self.database.connect() as conn:
+            row = conn.execute(
+                """
+                SELECT status, stop_reason, original_input, checkpoint_state
+                FROM executions WHERE execution_id=?
+                """,
+                (pending.execution_id,),
+            ).fetchone()
+        self.assertEqual("discarded", row["status"])
+        self.assertEqual("content_rejected", row["stop_reason"])
+        self.assertEqual("[REDACTED]", row["original_input"])
+        self.assertEqual("cleanup_pending", row["checkpoint_state"])
+
+        next_execution = executions.begin(self.session, "safe input")
+        self.assertIsNotNone(next_execution)
 
     def test_artifacts_are_deduplicated_and_explicitly_collected(self):
         artifacts = ArtifactStore(self.database, Path(".test_tmp") / f"artifacts-{uuid4().hex}")
