@@ -2,7 +2,10 @@ name: Code Review
 
 on:
   pull_request:
-    types: [opened, synchronize, reopened]
+    # Draft PRs can receive many incremental pushes. Review once when the
+    # author explicitly marks the PR ready; later reviews are requested with
+    # an @claude comment through claude.yml.
+    types: [ready_for_review]
 
 permissions:
   contents: read
