@@ -176,6 +176,18 @@ class DocumentationStructureTest(unittest.TestCase):
                     missing_status.append(str(path.relative_to(self.root)))
         self.assertEqual([], sorted(missing_status))
 
+    def test_current_api_contracts_are_registered(self):
+        register = (
+            self.root / "docs" / "governance" / "document-register.md"
+        ).read_text(encoding="utf-8")
+        api_documents = {
+            path.name
+            for path in (self.root / "docs" / "api").glob("*.md")
+            if "文档状态：Current" in path.read_text(encoding="utf-8")
+        }
+        unregistered = sorted(name for name in api_documents if f"`{name}`" not in register)
+        self.assertEqual([], unregistered)
+
     def test_test_suite_uses_documented_categories(self):
         allowed = {"unit", "integration", "contracts", "optional", "support", "fixtures"}
         tests_root = self.root / "tests"
