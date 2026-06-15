@@ -1,5 +1,9 @@
 # 系统级 Trace 时间线
 
+> 文档状态：Current
+> 权威范围：跨 IPC、Agent、LLM、Tool 和 Telemetry 的系统 Trace
+> 维护触发：Trace 模型、埋点、存储、脱敏或查询能力变化
+
 ## 1. Trace 解决什么问题
 
 项目已经有两种记录机制：

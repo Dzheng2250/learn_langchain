@@ -1,5 +1,9 @@
 # Agent 执行架构与扩展指南
 
+> 文档状态：Current
+> 权威范围：Agent Turn、Execution、Slice、Graph、工具和事件调用链
+> 维护触发：Agent 编排、预算、图结构或执行生命周期变化
+
 > Session 短期上下文、完整消息归档、长期记忆提取与加载机制见
 > [`/docs/architecture/memory-management.md`](/docs/architecture/memory-management.md)。
 >

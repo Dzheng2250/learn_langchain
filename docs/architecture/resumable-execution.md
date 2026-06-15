@@ -1,5 +1,9 @@
 # 可恢复执行与预算控制
 
+> 文档状态：Current
+> 权威范围：Execution、Grant、Slice、预算和 checkpoint 恢复
+> 维护触发：执行状态机、预算模型、暂停或恢复行为变化
+
 本文聚焦 Execution、Grant、Slice 和 checkpoint 如何支持大任务继续执行。`state.db` 与
 `checkpoints.db` 为什么分离、`checkpoint_state` 如何对账，以及 Saga/恢复协调器的含义，见
 [`/docs/architecture/database-state-and-consistency.md`](/docs/architecture/database-state-and-consistency.md)。

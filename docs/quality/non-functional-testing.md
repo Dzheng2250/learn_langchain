@@ -1,5 +1,9 @@
 # 非功能性测试与验收方案
 
+> 文档状态：Current
+> 权威范围：非功能需求的测试方法、指标和验收边界
+> 维护触发：非功能需求、性能指标或故障模型变化
+
 本文测试的数据库一致性术语和故障状态，统一以
 [`/docs/architecture/database-state-and-consistency.md`](/docs/architecture/database-state-and-consistency.md) 为准。
 
