@@ -1,5 +1,9 @@
 # Event 系统设计与维护指南
 
+> 文档状态：Current
+> 权威范围：Telemetry Event、EventBus、Recorder 和 Sink 设计
+> 维护触发：Telemetry 模型、订阅、缓冲或 Sink 生命周期变化
+
 > 本文解释领域 Telemetry Event。跨 IPC、Agent、LLM 和 Tool 的统一排障时间线见
 > [`/docs/architecture/system-tracing.md`](/docs/architecture/system-tracing.md)。Trace 不替代 Telemetry，Telemetry 也不是业务状态的
 > 权威来源。

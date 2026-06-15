@@ -1,5 +1,9 @@
 # 非功能性需求
 
+> 文档状态：Current
+> 权威范围：延迟、可靠性、一致性、安全和可维护性目标
+> 维护触发：用户体验目标、关键路径、可靠性或安全边界变化
+
 数据库事务、维护任务、CAS、Saga 和恢复协调器的定义及实现边界见
 [`/docs/architecture/database-state-and-consistency.md`](/docs/architecture/database-state-and-consistency.md)。
 

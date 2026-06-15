@@ -1,7 +1,12 @@
 # 部署指南
 
 > 文档状态：Current
+> 权威范围：首次安装、配置和基础设施部署
+> 维护触发：安装方式、依赖、配置加载或部署模型变化
 > 配置参数默认值、单位和调整风险见 [`/docs/reference/configuration-reference.md`](/docs/reference/configuration-reference.md)。
+
+日常启动、Session 排障和维护任务处理见[运维 Runbook](/docs/operations/runbook.md)；
+状态保护见[备份与恢复](/docs/operations/backup-and-restore.md)。
 
 ## 推荐部署模型
 

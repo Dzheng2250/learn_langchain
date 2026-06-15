@@ -3,6 +3,8 @@
 架构与运行机制：
 
 - [文档中心](/docs/README.md)
+- [项目概述与能力边界](/docs/product/project-overview.md)
+- [系统架构总览](/docs/architecture/system-overview.md)
 - [前端与 TUI 接入指南](/docs/api/tui-client-guide.md)
 - [RPC 方法参考](/docs/api/rpc-reference.md)
 - [流式事件参考](/docs/api/streaming-events.md)
@@ -14,6 +16,8 @@
 - [最终响应、后台维护与 Checkpoint 一致性](/docs/architecture/response-finalization-and-checkpoint-consistency.md)
 - [配置参数参考](/docs/reference/configuration-reference.md)
 - [配置、领域常量与 Prompt 管理边界](/docs/decisions/configuration-and-domain-constants.md)
+- [日常运维 Runbook](/docs/operations/runbook.md)
+- [开发与贡献指南](/CONTRIBUTING.md)
 
 这是一个基于 LangChain、LangGraph 和本地 SQLite 状态库的 coding agent。
 

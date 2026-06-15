@@ -1,5 +1,11 @@
 # PostgreSQL 到本地状态迁移
 
+> 文档状态：Current Specialized Procedure
+> 权威范围：旧 PostgreSQL 数据迁移到本地状态的专项操作
+> 维护触发：迁移命令、旧 Schema、目标本地 Schema 或校验规则变化
+>
+> 本文包含 2026-06-13 的历史执行结果；历史数量不代表当前数据库状态。
+
 ## 迁移目标
 
 本次迁移只保留以下 Workspace 中名为 `default` 的 Session：

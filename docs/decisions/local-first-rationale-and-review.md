@@ -1,5 +1,9 @@
 # 本地优先状态优化：问题、决策与设计审查
 
+> 文档状态：Current Decision
+> 权威范围：选择本地优先状态、异步维护与恢复协调的原因和风险
+> 维护触发：业务权威存储、最终响应关键路径或一致性方案变化
+
 数据库表、事务、维护队列、CAS、Saga 和恢复协调器的集中说明见
 [`/docs/architecture/database-state-and-consistency.md`](/docs/architecture/database-state-and-consistency.md)。本文重点解释为什么从用户可感知
 卡顿问题推导出本地优先与最小提交设计。

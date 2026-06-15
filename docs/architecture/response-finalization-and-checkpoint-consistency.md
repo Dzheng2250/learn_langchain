@@ -1,5 +1,9 @@
 # 最终响应、后台维护与 Checkpoint 一致性
 
+> 文档状态：Current
+> 权威范围：Turn 最小提交、响应释放、后台维护与 checkpoint 清理
+> 维护触发：Finalization、Outbox、维护任务或 checkpoint 状态变化
+
 本文按时间顺序说明：模型回答结束后，Core 为什么不能立即返回，哪些工作必须等待，哪些工作必须放到
 后台，以及两个 SQLite 数据库发生不一致时如何恢复。
 
