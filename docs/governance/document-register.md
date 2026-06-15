@@ -4,6 +4,9 @@
 > 权威范围：文档权威来源、状态和重叠关系
 > 维护触发：新增、移动、废弃或替换文档
 
+本文不是全部文档的手工文件清单。`docs/README.md` 负责读者导航，本登记表只负责记录核心权威来源、
+特殊状态、已知重叠和文档债务。新增普通专项文档必须更新导航；新增或替换权威来源还必须更新本登记表。
+
 ## 1. 核心权威文档
 
 | 主题 | 权威文档 |
@@ -12,6 +15,7 @@
 | 功能需求与实现状态 | `/docs/product/functional-requirements.md` |
 | 已知限制与路线图 | `/docs/product/roadmap-and-known-limitations.md` |
 | 系统整体结构 | `/docs/architecture/system-overview.md` |
+| CLI 内部架构 | `/docs/architecture/cli-architecture.md` |
 | Agent 执行调用链 | `/docs/architecture/agent-execution-architecture.md` |
 | 本地状态与数据库一致性 | `/docs/architecture/database-state-and-consistency.md` |
 | 外部 RPC | `/docs/api/rpc-reference.md` |
@@ -67,7 +71,10 @@
 | `.agent_runtime/*` | Local Runtime | 本地运行数据，不进入项目文档体系 |
 | `todo` | Personal Planning | 个人思考和草稿，不作为需求基线 |
 
-## 6. 已知重叠与收敛规则
+## 6. 已知重叠实例与收敛归属
+
+本节只登记当前仓库中已经识别的具体重叠及其权威归属。通用冲突处理流程只由
+[文档治理规范](/docs/governance/documentation-management.md)定义。
 
 - `README.md` 与部署指南均包含快速启动：README 只保留最短路径，部署指南保留完整说明。
 - CLI/Core/Agent 架构均涉及请求调用链：系统总览展示全局关系，Agent 架构保存详细函数级流程。

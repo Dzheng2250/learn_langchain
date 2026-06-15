@@ -75,6 +75,20 @@ Core 启动时会执行 Schema 检查、迁移和 Execution/checkpoint 对账。
 - `maintenance.failed` 没有持续增长。
 - 新对话能够完成最小持久化提交。
 
+### 建议的恢复演练与故障注入
+
+备份只有经过恢复演练才可信。应在隔离的临时状态目录和测试代码版本中验证：
+
+| 场景 | 预期结果 |
+|---|---|
+| 备份来自较旧 Schema | Core 执行支持的加法 Migration 后启动，或明确拒绝不支持的版本 |
+| 只有 `state.db`、缺少 `checkpoints.db` | 已提交历史仍可读取；未完成 Execution 可能被标记为 checkpoint 缺失且不可恢复 |
+| `state.db` 与 `checkpoints.db` 来自不同时间点 | 启动对账保留业务事实，并明确标记无法恢复的 Execution |
+| 恢复目录只读或权限错误 | Core 拒绝启动，日志给出 SQLite 或文件权限错误 |
+| 恢复数据包含未知状态值 | Schema Migration/验证拒绝启动，不带着不支持的数据继续运行 |
+
+故障注入应使用备份副本和独立 `LEARN_AGENT_STATE_DIR`，不得破坏真实用户状态。
+
 ## 6. PostgreSQL 备份
 
 PostgreSQL 不是普通对话的权威状态。只有启用了 PostgreSQL Telemetry、保留旧数据或准备执行

@@ -61,7 +61,44 @@ learn-agent start
 
 不要在 daemon 运行时手工替换 `state.db` 或 `checkpoints.db`。
 
-## 4. Session 无法继续
+## 4. Core 无法启动
+
+`learn-agent start` 超时只说明 Core 没有在期限内通过已认证 `core.ping`；具体原因应从 daemon 日志确认。
+
+```shell
+learn-agent status
+learn-agent trace --limit 50
+```
+
+然后检查配置的 runtime 目录中的 `daemon.log`。常见场景：
+
+### 端口已占用
+
+日志通常包含 bind/listen 失败。确认没有旧 daemon 后，释放配置端口，或修改
+`LEARN_AGENT_CORE_PORT`，重新同步用户配置并启动。不要让多个 daemon 共享同一 runtime 目录。
+
+### token 文件损坏或鉴权不一致
+
+正常的 `learn-agent start` 会在启动新 daemon 前生成新 token，`learn-agent stop` 会在退出后清理它。
+若仍有旧 daemon 运行，不要直接删除 token；先确认并停止旧进程。确认没有 daemon 后，再次执行
+`learn-agent start` 即可重新生成 token。直接使用 `learn-agent-core serve` 会复用已有 token。
+
+### `state.db` 损坏或 Migration 失败
+
+Core 会在 Transport 启动前初始化本地状态。SQLite 损坏、Schema 不兼容或 Migration 失败会使启动
+中止，CLI 最终报告启动超时，详细异常位于 `daemon.log`。处理方式：
+
+1. 保持 Core 停止。
+2. 保留损坏现场，不要直接删除数据库。
+3. 按[备份与恢复](/docs/operations/backup-and-restore.md)恢复完整状态目录。
+4. 使用与备份兼容的代码版本启动并验证。
+
+### Python 环境或权限错误
+
+确认当前环境已安装项目，且当前用户可以读写 runtime、state 和用户级配置目录。必要时使用
+`learn-agent-core serve` 前台启动，以直接观察启动异常。
+
+## 5. Session 无法继续
 
 先检查：
 
@@ -89,7 +126,7 @@ learn-agent session discard --session default
 
 `discard` 只放弃待恢复 Execution，不删除已经提交的历史消息、长期记忆或整个 Session。
 
-## 5. Provider 或敏感内容错误
+## 6. Provider 或敏感内容错误
 
 Provider 拒绝请求时，Core 会将错误分类并暂停或释放当前 Execution。处理顺序：
 
@@ -101,7 +138,7 @@ Provider 拒绝请求时，Core 会将错误分类并暂停或释放当前 Execu
 
 不要通过直接修改 SQLite 删除 pending 状态。
 
-## 6. 后台维护异常
+## 7. 后台维护异常
 
 后台维护负责摘要、长期记忆提取和 checkpoint 清理。普通对话提交成功后，这些任务可以稍后完成。
 
@@ -120,7 +157,7 @@ learn-agent session status --session default
 
 维护失败不会撤销已经提交的完整对话，但可能导致摘要、记忆或 checkpoint 清理滞后。
 
-## 7. Trace 与日志排障
+## 8. Trace 与日志排障
 
 ```shell
 learn-agent trace --run <run_id>
@@ -133,7 +170,7 @@ learn-agent trace --follow
 Trace 是 best-effort 诊断数据，不是业务事实。Trace 缺失不代表请求没有执行，最终状态应以
 `state.db` 和 Session 状态为准。
 
-## 8. 磁盘空间与清理
+## 9. 磁盘空间与清理
 
 可以按保留策略清理：
 
@@ -151,7 +188,7 @@ Trace 是 best-effort 诊断数据，不是业务事实。Trace 缺失不代表�
 删除或移动本地状态前，先停止 daemon 并按
 [备份与恢复](/docs/operations/backup-and-restore.md)创建快照。
 
-## 9. 当前运维限制
+## 10. 当前运维限制
 
 - 没有自动备份调度和一键恢复命令。
 - 没有公开的 Session 列表、历史管理或维护任务管理命令。

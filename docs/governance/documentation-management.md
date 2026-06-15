@@ -87,13 +87,13 @@
 `tests/contracts/test_documentation.py` 当前检查：
 
 - 必需文档是否存在。
-- 注册 RPC 是否出现在 RPC 参考。
-- 仓库根路径 Markdown 链接是否有效。
+- RPC 注册与 RPC 参考是否双向一致。
+- `learn-agent` 与 `learn-agent-core` 命令是否出现在 CLI 参考。
+- 本地 Markdown 根路径、相对路径和锚点链接是否有效。
+- 核心权威文档是否声明 `Current`，所有受治理文档是否声明状态。
 - 测试目录是否符合分类规则。
 
 后续应继续增加：
 
-- Current 文档状态头检查。
-- CLI 命令与 CLI 参考同步检查。
 - 配置变量与配置参考同步检查。
 - 文档登记表覆盖检查。

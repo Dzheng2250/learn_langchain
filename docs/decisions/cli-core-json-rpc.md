@@ -405,7 +405,7 @@ session.discard
 - 不支持远程网络访问；
 - 尚未实现协议版本和 capabilities 协商。
 
-前端开发者应以 [API 文档](/docs/README.md#api对外接口契约) 为准，不得读取 SQLite 或导入
+前端开发者应以 [API 文档](/docs/README.md#api外部接口契约) 为准，不得读取 SQLite 或导入
 Core 私有模块绕过这些限制。
 
 ## 12. 设计原则检查
