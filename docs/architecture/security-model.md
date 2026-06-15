@@ -47,6 +47,13 @@ flowchart LR
 - Pydantic 模型拒绝未知字段和不合法长度。
 - Parse Error、鉴权失败和 Handler 异常不会直接执行 Agent。
 
+### daemon token 生命周期
+
+- `learn-agent start` 每次准备启动新 daemon 时都会覆盖生成随机 token；CLI 与新 Core 使用同一文件。
+- `learn-agent stop` 在确认 daemon 退出后删除 PID 和 token 文件。
+- 直接运行 `learn-agent-core serve` 时，若 token 文件已存在会继续复用；不存在时才创建。
+- token 没有独立过期时间、客户端身份或分级权限；轮换依赖停止后重新启动 daemon。
+
 ### Workspace 与文件
 
 - CLI 识别 Git 根目录或显式 Workspace。
@@ -87,6 +94,7 @@ flowchart LR
 - Workspace allowlist 与管理员策略。
 - TLS、远程访问和网络层访问控制。
 - 密钥托管系统与自动轮换。
+- daemon token 的独立过期策略、定期轮换命令和多客户端撤销机制。
 - 合规审计日志和不可篡改存储。
 - 自动恶意代码检测或依赖供应链扫描。
 

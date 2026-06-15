@@ -34,6 +34,7 @@
 | GAP-008 | Tool Artifact 策略未覆盖所有工具 | 新工具可能将大结果直接放入消息 | 新工具 Review 必须检查输出上限 |
 | GAP-009 | Core 未注册为操作系统服务 | 重启系统后需手动启动 | 使用显式 `learn-agent start` |
 | GAP-010 | 缺少异步客户端库 | TUI 需要自行实现异步通信或包装同步 client | 以 API 文档为契约 |
+| GAP-011 | daemon token 没有独立过期与撤销机制 | 凭据生命周期依赖 daemon 停止和重新启动 | 保持 loopback 与用户级文件权限；未来增加显式轮换策略 |
 
 ## 4. 工程治理缺口
 

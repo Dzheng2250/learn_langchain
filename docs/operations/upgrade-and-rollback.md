@@ -44,8 +44,18 @@ learn-agent-core init-user-config --from-env .env --force
 
 然后重新启动 Core。
 
-Core 启动时会执行可重复的加法 Schema migration。Migration 必须在事务中完成；失败时 Core
-应拒绝继续提供服务，而不是带着部分 Schema 运行。
+Core 启动时会执行可重复的加法 Schema migration。实际调用链为：
+
+```text
+CoreApp.start()
+  -> AgentTurnService.initialize()
+  -> LocalStateStore.initialize()
+  -> LocalStateDatabase.initialize()
+```
+
+`LocalStateDatabase.initialize()` 在显式 SQLite 事务中创建 Schema 并执行加法 Migration。异常会回滚并
+继续向上传播；`CoreApp.start()` 捕获启动异常、关闭已创建资源并重新抛出，因此 Transport 不会在
+Migration 失败后继续提供服务。相关回滚行为由本地 Schema Migration 集成测试覆盖。
 
 ## 4. 升级后验收
 

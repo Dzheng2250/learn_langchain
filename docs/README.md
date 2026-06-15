@@ -105,24 +105,8 @@
 仅用于追溯演进过程，不作为当前行为依据。学习笔记、展示文档、`todo` 和 `.agent_runtime/`
 同样不是当前实现的权威来源。
 
-## 权威关系
-
-```text
-Product：系统必须做什么、当前支持到哪里
-   |
-   +--> API：外部调用者可以依赖什么
-   +--> Architecture：内部如何实现
-   +--> Operations：如何部署、运行和恢复
-   +--> Quality：如何证明满足要求
-   +--> Decisions：为什么采用当前方案
-   +--> Development：如何安全地继续修改
-```
-
 ## 维护要求
 
-1. 变更代码前先找到对应权威文档。
-2. 当前事实、设计原因和未来计划必须分开描述。
-3. 新 RPC、事件、配置、状态表或 CLI 命令必须同步更新文档和契约测试。
-4. 已知缺陷统一登记到[路线图与已知限制](/docs/product/roadmap-and-known-limitations.md)。
-5. 过时文档必须标记、链接替代文档或移动至 `history/`，不能静默保留冲突说明。
-6. 详细同步矩阵见[文档治理规范](/docs/governance/documentation-management.md)。
+本文只负责导航，不定义文档权威优先级或冲突处理规则。新增、移动或废弃文档时必须同步更新
+[文档登记表](/docs/governance/document-register.md)；完整权威关系、同步矩阵和冲突处理流程见
+[文档治理规范](/docs/governance/documentation-management.md)。
