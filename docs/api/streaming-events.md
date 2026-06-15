@@ -1,4 +1,9 @@
 # Agent 流式事件参考
+
+> 文档状态：Current
+> 权威范围：`agent.chat` 和 `session.resume` 的服务端流式通知契约
+> 维护触发：新增、删除或修改流式事件
+
 `agent.chat` 和 `session.resume` 执行期间，Core 使用 JSON-RPC notification 推送事件：
 
 ```json

@@ -1,5 +1,9 @@
 # 本地优先 Session 状态设计
 
+> 文档状态：Current
+> 权威范围：本地优先 Session 状态、响应关键路径和后台派生处理
+> 维护触发：Session 权威状态、提交时机或后台维护边界变化
+
 关于为什么从对话卡顿问题引出本地优先设计、SQLite 不能保证无卡顿、当前真实关键路径和设计原则审查，见
 [`/docs/decisions/local-first-rationale-and-review.md`](/docs/decisions/local-first-rationale-and-review.md)。
 

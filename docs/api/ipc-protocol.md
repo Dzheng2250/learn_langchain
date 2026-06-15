@@ -1,4 +1,9 @@
 # Core IPC 协议
+
+> 文档状态：Current
+> 权威范围：客户端与 Core 的 TCP、NDJSON、鉴权和 JSON-RPC 通信契约
+> 维护触发：Transport、鉴权、分帧或 JSON-RPC envelope 变化
+
 本文定义 CLI、TUI、GUI 等客户端与 Core daemon 之间的稳定通信边界。
 
 ## 传输与分帧

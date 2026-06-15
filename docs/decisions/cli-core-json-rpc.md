@@ -1,5 +1,9 @@
 # CLI / Core 双进程与 JSON-RPC 设计决策
 
+> 文档状态：Current Decision
+> 权威范围：选择用户级 Core daemon 与本地 JSON-RPC 的原因和取舍
+> 维护触发：进程模型、传输协议或客户端边界变化
+
 > 文档类型：当前设计决策
 > 面向读者：希望理解双进程架构原因的开发者
 > 具体接口字段请查阅 [IPC 协议](/docs/api/ipc-protocol.md) 和
@@ -401,7 +405,7 @@ session.discard
 - 不支持远程网络访问；
 - 尚未实现协议版本和 capabilities 协商。
 
-前端开发者应以 [API 文档](/docs/README.md#api对外接口契约) 为准，不得读取 SQLite 或导入
+前端开发者应以 [API 文档](/docs/README.md#api外部接口契约) 为准，不得读取 SQLite 或导入
 Core 私有模块绕过这些限制。
 
 ## 12. 设计原则检查

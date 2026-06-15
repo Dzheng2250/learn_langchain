@@ -1,5 +1,9 @@
 # 记忆管理与加载机制
 
+> 文档状态：Current
+> 权威范围：完整消息、短期上下文、长期记忆的生成、保存和加载
+> 维护触发：记忆策略、检索、摘要或相关状态表变化
+
 本文中的完整消息、Session 上下文和长期记忆都存储在 `state.db`。数据库表、事务边界、维护任务和
 跨 `state.db` / `checkpoints.db` 的一致性机制见
 [`/docs/architecture/database-state-and-consistency.md`](/docs/architecture/database-state-and-consistency.md)。

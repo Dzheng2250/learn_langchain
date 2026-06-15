@@ -1,6 +1,8 @@
 # CLI 架构优化方案
 
 > 文档状态：Current
+> 权威范围：CLI 命令模块、配置、客户端和 daemon 生命周期管理内部设计
+> 维护触发：CLI 目录、命令注册、客户端或 daemon 管理方式变化
 > 配置默认值与环境变量名称见 [`/docs/reference/configuration-reference.md`](/docs/reference/configuration-reference.md)。
 
 > 当前 CLI 在每次 `chat` 时识别最近 Git 根目录，并将 `workspace_root` 与

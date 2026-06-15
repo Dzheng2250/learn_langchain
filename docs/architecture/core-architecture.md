@@ -1,5 +1,9 @@
 # CoreApp 与 Transport 架构
 
+> 文档状态：Current
+> 权威范围：Core 组合根、生命周期、Transport 和内部依赖边界
+> 维护触发：CoreApp、Transport、服务组装或关闭顺序变化
+
 > Workspace 隔离、用户级 daemon、数据库迁移和最新依赖边界见
 > [`/docs/decisions/workspace-isolation-and-migration.md`](/docs/decisions/workspace-isolation-and-migration.md)。
 >
