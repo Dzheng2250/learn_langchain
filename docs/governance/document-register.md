@@ -43,7 +43,23 @@
 
 专项文档允许包含更详细的函数、类和数据流，但不得重新定义外部协议或产品需求。
 
-## 3. 文档覆盖状态
+## 3. 当前 API 契约文档
+
+`docs/api/` 下的 Current 文档共同组成外部接口契约：
+
+- `cli-reference.md`：CLI 与 Core 管理命令。
+- `ipc-protocol.md`：TCP、NDJSON、JSON-RPC 和鉴权。
+- `rpc-reference.md`：公开 RPC 方法。
+- `streaming-events.md`：服务端流式通知。
+- `error-reference.md`：错误类别与恢复策略。
+- `tui-client-guide.md`：第三方前端接入职责。
+- `protocol-compatibility.md`：兼容与不兼容变更规则。
+- `extension-guide.md`：Tool、Provider、RPC 和 Sink 扩展边界。
+
+API 文档不得声明未实现的外部能力。新增、移动或废弃 API 契约文档时，必须同步更新本节、
+`docs/README.md` 和文档契约测试。
+
+## 4. 文档覆盖状态
 
 | 文档领域 | 当前覆盖 | 主要权威入口 | 尚未闭环的部分 |
 |---|---|---|---|
@@ -56,12 +72,12 @@
 “尚未闭环”表示当前系统或工程流程的真实缺口，不应通过文档描述假装已经实现。详细状态统一登记在
 [路线图与已知限制](/docs/product/roadmap-and-known-limitations.md)。
 
-## 4. 设计决策文档
+## 5. 设计决策文档
 
 `docs/decisions/` 记录重要方案取舍。它们解释为什么采用当前方案，但部分章节包含历史演进内容。
 若 Decisions 与 Architecture 冲突，以当前代码和 Architecture 为准，并更新 Decision 的状态说明。
 
-## 5. 历史和低权威内容
+## 6. 历史和低权威内容
 
 | 内容 | 状态 | 使用规则 |
 |---|---|---|
@@ -71,7 +87,7 @@
 | `.agent_runtime/*` | Local Runtime | 本地运行数据，不进入项目文档体系 |
 | `todo` | Personal Planning | 个人思考和草稿，不作为需求基线 |
 
-## 6. 已知重叠实例与收敛归属
+## 7. 已知重叠实例与收敛归属
 
 本节只登记当前仓库中已经识别的具体重叠及其权威归属。通用冲突处理流程只由
 [文档治理规范](/docs/governance/documentation-management.md)定义。
@@ -83,7 +99,7 @@
 - 发布维护流程与升级操作曾存在重复：维护者发布门禁由 `development/release-process.md` 负责，
   用户升级和回滚步骤由 `operations/upgrade-and-rollback.md` 负责。
 
-## 7. 已识别的文档债务
+## 8. 已识别的文档债务
 
 | 内容 | 问题 | 当前处理 |
 |---|---|---|
@@ -92,7 +108,7 @@
 | `面试答辩文档.md` | 为展示而简化实现 | 标记为 Presentation；不得作为接口或运维依据 |
 | `docs/decisions/*` | 部分决策文件含当前实现细节 | 冲突时以 Architecture/API 为准，后续逐篇补充状态和替代关系 |
 
-## 8. 过时内容处理
+## 9. 过时内容处理
 
 发现过时文档时，不直接删除仍可能被引用的内容：
 
