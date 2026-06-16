@@ -38,6 +38,7 @@ from src.core.maintenance.handlers import (
 from src.core.context.manager import AgentContextManager
 from src.core.errors import ProviderErrorHandler
 from src.core.llm.provider import OpenAICompatibleProvider
+from src.core.tasks import TaskPlanningService, TaskRepository
 from src.core.workspace.runtime import WorkspaceRuntimeFactory, WorkspaceRuntimeRegistry
 from src.config.paths import trace_dir
 from src.core.tracing import (
@@ -142,6 +143,8 @@ class CoreApp:
                 self._state_database,
                 maintenance_settings,
             )
+            task_repository = TaskRepository(self._state_database)
+            task_service = TaskPlanningService(task_repository)
             context_manager = AgentContextManager(model_provider=model_provider)
 
             def state_store_factory():
@@ -185,6 +188,7 @@ class CoreApp:
                         model_provider,
                         run_limits,
                         checkpointer_provider=checkpoint_manager.initialize,
+                        task_service=task_service,
                     ),
                 ),
                 state_store_factory=state_store_factory,

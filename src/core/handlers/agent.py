@@ -38,6 +38,7 @@ class AgentHandlers:
                 on_event,
                 run_id=run_id,
                 control=control,
+                goal_mode=params.goal_mode,
             )
         finally:
             reset_trace_context(token)

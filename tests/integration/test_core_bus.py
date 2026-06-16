@@ -47,6 +47,7 @@ class FakeAgentService:
         *,
         run_id=None,
         control=None,
+        goal_mode=False,
     ):
         await asyncio.to_thread(on_event, {"event": "token", "data": {"content": "hello"}})
         await asyncio.to_thread(on_event, {"event": "done", "data": {"status": "ok"}})

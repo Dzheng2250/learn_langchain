@@ -58,8 +58,10 @@ Client                      Core daemon
 | `execution_id` | Core | 标识可跨多次恢复的长期执行 |
 | `session_name` | 客户端 | Workspace 内的人类可读 Session 名称 |
 | `workspace_root` | 客户端 | 指定本次请求所属 Workspace |
+| `goal_mode` | 客户端 | 仅用于 `agent.chat`，请求 Core 为复杂目标启用父 Agent 私有任务规划 |
 
 客户端不得指定 `run_id`、`execution_id` 或 Trace ID。它们属于 Core 的执行与诊断身份，防止客户端伪造或碰撞。
+客户端也不得直接操作任务计划；`goal_mode` 只决定父 Agent 是否能看到私有任务工具，任务创建、更新和读取都发生在 Core 内部。
 
 ## 鉴权与运行时发现
 

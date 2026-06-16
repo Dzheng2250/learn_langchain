@@ -30,6 +30,7 @@ class FakeAgentService:
         *,
         run_id=None,
         control=None,
+        goal_mode=False,
     ):
         await asyncio.to_thread(on_event, {"event": "token", "data": {"content": "hello"}})
         return {
@@ -38,6 +39,7 @@ class FakeAgentService:
             "workspace_root": workspace_root,
             "session_name": session_name,
             "message": message,
+            "goal_mode": goal_mode,
         }
 
 
@@ -64,10 +66,17 @@ class AgentHandlersTest(unittest.IsolatedAsyncioTestCase):
         handlers = AgentHandlers(FakeAgentService())
         context = FakeRequestContext()
         result = await handlers.chat(
-            ChatParams(auth_token="token", workspace_root=".", session_name="session", message="hello"),
+            ChatParams(
+                auth_token="token",
+                workspace_root=".",
+                session_name="session",
+                message="hello",
+                goal_mode=True,
+            ),
             context,
         )
         self.assertEqual("ok", result["status"])
+        self.assertTrue(result["goal_mode"])
         self.assertEqual(1, len(context.notifications))
         params = context.notifications[0].params
         self.assertEqual("request-1", params["request_id"])
@@ -95,6 +104,7 @@ class AgentHandlersTest(unittest.IsolatedAsyncioTestCase):
                 *,
                 run_id=None,
                 control=None,
+                goal_mode=False,
             ):
                 nonlocal completed
                 await asyncio.to_thread(on_event, {"event": "token", "data": {}})

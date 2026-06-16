@@ -79,6 +79,7 @@ def stream_graph_events(
     *,
     checkpoint_thread_id: str | None = None,
     provider_error_handler: ProviderErrorHandler | None = None,
+    tool_context=None,
 ):
     """Yield events for one Slice; step-limit exhaustion remains recoverable."""
     limits = run_context.limits if run_context else RunLimits()
@@ -111,6 +112,8 @@ def stream_graph_events(
         }
         if checkpoint_thread_id:
             stream_options["durability"] = "sync"
+        if tool_context is not None:
+            stream_options["context"] = tool_context
         for stream_mode, chunk in app.stream(inputs, **stream_options):
             if stream_mode == "messages":
                 message_chunk, _metadata = chunk

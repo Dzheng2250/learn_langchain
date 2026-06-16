@@ -1,7 +1,7 @@
 """Idempotent additive migrations for the authoritative local state database."""
 
 
-LATEST_SCHEMA_VERSION = 3
+LATEST_SCHEMA_VERSION = 4
 
 
 def apply_local_migrations(conn) -> None:
@@ -34,6 +34,21 @@ def apply_local_migrations(conn) -> None:
     if current_version < 3:
         _ensure_state_validation_triggers(conn)
         _record_migration(conn, 3, "typed_domain_state_validation")
+    if current_version < 4:
+        _ensure_column(
+            conn,
+            "executions",
+            "goal_mode",
+            "INTEGER NOT NULL DEFAULT 0",
+        )
+        _ensure_execution_task_tables(conn)
+        _create_validation_triggers(
+            conn,
+            "execution_tasks",
+            "status",
+            ("pending", "in_progress", "completed", "cancelled"),
+        )
+        _record_migration(conn, 4, "execution_private_tasks")
 
 
 def _record_migration(conn, version: int, name: str) -> None:
@@ -97,6 +112,65 @@ def _ensure_state_validation_triggers(conn) -> None:
         "maintenance_jobs",
         "status",
         ("pending", "running", "succeeded", "failed"),
+    )
+    _create_validation_triggers(
+        conn,
+        "execution_tasks",
+        "status",
+        ("pending", "in_progress", "completed", "cancelled"),
+    )
+
+
+def _ensure_execution_task_tables(conn) -> None:
+    """Create private Execution task tables for existing local databases."""
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS execution_tasks (
+            task_id TEXT PRIMARY KEY,
+            execution_id TEXT NOT NULL REFERENCES executions(execution_id) ON DELETE CASCADE,
+            task_key TEXT NOT NULL,
+            subject TEXT NOT NULL,
+            description TEXT NOT NULL DEFAULT '',
+            status TEXT NOT NULL CHECK (
+                status IN ('pending', 'in_progress', 'completed', 'cancelled')
+            ),
+            notes TEXT NOT NULL DEFAULT '',
+            ordinal INTEGER NOT NULL DEFAULT 0,
+            version INTEGER NOT NULL DEFAULT 0,
+            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            completed_at TEXT,
+            UNIQUE(execution_id, task_key),
+            UNIQUE(execution_id, task_id)
+        )
+        """
+    )
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS execution_task_dependencies (
+            execution_id TEXT NOT NULL,
+            task_id TEXT NOT NULL,
+            depends_on_task_id TEXT NOT NULL,
+            PRIMARY KEY(execution_id, task_id, depends_on_task_id),
+            FOREIGN KEY(execution_id, task_id)
+                REFERENCES execution_tasks(execution_id, task_id) ON DELETE CASCADE,
+            FOREIGN KEY(execution_id, depends_on_task_id)
+                REFERENCES execution_tasks(execution_id, task_id) ON DELETE CASCADE,
+            CHECK(task_id <> depends_on_task_id)
+        )
+        """
+    )
+    conn.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_execution_tasks_execution
+        ON execution_tasks(execution_id, ordinal, task_key)
+        """
+    )
+    conn.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_execution_task_dependencies_dep
+        ON execution_task_dependencies(execution_id, depends_on_task_id)
+        """
     )
 
 

@@ -66,6 +66,14 @@ learn-agent chat --session default "分析当前项目结构"
 learn-agent chat --workspace D:\project --session review "检查未提交修改"
 ```
 
+复杂目标：
+
+```shell
+learn-agent chat --goal --session default "重构这部分代码并补充测试"
+```
+
+`--goal` 会启用父 Agent 的私有任务规划工具。该模式适合多步骤、跨文件、需要验证或可能因执行预算暂停后继续恢复的目标。普通 `learn-agent chat` 不暴露任务工具，避免短问题被不必要地拆解。
+
 空输入不会发起请求。输入 `exit` 或 `quit` 退出交互模式。
 
 ## Session 控制

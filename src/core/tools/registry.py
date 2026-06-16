@@ -5,6 +5,8 @@ from dataclasses import dataclass
 from src.config.settings import SUBAGENT_MAX_STEPS
 from src.core.llm.provider import ModelProvider, OpenAICompatibleProvider
 from src.core.subagent.graph import create_delegate_tool
+from src.core.tasks.service import TaskPlanningService
+from src.core.tasks.tools import create_task_tools
 from src.core.tools.catalog import ToolAudience, ToolRegistry, ToolRisk, ToolSpec
 from src.core.tools.commands import create_run_command_in_container
 from src.core.tools.skills import create_skill_tools
@@ -28,6 +30,7 @@ def create_workspace_toolset(
     model_provider: ModelProvider | None = None,
     *,
     subagent_max_steps: int = SUBAGENT_MAX_STEPS,
+    task_service: TaskPlanningService | None = None,
 ) -> WorkspaceToolset:
     """Create, classify, and freeze all tools available in one Workspace."""
     provider = model_provider or OpenAICompatibleProvider()
@@ -58,6 +61,9 @@ def create_workspace_toolset(
     register(read_skill, both, ToolRisk.READ_ONLY)
     register(summarize, {ToolAudience.SUBAGENT}, ToolRisk.READ_ONLY)
     register(command, both, ToolRisk.CONTROLLED_EXECUTION)
+    if task_service is not None:
+        for task_tool in create_task_tools(task_service):
+            register(task_tool, {ToolAudience.PARENT}, ToolRisk.INTERNAL_STATE)
 
     base_tools = registry.tools_for(ToolAudience.SUBAGENT)
     base_risks = {spec.name: spec.risk for spec in registry.specs_for(ToolAudience.SUBAGENT)}

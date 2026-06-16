@@ -22,8 +22,9 @@
 | FR-AGENT-003 | 未配置模型密钥时仍可验证 CLI、RPC、Workspace 与本地状态链路 | Implemented | 诊断 Turn 返回 `llm_not_configured` |
 | FR-AGENT-004 | 同一 Session 的 Turn 串行，不同 Session 可并行 | Implemented | Session UUID 锁与 Agent worker 上限 |
 | FR-AGENT-005 | 用户可以查询、恢复或丢弃待恢复 Execution | Implemented | `session.status/resume/discard` |
-| FR-AGENT-006 | 用户可以列出 Session 和读取完整历史 | Planned | 当前没有对应 RPC/CLI |
-| FR-AGENT-007 | 用户可以取消正在执行的 Turn | Planned | 当前断开客户端不会取消 Core 任务 |
+| FR-AGENT-006 | 用户可以显式启动 goal 模式，让父 Agent 私有拆解复杂目标并跨 resume 延续计划 | Implemented | `learn-agent chat --goal`、`agent.chat.goal_mode`、私有任务表 |
+| FR-AGENT-007 | 用户可以列出 Session 和读取完整历史 | Planned | 当前没有对应 RPC/CLI |
+| FR-AGENT-008 | 用户可以取消正在执行的 Turn | Planned | 当前断开客户端不会取消 Core 任务 |
 
 ## 2. 工具、Skill 与子 Agent
 

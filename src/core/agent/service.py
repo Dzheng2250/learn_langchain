@@ -30,6 +30,7 @@ from src.core.telemetry import (
 )
 from src.core.llm.provider import ModelConfiguration, OpenAICompatibleProvider
 from src.core.streaming.events import stream_graph_events
+from src.core.tasks.context import ToolExecutionContext
 from src.core.workspace.models import SessionContext
 from src.core.workspace.contracts import WorkspaceIdentityRepository
 from src.core.workspace.runtime import WorkspaceRuntimeRegistry
@@ -148,6 +149,7 @@ class AgentTurnService:
         *,
         run_id: str | None = None,
         control: ExecutionControl | None = None,
+        goal_mode: bool = False,
     ) -> dict:
         """Schedule one synchronous turn on the bounded Agent executor.
 
@@ -170,6 +172,7 @@ class AgentTurnService:
                     on_event,
                     run_id=run_id,
                     control=control,
+                    goal_mode=goal_mode,
                 )
             )
         except Exception:
@@ -245,6 +248,7 @@ class AgentTurnService:
             user_input,
             run_id=result["run_id"],
             control=control,
+            goal_mode=goal_mode,
         ):
             if on_event:
                 on_event(item)
@@ -315,6 +319,7 @@ class AgentTurnService:
         *,
         run_id: str,
         control: ExecutionControl | None = None,
+        goal_mode: bool = False,
     ) -> Iterator[dict]:
         """Resolve request identity, serialize the Session, and stream one turn."""
         normalized = user_input.strip()
@@ -336,16 +341,21 @@ class AgentTurnService:
                         "Session has a pending execution. Use 'learn-agent session resume' "
                         "or 'learn-agent session discard' before starting a new chat."
                     )
-                execution = self.execution_repository.begin(session, normalized)
+                execution = self.execution_repository.begin(
+                    session,
+                    normalized,
+                    goal_mode=goal_mode,
+                )
                 record_trace(
                     TraceDirection.INTERNAL,
                     TraceLayer.AGENT,
                     "agent.execution_attached",
                     execution_id=execution.execution_id,
-                    data={"status": execution.status.value},
+                    data={"status": execution.status.value, "goal_mode": goal_mode},
                 )
             try:
                 runtime = self.runtime_registry.get(workspace)
+                graph = runtime.goal_graph if goal_mode else runtime.graph
             except Exception as exc:
                 if execution is not None and self.execution_repository is not None:
                     self.execution_repository.pause(
@@ -357,7 +367,7 @@ class AgentTurnService:
                 raise
             yield from self._stream_locked_turn(
                 session,
-                runtime.graph,
+                graph,
                 normalized,
                 run_id,
                 execution=execution,
@@ -385,14 +395,19 @@ class AgentTurnService:
                 TraceLayer.AGENT,
                 "agent.execution_attached",
                 execution_id=pending.execution_id,
-                data={"status": pending.status.value, "resume": True},
+                data={
+                    "status": pending.status.value,
+                    "resume": True,
+                    "goal_mode": pending.goal_mode,
+                },
             )
             try:
                 runtime = self.runtime_registry.get(workspace)
+                graph = runtime.goal_graph if pending.goal_mode else runtime.graph
                 if instruction.strip():
                     from langchain_core.messages import HumanMessage
 
-                    runtime.graph.update_state(
+                    graph.update_state(
                         {"configurable": {"thread_id": pending.checkpoint_thread_id}},
                         {
                             "messages": [
@@ -413,7 +428,7 @@ class AgentTurnService:
                 raise
             yield from self._stream_locked_turn(
                 session,
-                runtime.graph,
+                graph,
                 pending.original_input,
                 run_id,
                 execution=pending,
@@ -546,6 +561,11 @@ class AgentTurnService:
             )
             input_messages = prepared.input_messages
             checkpoint_thread_id = execution.checkpoint_thread_id if execution else None
+            tool_context = ToolExecutionContext(
+                workspace_id=str(session.workspace.workspace_id),
+                session_id=str(session.session_id),
+                execution_id=execution.execution_id if execution else None,
+            )
             total_tool_calls = 0
             budget = ExecutionBudget()
             budget_token = bind_execution_budget(budget)
@@ -578,6 +598,7 @@ class AgentTurnService:
                         run_context,
                         checkpoint_thread_id=checkpoint_thread_id,
                         provider_error_handler=self.provider_error_handler,
+                        tool_context=tool_context,
                     ),
                     slice_id,
                 ):

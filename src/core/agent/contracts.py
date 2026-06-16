@@ -28,6 +28,7 @@ class AgentTurnRunner(Protocol):
         *,
         run_id: str | None = None,
         control: ExecutionControl | None = None,
+        goal_mode: bool = False,
     ) -> dict:
         """Execute one Agent turn without blocking the event loop."""
 

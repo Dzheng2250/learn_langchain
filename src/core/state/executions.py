@@ -28,6 +28,7 @@ class PendingExecution:
     delegations_used: int
     tool_calls_used: int
     checkpoint_state: CheckpointState
+    goal_mode: bool = False
 
     @property
     def recoverable(self) -> bool:
@@ -74,7 +75,13 @@ class ExecutionRepository:
             ).fetchone()
         return self._from_row(row) if row else None
 
-    def begin(self, session: SessionContext, user_input: str) -> PendingExecution:
+    def begin(
+        self,
+        session: SessionContext,
+        user_input: str,
+        *,
+        goal_mode: bool = False,
+    ) -> PendingExecution:
         """Create a new recoverable execution only when the Session is idle."""
         execution_id, thread_id = uuid4().hex, uuid4().hex
         with self.database.transaction() as conn:
@@ -90,8 +97,8 @@ class ExecutionRepository:
                 """
                 INSERT INTO executions(
                     execution_id, workspace_id, session_id, checkpoint_thread_id,
-                    status, original_input
-                ) VALUES (?, ?, ?, ?, ?, ?)
+                    status, original_input, goal_mode
+                ) VALUES (?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     execution_id,
@@ -100,6 +107,7 @@ class ExecutionRepository:
                     thread_id,
                     ExecutionStatus.RUNNING,
                     user_input,
+                    1 if goal_mode else 0,
                 ),
             )
             conn.execute(
@@ -460,4 +468,5 @@ class ExecutionRepository:
             delegations_used=int(row["delegations_used"]),
             tool_calls_used=int(row["tool_calls_used"]),
             checkpoint_state=CheckpointState(row["checkpoint_state"]),
+            goal_mode=bool(row["goal_mode"]) if "goal_mode" in row.keys() else False,
         )

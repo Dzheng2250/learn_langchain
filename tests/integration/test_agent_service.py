@@ -7,6 +7,9 @@ from pathlib import Path
 from unittest.mock import Mock, patch
 from uuid import uuid4
 
+from langchain_core.messages import AIMessage, HumanMessage
+
+from src.core.agent.coordinator import PreparedTurn
 from src.core.context.models import AgentContextState
 from src.core.errors import ErrorCategory
 from src.core.llm.provider import LlmConfigurationStatus
@@ -221,6 +224,145 @@ class DiagnosticTurnTest(unittest.TestCase):
         runtime_registry.get.assert_not_called()
         self.assertEqual(2, store.loaded)
         self.assertTrue(store.closed)
+
+
+class GoalModeRoutingTest(unittest.TestCase):
+    def setUp(self):
+        self.database = LocalStateDatabase(":memory:")
+        self.addCleanup(self.database.close)
+        self.database.initialize()
+        self.workspace_repository = LocalWorkspaceRepository(self.database)
+        self.execution_repository = ExecutionRepository(self.database)
+
+    def _service(self, runtime):
+        class ConfiguredModel:
+            def configuration_status(self):
+                return LlmConfigurationStatus(True)
+
+        class Store:
+            def load_session(self, _session):
+                return AgentContextState(), 0
+
+            def retrieve_for_turn(self, *_args, **_kwargs):
+                return []
+
+            def build_memory_message(self, _memories):
+                return None
+
+            def close(self):
+                pass
+
+        class Coordinator:
+            def prepare(self, *, session, run_id, limits, **_kwargs):
+                return PreparedTurn(
+                    AgentContextState(),
+                    1,
+                    Mock(run_id=run_id, session=session, turn_index=1, limits=limits),
+                    [HumanMessage(content="hello")],
+                )
+
+            def finalize(self, **_kwargs):
+                return Mock(
+                    maintenance_status="pending",
+                    memory_status="skipped",
+                    memory_request_explicit=False,
+                )
+
+        registry = Mock()
+        registry.get.return_value = runtime
+        return AgentTurnService(
+            workspace_repository=self.workspace_repository,
+            runtime_registry=registry,
+            state_store_factory=Store,
+            model_configuration=ConfiguredModel(),
+            execution_repository=self.execution_repository,
+            turn_coordinator=Coordinator(),
+            max_auto_slices=1,
+        )
+
+    def test_goal_mode_selects_goal_graph_only_when_requested(self):
+        class RecordingGraph:
+            def __init__(self, name):
+                self.name = name
+                self.calls = 0
+
+            def stream(self, inputs, **_kwargs):
+                self.calls += 1
+                yield "values", {"messages": [*inputs["messages"], AIMessage(content=self.name)]}
+
+        normal = RecordingGraph("normal")
+        goal = RecordingGraph("goal")
+        service = self._service(Mock(graph=normal, goal_graph=goal))
+        try:
+            list(
+                service.stream_turn(
+                    str(Path("tests/fixtures/workspace_a").resolve()),
+                    "default",
+                    "hello",
+                    run_id="normal-run",
+                )
+            )
+            list(
+                service.stream_turn(
+                    str(Path("tests/fixtures/workspace_a").resolve()),
+                    "goal-session",
+                    "build feature",
+                    run_id="goal-run",
+                    goal_mode=True,
+                )
+            )
+        finally:
+            service.close()
+
+        self.assertEqual(1, normal.calls)
+        self.assertEqual(1, goal.calls)
+
+    def test_resume_uses_goal_graph_for_goal_execution(self):
+        class RecordingGraph:
+            def __init__(self, name):
+                self.name = name
+                self.calls = 0
+                self.updated = False
+
+            def stream(self, inputs, **_kwargs):
+                self.calls += 1
+                messages = [] if inputs is None else inputs["messages"]
+                yield "values", {"messages": [*messages, AIMessage(content=self.name)]}
+
+            def update_state(self, *_args, **_kwargs):
+                self.updated = True
+
+            def get_state(self, _config):
+                return Mock(values={"messages": []})
+
+        normal = RecordingGraph("normal")
+        goal = RecordingGraph("goal")
+        service = self._service(Mock(graph=normal, goal_graph=goal))
+        workspace_root = str(Path("tests/fixtures/workspace_a").resolve())
+        try:
+            list(
+                service.stream_turn(
+                    workspace_root,
+                    "goal-resume",
+                    "large goal",
+                    run_id="goal-start",
+                    goal_mode=True,
+                )
+            )
+            list(
+                service.stream_resume(
+                    workspace_root,
+                    "goal-resume",
+                    run_id="goal-resume",
+                    instruction="continue",
+                )
+            )
+        finally:
+            service.close()
+
+        self.assertEqual(0, normal.calls)
+        self.assertEqual(2, goal.calls)
+        self.assertTrue(goal.updated)
 
 
 class ProviderErrorResolutionIntegrationTest(unittest.TestCase):

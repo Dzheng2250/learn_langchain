@@ -23,6 +23,13 @@ class CliMainTest(unittest.TestCase):
         self.assertEqual("default", chat_once.call_args.args[1])
         self.assertEqual("hello", chat_once.call_args.args[2])
         self.assertIsNone(chat_once.call_args.args[3])
+        self.assertFalse(chat_once.call_args.kwargs["goal_mode"])
+
+    @patch("src.cli.commands.chat.chat_once")
+    @patch("src.cli.commands.chat.CoreClient")
+    def test_chat_goal_mode_is_explicit(self, core_client, chat_once):
+        self.assertEqual(0, main(["chat", "--goal", "build the feature"]))
+        self.assertTrue(chat_once.call_args.kwargs["goal_mode"])
 
 
 if __name__ == "__main__":

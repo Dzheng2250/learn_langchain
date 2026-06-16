@@ -41,6 +41,7 @@
 - [本地数据库与一致性](/docs/architecture/database-state-and-consistency.md)
 - [安全模型](/docs/architecture/security-model.md)
 - [记忆管理](/docs/architecture/memory-management.md)
+- [私有任务规划](/docs/architecture/private-task-planning.md)
 - [Telemetry Event](/docs/architecture/event-system.md)
 - [系统 Trace](/docs/architecture/system-tracing.md)
 
@@ -92,6 +93,7 @@
 - [CLI / Core 双进程与 JSON-RPC](/docs/decisions/cli-core-json-rpc.md)
 - [Workspace 隔离与迁移](/docs/decisions/workspace-isolation-and-migration.md)
 - [配置、领域常量与 Prompt 边界](/docs/decisions/configuration-and-domain-constants.md)
+- [私有任务规划设计决策](/docs/decisions/private-task-planning.md)
 
 ### `governance/`：文档治理
 
