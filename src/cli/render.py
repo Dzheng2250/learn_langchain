@@ -1,13 +1,24 @@
 """Terminal rendering for Agent stream events."""
 
+import json
 from dataclasses import dataclass
 from typing import Any
 
 from src.cli.errors import CliError
 
 DETAIL_PREVIEW_LIMIT = 2000
+ARG_PREVIEW_LIMIT = 1000
+ARG_FIELD_PREVIEW_LIMIT = 240
 TASK_TOOLS = {"task_plan", "task_update", "task_list", "task_get"}
 VISIBLE_RESULT_TOOLS = TASK_TOOLS | {"delegate_to_subagent"}
+SENSITIVE_ARG_KEY_PARTS = (
+    "api_key",
+    "authorization",
+    "passwd",
+    "password",
+    "secret",
+    "token",
+)
 
 
 def _preview(value: Any, limit: int = DETAIL_PREVIEW_LIMIT) -> str:
@@ -18,6 +29,46 @@ def _preview(value: Any, limit: int = DETAIL_PREVIEW_LIMIT) -> str:
     if len(text) > limit:
         return text[:limit] + "\n... truncated ..."
     return text
+
+
+def _is_sensitive_arg_key(key: str) -> bool:
+    """Return whether an argument key should never be rendered verbatim."""
+    key = key.casefold()
+    return any(part in key for part in SENSITIVE_ARG_KEY_PARTS) or key == ".env"
+
+
+def _sanitize_arg_value(key: str, value: Any) -> Any:
+    """Build a terminal-safe preview value for one tool argument."""
+    if _is_sensitive_arg_key(key):
+        return "<redacted>"
+    if isinstance(value, str):
+        return _preview(value, ARG_FIELD_PREVIEW_LIMIT)
+    if isinstance(value, dict):
+        return {
+            str(child_key): _sanitize_arg_value(str(child_key), child_value)
+            for child_key, child_value in value.items()
+        }
+    if isinstance(value, list):
+        return [
+            _sanitize_arg_value(key, item)
+            for item in value[:20]
+        ] + (["... truncated ..."] if len(value) > 20 else [])
+    return value
+
+
+def _generic_tool_args_detail(args: Any) -> str | None:
+    """Render default tool arguments when no tool-specific formatter exists."""
+    if args in (None, {}, []):
+        return None
+    if isinstance(args, dict):
+        safe_args = {
+            str(key): _sanitize_arg_value(str(key), value)
+            for key, value in args.items()
+        }
+    else:
+        safe_args = _sanitize_arg_value("args", args)
+    text = json.dumps(safe_args, ensure_ascii=False, default=str)
+    return f"Args: {_preview(text, ARG_PREVIEW_LIMIT)}"
 
 
 def _task_plan_lines(args: dict) -> list[str]:
@@ -53,7 +104,7 @@ def _task_update_line(args: dict) -> str:
 def _tool_start_detail(tool: str | None, args: Any) -> str | None:
     """Return optional detailed terminal text for selected tools."""
     if not isinstance(args, dict):
-        return None
+        return _generic_tool_args_detail(args)
     if tool == "task_plan":
         lines = _task_plan_lines(args)
         return "\n".join(lines) if lines else None
@@ -64,7 +115,7 @@ def _tool_start_detail(tool: str | None, args: Any) -> str | None:
     if tool == "delegate_to_subagent":
         objective = args.get("task") or args.get("goal") or args.get("instruction")
         return f"Delegating: {_preview(objective, 1000)}" if objective else None
-    return None
+    return _generic_tool_args_detail(args)
 
 
 @dataclass

@@ -108,6 +108,51 @@ class AgentEventRendererTest(unittest.TestCase):
         self.assertIn("[ ] inspect_structure", rendered)
         self.assertIn("... truncated ...", rendered)
 
+    def test_generic_tool_start_renders_safe_args(self):
+        output = io.StringIO()
+        renderer = AgentEventRenderer()
+        with redirect_stdout(output):
+            renderer.render(
+                {
+                    "event": "step",
+                    "data": {
+                        "type": "tool_call_start",
+                        "tool": "run_command_in_container",
+                        "args": {"command": "python -m unittest", "timeout": 30},
+                    },
+                }
+            )
+
+        rendered = output.getvalue()
+        self.assertIn("[tool_call_start: run_command_in_container]", rendered)
+        self.assertIn("Args:", rendered)
+        self.assertIn("python -m unittest", rendered)
+        self.assertIn("timeout", rendered)
+
+    def test_generic_tool_start_redacts_sensitive_and_truncates_long_args(self):
+        output = io.StringIO()
+        renderer = AgentEventRenderer()
+        with redirect_stdout(output):
+            renderer.render(
+                {
+                    "event": "step",
+                    "data": {
+                        "type": "tool_call_start",
+                        "tool": "write_workspace_file",
+                        "args": {
+                            "path": "notes.txt",
+                            "api_key": "should-not-render",
+                            "content": "x" * 500,
+                        },
+                    },
+                }
+            )
+
+        rendered = output.getvalue()
+        self.assertIn("<redacted>", rendered)
+        self.assertNotIn("should-not-render", rendered)
+        self.assertIn("... truncated ...", rendered)
+
     def test_goal_done_event_renders_completion_marker(self):
         output = io.StringIO()
         renderer = AgentEventRenderer(goal_mode=True)
