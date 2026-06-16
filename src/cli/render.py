@@ -79,6 +79,7 @@ class AgentEventRenderer:
     goal_mode: bool = False
     received_token: bool = False
     done_announced: bool = False
+    error_message: str | None = None
 
     def render(self, params: dict) -> None:
         """Render one ``agent.event`` notification without changing business state."""
@@ -116,7 +117,10 @@ class AgentEventRenderer:
                 print("\n[goal_completed]", flush=True)
                 self.done_announced = True
         elif event == "error":
-            print(f"\nError: {data.get('message', 'Agent turn failed.')}", flush=True)
+            # The final JSON-RPC response carries the same failure. Record it
+            # here but render once from chat_once to avoid duplicate terminal
+            # errors when a stream ends with an error event.
+            self.error_message = data.get("message", "Agent turn failed.")
 
 
 def render_agent_event(params: dict) -> None:

@@ -253,6 +253,45 @@ class TelemetryTest(unittest.TestCase):
         self.assertEqual("call-1", sink.events[0].payload["tool_call_id"])
         self.assertEqual("hello", output["messages"][-1].content)
 
+    def test_observed_tool_node_returns_tool_error_for_tool_exception(self) -> None:
+        sink = MemorySink()
+        install_event_bus(EventBus([sink]))
+
+        @tool
+        def broken() -> str:
+            """Always fail."""
+            raise RuntimeError("boom")
+
+        node = ObservedToolNode([broken])
+        builder = StateGraph(MessagesState)
+        builder.add_node("tools", node)
+        builder.add_edge(START, "tools")
+        builder.add_edge("tools", END)
+        app = builder.compile()
+
+        output = app.invoke(
+            {
+                "messages": [
+                    AIMessage(
+                        content="",
+                        tool_calls=[
+                            {
+                                "name": "broken",
+                                "args": {},
+                                "id": "call-1",
+                                "type": "tool_call",
+                            }
+                        ],
+                    )
+                ]
+            }
+        )
+
+        message = output["messages"][-1]
+        self.assertEqual("error", getattr(message, "status", None))
+        self.assertIn("Tool broken failed", message.content)
+        self.assertEqual(["tool_started", "tool_failed"], [event.event_type for event in sink.events])
+
     def test_buffered_sink_batches_and_flushes_events(self) -> None:
         class BatchSink(MemorySink):
             def emit_batch(self, events) -> None:

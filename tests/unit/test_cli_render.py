@@ -131,6 +131,15 @@ class AgentEventRendererTest(unittest.TestCase):
         self.assertIn("[execution_paused: budget_limit]", output.getvalue())
         self.assertTrue(renderer.done_announced)
 
+    def test_error_event_is_recorded_but_not_rendered_immediately(self):
+        output = io.StringIO()
+        renderer = AgentEventRenderer()
+        with redirect_stdout(output):
+            renderer.render({"event": "error", "data": {"message": "failed once"}})
+
+        self.assertEqual("", output.getvalue())
+        self.assertEqual("failed once", renderer.error_message)
+
 
 if __name__ == "__main__":
     unittest.main()
