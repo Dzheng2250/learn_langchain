@@ -239,6 +239,7 @@ class AgentTurnService:
         *,
         run_id: str | None = None,
         control: ExecutionControl | None = None,
+        goal_mode: bool = False,
     ) -> dict:
         """Consume one synchronous event stream and aggregate its final result."""
         result = {"status": "error", "run_id": run_id or uuid4().hex}

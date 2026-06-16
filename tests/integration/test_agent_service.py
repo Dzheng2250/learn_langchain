@@ -317,6 +317,36 @@ class GoalModeRoutingTest(unittest.TestCase):
         self.assertEqual(1, normal.calls)
         self.assertEqual(1, goal.calls)
 
+    def test_run_turn_accepts_goal_mode_and_uses_goal_graph(self):
+        class RecordingGraph:
+            def __init__(self, name):
+                self.name = name
+                self.calls = 0
+
+            def stream(self, inputs, **_kwargs):
+                self.calls += 1
+                yield "values", {"messages": [*inputs["messages"], AIMessage(content=self.name)]}
+
+        normal = RecordingGraph("normal")
+        goal = RecordingGraph("goal")
+        service = self._service(Mock(graph=normal, goal_graph=goal))
+        try:
+            result = asyncio.run(
+                service.run_turn(
+                    str(Path("tests/fixtures/workspace_a").resolve()),
+                    "goal-run-turn",
+                    "build feature",
+                    run_id="goal-run-turn",
+                    goal_mode=True,
+                )
+            )
+        finally:
+            service.close()
+
+        self.assertEqual("ok", result["status"])
+        self.assertEqual(0, normal.calls)
+        self.assertEqual(1, goal.calls)
+
     def test_resume_uses_goal_graph_for_goal_execution(self):
         class RecordingGraph:
             def __init__(self, name):

@@ -135,6 +135,9 @@ CREATE TABLE IF NOT EXISTS execution_tasks (
     updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
     completed_at TEXT,
     UNIQUE(execution_id, task_key),
+    -- Required by SQLite composite foreign keys from execution_task_dependencies.
+    -- task_id is globally unique, but the child table also carries execution_id
+    -- to prevent cross-Execution dependency links at the schema boundary.
     UNIQUE(execution_id, task_id)
 );
 

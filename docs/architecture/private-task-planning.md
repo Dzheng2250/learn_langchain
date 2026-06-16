@@ -53,7 +53,7 @@ execution_tasks
   status       pending / in_progress / completed / cancelled
   notes        进度备注
   ordinal      计划顺序
-  version      乐观版本号
+  version      审计版本号，每次更新递增
 
 execution_task_dependencies
   execution_id
@@ -66,6 +66,10 @@ execution_task_dependencies
 - 可以用外键保证依赖只发生在同一个 Execution 内。
 - 可以保留完整依赖关系，不需要在依赖完成后删除记录。
 - 是否 blocked 由查询时动态计算：依赖任务是 `pending` 或 `in_progress` 时阻塞；依赖任务是 `completed` 或 `cancelled` 时不再阻塞。
+
+`execution_tasks` 上同时保留 `PRIMARY KEY(task_id)` 和 `UNIQUE(execution_id, task_id)`。后者不是为了表达新的业务语义，而是为了让 `execution_task_dependencies` 可以使用 `(execution_id, task_id)` 复合外键。这样依赖表即使同时保存两个任务 ID，也必须证明它们属于同一个 Execution。
+
+`version` 当前只用于审计和排障，表示任务被更新过多少次；首版没有把它作为乐观锁或 CAS 条件使用。原因是当前任务工具调用仍在单个 Agent 执行链中串行发生。后续如果引入任务级并发写入、工具调用重放或公开任务编辑 API，再把 `version` 升级为写冲突检测条件。
 
 Repository 会拒绝：
 
