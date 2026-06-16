@@ -337,11 +337,10 @@ class AgentTurnService:
                 return
             execution = None
             if self.execution_repository is not None:
-                if self.execution_repository.get_pending(session) is not None:
-                    raise RuntimeError(
-                        "Session has a pending execution. Use 'learn-agent session resume' "
-                        "or 'learn-agent session discard' before starting a new chat."
-                    )
+                pending = self.execution_repository.get_pending(session)
+                if pending is not None:
+                    yield self._pending_execution_event(session, run_id, pending)
+                    return
                 execution = self.execution_repository.begin(
                     session,
                     normalized,
@@ -436,6 +435,28 @@ class AgentTurnService:
                 resume=True,
                 control=control,
             )
+
+    def _pending_execution_event(self, session: SessionContext, run_id: str, pending) -> dict:
+        """Return a non-error event when a Session is blocked by recoverable work."""
+        message = (
+            "Session has a pending execution. Use 'learn-agent session resume --session "
+            f"{session.session_name}' to continue, or 'learn-agent session discard --session "
+            f"{session.session_name}' to discard it before starting a new chat."
+        )
+        return {
+            "event": "done",
+            "data": {
+                "run_id": run_id,
+                "status": "paused",
+                "workspace_id": str(session.workspace.workspace_id),
+                "session_id": str(session.session_id),
+                "session_name": session.session_name,
+                "execution_id": pending.execution_id,
+                "stop_reason": pending.stop_reason or pending.status.value,
+                "goal_mode": pending.goal_mode,
+                "message": message,
+            },
+        }
 
     def session_status(self, workspace_root: str, session_name: str) -> dict:
         """Return compact pending-execution state without running the graph."""

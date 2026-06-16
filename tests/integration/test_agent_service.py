@@ -347,6 +347,47 @@ class GoalModeRoutingTest(unittest.TestCase):
         self.assertEqual(0, normal.calls)
         self.assertEqual(1, goal.calls)
 
+    def test_new_chat_with_pending_execution_returns_recoverable_pause(self):
+        class PausingGraph:
+            def stream(self, *_args, **_kwargs):
+                yield "values", {"messages": [AIMessage(content="", tool_calls=[])]}
+                from src.core.agent.budget import ToolBudgetExceeded
+
+                raise ToolBudgetExceeded("test budget exhausted")
+
+            def get_state(self, _config):
+                return Mock(values={"messages": []})
+
+        graph = PausingGraph()
+        service = self._service(Mock(graph=graph, goal_graph=graph))
+        workspace_root = str(Path("tests/fixtures/workspace_a").resolve())
+        try:
+            first = list(
+                service.stream_turn(
+                    workspace_root,
+                    "pending-chat",
+                    "large goal",
+                    run_id="first",
+                    goal_mode=True,
+                )
+            )
+            second = list(
+                service.stream_turn(
+                    workspace_root,
+                    "pending-chat",
+                    "new message",
+                    run_id="second",
+                )
+            )
+        finally:
+            service.close()
+
+        self.assertEqual("paused", first[-1]["data"]["status"])
+        self.assertEqual("done", second[-1]["event"])
+        self.assertEqual("paused", second[-1]["data"]["status"])
+        self.assertIn("session resume", second[-1]["data"]["message"])
+        self.assertTrue(second[-1]["data"]["goal_mode"])
+
     def test_resume_uses_goal_graph_for_goal_execution(self):
         class RecordingGraph:
             def __init__(self, name):
