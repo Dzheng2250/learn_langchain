@@ -64,7 +64,10 @@ def _step_events_from_message(message) -> list[dict]:
                 "event": "step",
                 "data": {
                     "type": "agent_message",
-                    "content": _message_preview(message),
+                    # This event is the terminal fallback when a provider does
+                    # not emit token chunks. It must carry the full assistant
+                    # answer; only tool results use preview truncation.
+                    "content": _message_text(message),
                 },
             }
         ]
