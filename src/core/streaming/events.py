@@ -9,6 +9,11 @@ from src.core.errors import ProviderErrorHandler
 from src.core.telemetry import emit_event, record_error
 from src.core.agent.budget import ToolBudgetExceeded
 
+TOOL_RESULT_PREVIEW_LIMIT = 600
+PLANNING_TOOL_PREVIEW_LIMIT = 8000
+DELEGATION_RESULT_PREVIEW_LIMIT = 6000
+VERBOSE_RESULT_TOOLS = {"task_plan", "task_update", "task_list", "task_get"}
+
 
 def _message_text(message) -> str:
     """Return message content as text for event payloads."""
@@ -24,6 +29,16 @@ def _message_preview(message, limit: int = 600) -> str:
     if len(text) > limit:
         return text[:limit] + "\n... truncated ..."
     return text
+
+
+def _tool_result_limit(message) -> int:
+    """Return a safe preview limit for one tool result event."""
+    tool_name = getattr(message, "name", None)
+    if tool_name in VERBOSE_RESULT_TOOLS:
+        return PLANNING_TOOL_PREVIEW_LIMIT
+    if tool_name == "delegate_to_subagent":
+        return DELEGATION_RESULT_PREVIEW_LIMIT
+    return TOOL_RESULT_PREVIEW_LIMIT
 
 
 def _step_events_from_message(message) -> list[dict]:
@@ -53,7 +68,7 @@ def _step_events_from_message(message) -> list[dict]:
                     "type": "tool_call_result",
                     "tool": getattr(message, "name", None),
                     "tool_call_id": getattr(message, "tool_call_id", None),
-                    "content": _message_preview(message),
+                    "content": _message_preview(message, _tool_result_limit(message)),
                 },
             }
         ]

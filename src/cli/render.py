@@ -63,7 +63,7 @@ def _tool_start_detail(tool: str | None, args: Any) -> str | None:
         return f"Task get: {args.get('task_key', '<task>')}"
     if tool == "delegate_to_subagent":
         objective = args.get("task") or args.get("goal") or args.get("instruction")
-        return f"Delegating: {_preview(objective, 240)}" if objective else None
+        return f"Delegating: {_preview(objective, 1000)}" if objective else None
     return None
 
 
