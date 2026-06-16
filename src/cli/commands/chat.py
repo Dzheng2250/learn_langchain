@@ -55,6 +55,14 @@ def chat_once(
     print()
     if result.get("memory_status") == "pending" and result.get("memory_request_explicit"):
         print("Memory save has been queued and can be checked with 'learn-agent session status'.")
+    if result.get("status") == "paused":
+        print(result.get("message", "Agent execution paused."))
+        print(
+            "Use 'learn-agent session resume --session "
+            f"{session_name}' to continue, or 'learn-agent session discard --session "
+            f"{session_name}' to discard it."
+        )
+        return
     if result.get("status") != "ok":
         raise CoreRequestError(result.get("error", "Agent turn failed."))
 
