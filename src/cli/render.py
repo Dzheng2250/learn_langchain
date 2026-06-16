@@ -5,7 +5,7 @@ from typing import Any
 
 from src.cli.errors import CliError
 
-DETAIL_PREVIEW_LIMIT = 1200
+DETAIL_PREVIEW_LIMIT = 2000
 TASK_TOOLS = {"task_plan", "task_update", "task_list", "task_get"}
 VISIBLE_RESULT_TOOLS = TASK_TOOLS | {"delegate_to_subagent"}
 
@@ -76,7 +76,9 @@ class AgentEventRenderer:
     the completed message is a fallback only when no tokens were displayed.
     """
 
+    goal_mode: bool = False
     received_token: bool = False
+    done_announced: bool = False
 
     def render(self, params: dict) -> None:
         """Render one ``agent.event`` notification without changing business state."""
@@ -104,6 +106,15 @@ class AgentEventRenderer:
                     content = _preview(data.get("content"))
                     if content:
                         print(content, flush=True)
+        elif event == "done":
+            status = data.get("status")
+            if status == "paused":
+                reason = data.get("stop_reason", "paused")
+                print(f"\n[execution_paused: {reason}]", flush=True)
+                self.done_announced = True
+            elif status == "ok" and (self.goal_mode or data.get("goal_mode")):
+                print("\n[goal_completed]", flush=True)
+                self.done_announced = True
         elif event == "error":
             print(f"\nError: {data.get('message', 'Agent turn failed.')}", flush=True)
 

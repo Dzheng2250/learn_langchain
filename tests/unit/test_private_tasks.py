@@ -126,6 +126,44 @@ class PrivateTaskTest(unittest.TestCase):
         self.assertEqual((), ready.blocked_by)
         self.assertTrue(ready.ready)
 
+    def test_task_list_uses_user_facing_state_phrases(self):
+        result = self.service.plan(
+            self.context,
+            [
+                {"task_key": "inspect", "subject": "Inspect"},
+                {
+                    "task_key": "write_report",
+                    "subject": "Write report",
+                    "depends_on": ["inspect"],
+                },
+            ],
+        )
+
+        self.assertIn("[ ] inspect: Inspect (ready)", result)
+        self.assertIn("[ ] write_report: Write report (waiting for: inspect)", result)
+        self.assertNotIn("blocked_by", result)
+        self.assertNotIn("depends_on", result)
+
+    def test_task_get_uses_user_facing_dependency_labels(self):
+        self.service.plan(
+            self.context,
+            [
+                {"task_key": "inspect", "subject": "Inspect"},
+                {
+                    "task_key": "write_report",
+                    "subject": "Write report",
+                    "depends_on": ["inspect"],
+                },
+            ],
+        )
+
+        result = self.service.get(self.context, "write_report")
+
+        self.assertIn("state: waiting for: inspect", result)
+        self.assertIn("depends on: inspect", result)
+        self.assertIn("waiting for: inspect", result)
+        self.assertNotIn("blocked_by", result)
+
     def test_execution_context_prevents_cross_execution_reads(self):
         self.service.plan(self.context, [{"task_key": "inspect", "subject": "Inspect"}])
         other = self.executions.begin(

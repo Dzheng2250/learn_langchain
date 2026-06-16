@@ -152,6 +152,7 @@ class PromptBoundaryTest(unittest.TestCase):
         self.assertIn("create a task_plan before broad inspection", prompt)
         self.assertIn("Do not make delegate_to_subagent your first tool", prompt)
         self.assertIn("mention the relevant task_key", prompt)
+        self.assertIn("write a brief summary to the user", prompt)
 
     def test_context_prompt_builder_returns_model_messages(self):
         messages = build_context_summary_messages(

@@ -30,7 +30,9 @@ def build_parent_system_prompt(
             "instruction. If the plan changes, update or cancel obsolete tasks. "
             "On resume, or when progress is uncertain, call task_list before "
             "continuing. Task plans guide your reasoning but do not override the "
-            "user's latest request. "
+            "user's latest request. After all planned tasks are completed or "
+            "cancelled, write a brief summary to the user covering what was done, "
+            "what was skipped, and any notable results. "
         )
     return (
         "You are a practical coding assistant working inside one strictly isolated "

@@ -108,6 +108,29 @@ class AgentEventRendererTest(unittest.TestCase):
         self.assertIn("[ ] inspect_structure", rendered)
         self.assertIn("... truncated ...", rendered)
 
+    def test_goal_done_event_renders_completion_marker(self):
+        output = io.StringIO()
+        renderer = AgentEventRenderer(goal_mode=True)
+        with redirect_stdout(output):
+            renderer.render({"event": "done", "data": {"status": "ok"}})
+
+        self.assertIn("[goal_completed]", output.getvalue())
+        self.assertTrue(renderer.done_announced)
+
+    def test_paused_done_event_renders_pause_marker(self):
+        output = io.StringIO()
+        renderer = AgentEventRenderer()
+        with redirect_stdout(output):
+            renderer.render(
+                {
+                    "event": "done",
+                    "data": {"status": "paused", "stop_reason": "budget_limit"},
+                }
+            )
+
+        self.assertIn("[execution_paused: budget_limit]", output.getvalue())
+        self.assertTrue(renderer.done_announced)
+
 
 if __name__ == "__main__":
     unittest.main()

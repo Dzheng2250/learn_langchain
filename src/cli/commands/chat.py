@@ -40,7 +40,7 @@ def chat_once(
 ) -> None:
     """Send one Workspace-scoped message to Core and render its event stream."""
     workspace_root = discover_workspace_root(workspace)
-    renderer = AgentEventRenderer()
+    renderer = AgentEventRenderer(goal_mode=goal_mode)
     print("AI: ", end="", flush=True)
     result = client.request(
         "agent.chat",
@@ -65,6 +65,8 @@ def chat_once(
         return
     if result.get("status") != "ok":
         raise CoreRequestError(result.get("error", "Agent turn failed."))
+    if (goal_mode or result.get("goal_mode")) and not renderer.done_announced:
+        print("Goal mode execution completed. You can continue with a new message or exit.")
 
 
 def interactive_chat(
@@ -75,7 +77,10 @@ def interactive_chat(
     goal_mode: bool = False,
 ) -> None:
     """Read non-empty terminal input and execute repeated one-shot turns."""
-    print("Connected to Core daemon. Type 'exit' or 'quit' to stop.")
+    if goal_mode:
+        print("Connected to Core daemon. Goal mode enabled. Type 'exit' or 'quit' to stop.")
+    else:
+        print("Connected to Core daemon. Type 'exit' or 'quit' to stop.")
     while True:
         message = input("\nYou: ").strip()
         if not message:

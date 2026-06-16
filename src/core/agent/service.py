@@ -763,6 +763,7 @@ class AgentTurnService:
                             "stop_reason": StopReason.COMPLETED.value,
                             "tool_call_count": total_tool_calls,
                             "slices_used": slice_number,
+                            "goal_mode": bool(getattr(execution, "goal_mode", False)),
                             "durability": "committed",
                             "maintenance_status": finalization.maintenance_status,
                             "memory_status": finalization.memory_status,
@@ -828,6 +829,7 @@ class AgentTurnService:
                     "stop_reason": exhausted_reason,
                     "tool_call_count": total_tool_calls,
                     "slices_used": slice_number,
+                    "goal_mode": bool(getattr(execution, "goal_mode", False)),
                     "message": summary,
                 },
             }

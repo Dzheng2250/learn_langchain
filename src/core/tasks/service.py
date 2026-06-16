@@ -90,29 +90,37 @@ class TaskPlanningService:
                 TaskStatus.COMPLETED: "[x]",
                 TaskStatus.CANCELLED: "[-]",
             }[task.status]
-            blocked = f" blocked_by={list(task.blocked_by)}" if task.blocked_by else ""
-            depends = f" depends_on={list(task.depends_on)}" if task.depends_on else ""
-            ready = " ready" if task.ready else ""
-            lines.append(
-                f"{marker} {task.task_key}: {task.subject}"
-                f" ({task.status.value}{ready}{blocked}{depends})"
-            )
+            state = self._display_state(task)
+            lines.append(f"{marker} {task.task_key}: {task.subject} ({state})")
         return "\n".join(lines)
 
     def _format_task(self, task: ExecutionTask, *, verbose: bool = False) -> str:
         lines = [
             f"task_key: {task.task_key}",
             f"subject: {task.subject}",
-            f"status: {task.status.value}",
-            f"ready: {task.ready}",
-            f"depends_on: {list(task.depends_on)}",
-            f"blocked_by: {list(task.blocked_by)}",
+            f"state: {self._display_state(task)}",
         ]
+        if task.depends_on:
+            lines.append(f"depends on: {', '.join(task.depends_on)}")
+        if task.blocked_by:
+            lines.append(f"waiting for: {', '.join(task.blocked_by)}")
         if verbose or task.description:
             lines.append(f"description: {task.description}")
         if verbose or task.notes:
             lines.append(f"notes: {task.notes}")
         return "\n".join(lines)
+
+    def _display_state(self, task: ExecutionTask) -> str:
+        """Translate internal task status into a user-facing state phrase."""
+        if task.blocked_by:
+            return f"waiting for: {', '.join(task.blocked_by)}"
+        if task.status == TaskStatus.IN_PROGRESS:
+            return "in progress"
+        if task.status == TaskStatus.COMPLETED:
+            return "completed"
+        if task.status == TaskStatus.CANCELLED:
+            return "cancelled"
+        return "ready" if task.ready else "pending"
 
     def _bounded(self, text: str, limit: int) -> str:
         if len(text) <= limit:
