@@ -31,6 +31,11 @@ class CliMainTest(unittest.TestCase):
         self.assertEqual(0, main(["chat", "--goal", "build the feature"]))
         self.assertTrue(chat_once.call_args.kwargs["goal_mode"])
 
+    @patch("src.cli.commands.stop.stop_daemon", return_value={"status": "forced_stopped"})
+    def test_stop_command_accepts_force(self, stop_daemon):
+        self.assertEqual(0, main(["stop", "--force"]))
+        self.assertTrue(stop_daemon.call_args.kwargs["force"])
+
 
 if __name__ == "__main__":
     unittest.main()
