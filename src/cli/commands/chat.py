@@ -63,6 +63,8 @@ def chat_once(
             f"{session_name}' to discard it."
         )
         return
+    if result.get("status") == "terminated" and result.get("auto_recovered"):
+        return
     if result.get("status") != "ok":
         raise CoreRequestError(result.get("error", "Agent turn failed."))
     if (goal_mode or result.get("goal_mode")) and not renderer.done_announced:

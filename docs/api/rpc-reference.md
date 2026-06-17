@@ -133,9 +133,19 @@ Core 先写回最终响应，再开始优雅关闭。客户端不应假设收到
   "pending_execution": null,
   "execution_recoverable": false,
   "checkpoint_state": null,
-  "maintenance": {"pending": 0, "running": 0, "failed": 0}
+  "maintenance": {
+    "pending": 0,
+    "running": 0,
+    "failed": 0,
+    "recent_failures": []
+  }
 }
 ```
+
+`maintenance.recent_failures` 返回最近几个后台维护失败任务。后台维护任务包括上下文摘要压缩、
+长期记忆提取和 checkpoint 清理。它们可能调用 LLM，但不属于当前前台对话请求；如果这里出现
+`job_type=context_summary` 或 `job_type=memory_extract`，前端应提示这是后台派生任务失败，而不是
+本轮用户输入导致当前对话失败。
 
 ## `session.resume`
 

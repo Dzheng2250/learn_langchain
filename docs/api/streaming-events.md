@@ -133,6 +133,36 @@ turn_error
 ```
 
 `status: paused` 表示本次请求结束，但 Execution 仍可通过 `session.status` 和 `session.resume` 继续。
+`status: terminated` 表示本次请求已经被 Core 主动终止。典型场景是模型服务商拒绝了当前输入
+或请求参数。若 `auto_recovered=true`，表示本轮失败输入没有写入会话历史，Session 已恢复到上一轮
+成功提交的状态，客户端不应提示用户执行 `resume` 或 `discard`。
+
+```json
+{
+  "event": "done",
+  "data": {
+    "status": "terminated",
+    "auto_recovered": true,
+    "failed_turn_saved": false,
+    "failure_source": "agent_turn",
+    "failure_scope": "current_turn",
+    "failure_stage": "parent_model_provider",
+    "user_action": "revise_input_and_retry"
+  }
+}
+```
+
+失败来源字段含义：
+
+| 字段 | 含义 | 示例 |
+|---|---|---|
+| `failure_source` | 哪个子系统报告失败 | `agent_turn` |
+| `failure_scope` | 失败影响范围 | `current_turn` |
+| `failure_stage` | 失败发生在哪个阶段 | `parent_model_provider` / `parent_graph` / `context_summary` / `memory_extraction` |
+| `user_action` | 前端推荐用户操作 | `revise_input_and_retry` / `resume_later` |
+
+这些字段用于区分“当前对话模型调用失败”和“后台摘要、长期记忆等维护任务失败”。后台维护失败不会通过
+当前请求的 `done` 表示，应通过 `session.status.maintenance.recent_failures` 和日志 trace 查看。
 
 ## `error`
 
@@ -145,7 +175,11 @@ turn_error
     "message": "安全的用户可见错误",
     "error_category": "rate_limited",
     "error_action": "pause",
-    "retryable": true
+    "retryable": true,
+    "failure_source": "agent_turn",
+    "failure_scope": "current_turn",
+    "failure_stage": "parent_model_provider",
+    "user_action": "resume_later"
   }
 }
 ```

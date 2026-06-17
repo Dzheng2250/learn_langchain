@@ -13,6 +13,7 @@ from src.core.agent.coordinator import PreparedTurn
 from src.core.context.models import AgentContextState
 from src.core.errors import ErrorCategory
 from src.core.llm.provider import LlmConfigurationStatus
+from src.core.maintenance.repository import MaintenanceRepository
 from src.config.settings import CORE_AGENT_WORKERS
 from src.core.agent.service import AgentTurnService, SessionLockRegistry
 from src.core.state import ExecutionRepository, LocalStateDatabase, LocalStateStore
@@ -505,17 +506,35 @@ class ProviderErrorResolutionIntegrationTest(unittest.TestCase):
         finally:
             service.close()
 
-        error = events[-1]["data"]
-        self.assertEqual("error", events[-1]["event"])
-        self.assertEqual(ErrorCategory.CONTENT_REJECTED, error["error_category"])
-        self.assertEqual("terminate", error["error_action"])
-        self.assertNotIn("data_inspection_failed", error["message"])
+        self.assertEqual(["step", "token", "done"], [event["event"] for event in events])
+        self.assertIn(
+            "失败来源：当前这轮前台对话",
+            events[1]["data"]["content"],
+        )
+        self.assertIn(
+            "LLM 调用位置：父 Agent 调用模型服务商",
+            events[1]["data"]["content"],
+        )
+        terminal = events[-1]["data"]
+        self.assertEqual("terminated", terminal["status"])
+        self.assertTrue(terminal["auto_recovered"])
+        self.assertFalse(terminal["failed_turn_saved"])
+        self.assertEqual(ErrorCategory.CONTENT_REJECTED, terminal["error_category"])
+        self.assertEqual("terminate", terminal["error_action"])
+        self.assertEqual("agent_turn", terminal["failure_source"])
+        self.assertEqual("parent_model_provider", terminal["failure_stage"])
+        self.assertEqual("current_turn", terminal["failure_scope"])
+        self.assertEqual("revise_input_and_retry", terminal["user_action"])
+        self.assertNotIn("data_inspection_failed", terminal["message"])
 
         workspace = self.workspace_repository.resolve(
             str(Path("tests/fixtures/workspace_a").resolve())
         )
         session, _ = self.workspace_repository.resolve_session(workspace, "default")
         self.assertIsNone(self.execution_repository.get_attached(session))
+        state, turn_index = LocalStateStore(self.database).load_session(session)
+        self.assertEqual(0, turn_index)
+        self.assertEqual([], state.recent_messages)
         next_execution = self.execution_repository.begin(session, "safe input")
         self.assertIsNotNone(next_execution)
 
@@ -565,6 +584,58 @@ class ProviderErrorResolutionIntegrationTest(unittest.TestCase):
         pending = self.execution_repository.get_pending(session)
         self.assertIsNotNone(pending)
         self.assertEqual("paused_error", pending.status)
+
+    def test_session_status_reports_recent_background_maintenance_failures(self):
+        workspace = self.workspace_repository.resolve(
+            str(Path("tests/fixtures/workspace_a").resolve())
+        )
+        session, _ = self.workspace_repository.resolve_session(workspace, "default")
+        with self.database.transaction() as conn:
+            conn.execute(
+                """
+                INSERT INTO maintenance_jobs(
+                    job_id, workspace_id, session_id, job_type, dedupe_key,
+                    status, payload, attempts, max_attempts, last_error
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    "job-memory-failed",
+                    str(workspace.workspace_id),
+                    str(session.session_id),
+                    "memory_extract",
+                    "memory_extract:test",
+                    "failed",
+                    "{}",
+                    3,
+                    3,
+                    "provider rejected background memory extraction",
+                ),
+            )
+
+        service = AgentTurnService(
+            workspace_repository=self.workspace_repository,
+            runtime_registry=Mock(),
+            state_store_factory=lambda: LocalStateStore(self.database),
+            execution_repository=self.execution_repository,
+            maintenance_repository=MaintenanceRepository(self.database),
+        )
+        try:
+            status = service.session_status(
+                str(Path("tests/fixtures/workspace_a").resolve()),
+                "default",
+            )
+        finally:
+            service.close()
+
+        self.assertEqual(1, status["maintenance"]["failed"])
+        self.assertEqual(
+            "memory_extract",
+            status["maintenance"]["recent_failures"][0]["job_type"],
+        )
+        self.assertIn(
+            "background memory extraction",
+            status["maintenance"]["recent_failures"][0]["last_error"],
+        )
 
 
 if __name__ == "__main__":

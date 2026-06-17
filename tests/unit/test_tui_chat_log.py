@@ -3,6 +3,7 @@ import asyncio
 from types import MethodType
 
 from src.tui.screens.chat import ChatScreen
+from src.tui.renderer import render_event
 from src.tui.widgets.chat_log import ChatLog
 
 
@@ -81,6 +82,22 @@ class TuiChatLogTest(unittest.TestCase):
 
         self.assertEqual(["hello"], log.lines)
         self.assertEqual(["hello"], log._entries)
+
+    def test_terminated_done_event_renders_recovery_marker(self):
+        rendered = render_event(
+            {
+                "event": "done",
+                "data": {
+                    "status": "terminated",
+                    "auto_recovered": True,
+                    "failure_source": "agent_turn",
+                    "failure_scope": "current_turn",
+                    "failure_stage": "parent_model_provider",
+                },
+            }
+        )
+
+        self.assertIsNone(rendered)
 
 
 if __name__ == "__main__":

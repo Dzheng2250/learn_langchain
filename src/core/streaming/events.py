@@ -5,7 +5,7 @@ from langchain_core.messages import HumanMessage
 from langgraph.errors import GraphRecursionError
 
 from src.core.agent.models import AgentRunContext, RunLimits, StopReason
-from src.core.errors import ProviderErrorHandler
+from src.core.errors import ErrorCategory, ProviderErrorHandler
 from src.core.telemetry import emit_event, record_error
 from src.core.agent.budget import ToolBudgetExceeded
 
@@ -39,6 +39,15 @@ def _tool_result_limit(message) -> int:
     if tool_name == "delegate_to_subagent":
         return DELEGATION_RESULT_PREVIEW_LIMIT
     return TOOL_RESULT_PREVIEW_LIMIT
+
+
+def _provider_failure_stage(resolution) -> str:
+    """Return the foreground stage that best matches a parsed graph exception."""
+    if resolution.category != ErrorCategory.UNKNOWN:
+        return "parent_model_provider"
+    if resolution.provider != "unknown" or resolution.provider_code or resolution.http_status:
+        return "parent_model_provider"
+    return "parent_graph"
 
 
 def _step_events_from_message(message) -> list[dict]:
@@ -216,12 +225,22 @@ def stream_graph_events(
         return
     except Exception as exc:
         resolution = (provider_error_handler or ProviderErrorHandler()).resolve(exc)
+        failure_context = {
+            "failure_source": "agent_turn",
+            "failure_stage": _provider_failure_stage(resolution),
+            "failure_scope": "current_turn",
+            "user_action": (
+                "revise_input_and_retry"
+                if resolution.action.value == "terminate"
+                else "resume_later"
+            ),
+        }
         record_error(
             "agent_stream",
             "llm_or_graph",
             RuntimeError(resolution.public_message),
             "Graph execution failed.",
-            resolution.event_data(),
+            {**resolution.event_data(), **failure_context},
             event_type="llm_or_graph_failed",
         )
         yield {
@@ -232,6 +251,7 @@ def stream_graph_events(
                 "message": resolution.public_message,
                 "graph_steps_used": graph_steps_used,
                 **resolution.event_data(),
+                **failure_context,
             },
         }
         return

@@ -143,6 +143,10 @@ def _render_done(data: dict[str, Any]) -> str | None:
         if goal_mode:
             return "[bold green]★ goal completed[/bold green]"
         return "[green]■ completed[/green]"
+    if status == "terminated" and data.get("auto_recovered"):
+        # The explanation is streamed as token text. Keep done as a structural
+        # marker so the TUI does not duplicate the same failure message.
+        return None
     return None
 
 

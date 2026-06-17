@@ -166,6 +166,51 @@ class MaintenanceRepository:
             counts[row["status"]] = int(row["count"])
         return counts
 
+    def recent_failures_for_session(
+        self,
+        workspace_id: str,
+        session_id: str,
+        *,
+        limit: int = 3,
+    ) -> list[dict]:
+        """Return recent terminal maintenance failures for operator-facing status.
+
+        Background tasks such as context summaries and memory extraction may call
+        the LLM outside the current foreground chat request. Exposing their
+        failed job type lets clients distinguish those failures from the active
+        Agent turn.
+        """
+        with self.database.connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT job_id, execution_id, job_type, attempts, max_attempts,
+                       last_error, updated_at, finished_at
+                FROM maintenance_jobs
+                WHERE workspace_id=? AND session_id=? AND status=?
+                ORDER BY updated_at DESC, job_id DESC
+                LIMIT ?
+                """,
+                (
+                    workspace_id,
+                    session_id,
+                    MaintenanceStatus.FAILED,
+                    max(0, int(limit)),
+                ),
+            ).fetchall()
+        return [
+            {
+                "job_id": row["job_id"],
+                "execution_id": row["execution_id"],
+                "job_type": row["job_type"],
+                "attempts": int(row["attempts"]),
+                "max_attempts": int(row["max_attempts"]),
+                "last_error": row["last_error"],
+                "updated_at": row["updated_at"],
+                "finished_at": row["finished_at"],
+            }
+            for row in rows
+        ]
+
     def get_by_dedupe_key(self, dedupe_key: str) -> MaintenanceJob | None:
         """Return one task for tests and diagnostics."""
         with self.database.connect() as conn:
