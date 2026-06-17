@@ -30,6 +30,7 @@ from src.core.telemetry import (
 )
 from src.core.llm.provider import ModelConfiguration, OpenAICompatibleProvider
 from src.core.streaming.events import stream_graph_events
+from src.core.tasks.context import ToolExecutionContext
 from src.core.workspace.models import SessionContext
 from src.core.workspace.contracts import WorkspaceIdentityRepository
 from src.core.workspace.runtime import WorkspaceRuntimeRegistry
@@ -148,6 +149,7 @@ class AgentTurnService:
         *,
         run_id: str | None = None,
         control: ExecutionControl | None = None,
+        goal_mode: bool = False,
     ) -> dict:
         """Schedule one synchronous turn on the bounded Agent executor.
 
@@ -170,6 +172,7 @@ class AgentTurnService:
                     on_event,
                     run_id=run_id,
                     control=control,
+                    goal_mode=goal_mode,
                 )
             )
         except Exception:
@@ -236,6 +239,7 @@ class AgentTurnService:
         *,
         run_id: str | None = None,
         control: ExecutionControl | None = None,
+        goal_mode: bool = False,
     ) -> dict:
         """Consume one synchronous event stream and aggregate its final result."""
         result = {"status": "error", "run_id": run_id or uuid4().hex}
@@ -245,6 +249,7 @@ class AgentTurnService:
             user_input,
             run_id=result["run_id"],
             control=control,
+            goal_mode=goal_mode,
         ):
             if on_event:
                 on_event(item)
@@ -291,6 +296,7 @@ class AgentTurnService:
             if on_event:
                 on_event(item)
             if item["event"] == "done":
+                result["status"] = "ok"
                 result.update(item["data"])
             elif item["event"] == "error":
                 result["error"] = item["data"].get("message", "Agent resume failed.")
@@ -315,6 +321,7 @@ class AgentTurnService:
         *,
         run_id: str,
         control: ExecutionControl | None = None,
+        goal_mode: bool = False,
     ) -> Iterator[dict]:
         """Resolve request identity, serialize the Session, and stream one turn."""
         normalized = user_input.strip()
@@ -331,21 +338,25 @@ class AgentTurnService:
                 return
             execution = None
             if self.execution_repository is not None:
-                if self.execution_repository.get_pending(session) is not None:
-                    raise RuntimeError(
-                        "Session has a pending execution. Use 'learn-agent session resume' "
-                        "or 'learn-agent session discard' before starting a new chat."
-                    )
-                execution = self.execution_repository.begin(session, normalized)
+                pending = self.execution_repository.get_pending(session)
+                if pending is not None:
+                    yield self._pending_execution_event(session, run_id, pending)
+                    return
+                execution = self.execution_repository.begin(
+                    session,
+                    normalized,
+                    goal_mode=goal_mode,
+                )
                 record_trace(
                     TraceDirection.INTERNAL,
                     TraceLayer.AGENT,
                     "agent.execution_attached",
                     execution_id=execution.execution_id,
-                    data={"status": execution.status.value},
+                    data={"status": execution.status.value, "goal_mode": goal_mode},
                 )
             try:
                 runtime = self.runtime_registry.get(workspace)
+                graph = runtime.goal_graph if goal_mode else runtime.graph
             except Exception as exc:
                 if execution is not None and self.execution_repository is not None:
                     self.execution_repository.pause(
@@ -357,7 +368,7 @@ class AgentTurnService:
                 raise
             yield from self._stream_locked_turn(
                 session,
-                runtime.graph,
+                graph,
                 normalized,
                 run_id,
                 execution=execution,
@@ -385,14 +396,19 @@ class AgentTurnService:
                 TraceLayer.AGENT,
                 "agent.execution_attached",
                 execution_id=pending.execution_id,
-                data={"status": pending.status.value, "resume": True},
+                data={
+                    "status": pending.status.value,
+                    "resume": True,
+                    "goal_mode": pending.goal_mode,
+                },
             )
             try:
                 runtime = self.runtime_registry.get(workspace)
+                graph = runtime.goal_graph if pending.goal_mode else runtime.graph
                 if instruction.strip():
                     from langchain_core.messages import HumanMessage
 
-                    runtime.graph.update_state(
+                    graph.update_state(
                         {"configurable": {"thread_id": pending.checkpoint_thread_id}},
                         {
                             "messages": [
@@ -413,13 +429,35 @@ class AgentTurnService:
                 raise
             yield from self._stream_locked_turn(
                 session,
-                runtime.graph,
+                graph,
                 pending.original_input,
                 run_id,
                 execution=pending,
                 resume=True,
                 control=control,
             )
+
+    def _pending_execution_event(self, session: SessionContext, run_id: str, pending) -> dict:
+        """Return a non-error event when a Session is blocked by recoverable work."""
+        message = (
+            "Session has a pending execution. Use 'learn-agent session resume --session "
+            f"{session.session_name}' to continue, or 'learn-agent session discard --session "
+            f"{session.session_name}' to discard it before starting a new chat."
+        )
+        return {
+            "event": "done",
+            "data": {
+                "run_id": run_id,
+                "status": "paused",
+                "workspace_id": str(session.workspace.workspace_id),
+                "session_id": str(session.session_id),
+                "session_name": session.session_name,
+                "execution_id": pending.execution_id,
+                "stop_reason": pending.stop_reason or pending.status.value,
+                "goal_mode": pending.goal_mode,
+                "message": message,
+            },
+        }
 
     def session_status(self, workspace_root: str, session_name: str) -> dict:
         """Return compact pending-execution state without running the graph."""
@@ -546,6 +584,11 @@ class AgentTurnService:
             )
             input_messages = prepared.input_messages
             checkpoint_thread_id = execution.checkpoint_thread_id if execution else None
+            tool_context = ToolExecutionContext(
+                workspace_id=str(session.workspace.workspace_id),
+                session_id=str(session.session_id),
+                execution_id=execution.execution_id if execution else None,
+            )
             total_tool_calls = 0
             budget = ExecutionBudget()
             budget_token = bind_execution_budget(budget)
@@ -578,6 +621,7 @@ class AgentTurnService:
                         run_context,
                         checkpoint_thread_id=checkpoint_thread_id,
                         provider_error_handler=self.provider_error_handler,
+                        tool_context=tool_context,
                     ),
                     slice_id,
                 ):
@@ -741,6 +785,7 @@ class AgentTurnService:
                             "stop_reason": StopReason.COMPLETED.value,
                             "tool_call_count": total_tool_calls,
                             "slices_used": slice_number,
+                            "goal_mode": bool(getattr(execution, "goal_mode", False)),
                             "durability": "committed",
                             "maintenance_status": finalization.maintenance_status,
                             "memory_status": finalization.memory_status,
@@ -806,6 +851,7 @@ class AgentTurnService:
                     "stop_reason": exhausted_reason,
                     "tool_call_count": total_tool_calls,
                     "slices_used": slice_number,
+                    "goal_mode": bool(getattr(execution, "goal_mode", False)),
                     "message": summary,
                 },
             }

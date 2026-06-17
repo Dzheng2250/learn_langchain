@@ -4,11 +4,12 @@ import time
 from collections.abc import Callable, Sequence
 from typing import Any
 
+from langchain_core.messages import ToolMessage
 from langchain_core.tools import BaseTool
 from langgraph.prebuilt import ToolNode
 
 from src.core.telemetry import record_tool_failed, record_tool_finished, record_tool_started
-from src.core.agent.budget import current_execution_budget
+from src.core.agent.budget import ToolBudgetExceeded, current_execution_budget
 from src.core.tools.catalog import ToolRisk
 
 
@@ -47,6 +48,18 @@ def _result_is_error(result) -> bool:
     return getattr(result, "status", None) == "error"
 
 
+def _tool_error_message(request, exc: Exception) -> ToolMessage:
+    """Convert a tool implementation failure into a model-visible tool error."""
+    tool = _tool_call_name(request) or "unknown"
+    tool_call_id = _tool_call_id(request) or ""
+    return ToolMessage(
+        content=f"Tool {tool} failed: {type(exc).__name__}: {exc}",
+        name=tool,
+        tool_call_id=tool_call_id,
+        status="error",
+    )
+
+
 def _observe_tool_call(
     source: str,
     request,
@@ -74,7 +87,7 @@ def _observe_tool_call(
         else:
             with budget.tool_slot():
                 result = execute(request)
-    except Exception as exc:
+    except ToolBudgetExceeded as exc:
         duration_ms = int((time.monotonic() - started_at) * 1000)
         record_tool_failed(
             source,
@@ -84,6 +97,16 @@ def _observe_tool_call(
             duration_ms=duration_ms,
         )
         raise
+    except Exception as exc:
+        duration_ms = int((time.monotonic() - started_at) * 1000)
+        record_tool_failed(
+            source,
+            tool=tool,
+            tool_call_id=tool_call_id,
+            error=exc,
+            duration_ms=duration_ms,
+        )
+        return _tool_error_message(request, exc)
 
     duration_ms = int((time.monotonic() - started_at) * 1000)
     preview = _result_preview(result)

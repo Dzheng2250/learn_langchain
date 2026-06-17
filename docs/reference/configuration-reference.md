@@ -173,3 +173,11 @@ PostgreSQL Schema。若只是需要本地观测记录，应保持该选项关闭
 2. 修改执行预算、并发、队列和超时时，必须同时考虑资源消耗与用户等待时间。
 3. 修改 SQLite、本地状态路径或 PostgreSQL 配置前，应先停止 Core 并备份数据。
 4. 修改配置后运行完整测试，并通过 `learn-agent session status` 检查维护任务和待恢复执行。
+
+## Goal-mode private task planning variables
+
+`LEARN_AGENT_TASK_MAX_PER_EXECUTION`, `LEARN_AGENT_TASK_KEY_MAX_CHARS`,
+`LEARN_AGENT_TASK_SUBJECT_MAX_CHARS`, `LEARN_AGENT_TASK_DESCRIPTION_MAX_CHARS`,
+`LEARN_AGENT_TASK_NOTES_MAX_CHARS`, and `LEARN_AGENT_TASK_LIST_OUTPUT_LIMIT`
+control the parent Agent's private task planning tools. These tools are exposed
+only when a request uses goal mode, for example `learn-agent chat --goal ...`.

@@ -11,6 +11,7 @@
 - [本地优先 Session 状态](/docs/architecture/local-first-session-state.md)
 - [本地数据库设计与一致性机制](/docs/architecture/database-state-and-consistency.md)
 - [可恢复执行与预算控制](/docs/architecture/resumable-execution.md)
+- [私有任务规划](/docs/architecture/private-task-planning.md)
 - [PostgreSQL 到本地状态迁移](/docs/operations/local-state-migration.md)
 - [本地优先优化的原因、风险与设计审查](/docs/decisions/local-first-rationale-and-review.md)
 - [最终响应、后台维护与 Checkpoint 一致性](/docs/architecture/response-finalization-and-checkpoint-consistency.md)
@@ -97,6 +98,14 @@ learn-agent chat
 ```shell
 learn-agent chat --session default "查看当前项目结构"
 ```
+
+复杂目标可显式启用 goal 模式。该模式会让父 Agent 获得私有任务规划工具，用于拆解多步骤目标、记录依赖和跨 resume 延续计划：
+
+```shell
+learn-agent chat --goal --session default "重构这部分代码并补充测试"
+```
+
+普通 `learn-agent chat` 不暴露任务规划工具，适合短问题和单步操作。
 
 停止服务：
 

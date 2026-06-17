@@ -50,6 +50,49 @@ class CliDaemonTest(unittest.TestCase):
         self.assertEqual("shutting_down", result["status"])
         self.assertEqual(1, daemon_status.call_count)
 
+    def test_stop_daemon_timeout_hint_mentions_force(self):
+        runtime = Path(".test_tmp") / f"daemon-{uuid4().hex}"
+        runtime.mkdir(parents=True)
+        self.addCleanup(shutil.rmtree, runtime, True)
+        config = replace(
+            CliConfig.load(),
+            runtime_dir=runtime.resolve(),
+            daemon_stop_timeout_seconds=1,
+        )
+        with (
+            patch("src.cli.daemon.CoreClient.request", return_value={"status": "shutting_down"}),
+            patch("src.cli.daemon.daemon_status", return_value={"status": "ok"}),
+            patch("src.cli.daemon.time.monotonic", side_effect=[10, 12, 13]),
+            self.assertRaises(DaemonLifecycleError) as caught,
+        ):
+            stop_daemon(config)
+
+        self.assertIn("stop --force", caught.exception.hint)
+
+    def test_stop_daemon_force_terminates_after_graceful_timeout(self):
+        runtime = Path(".test_tmp") / f"daemon-{uuid4().hex}"
+        runtime.mkdir(parents=True)
+        self.addCleanup(shutil.rmtree, runtime, True)
+        (runtime / "daemon.pid").write_text("12345", encoding="ascii")
+        (runtime / "daemon.token").write_text("token", encoding="utf-8")
+        config = replace(
+            CliConfig.load(),
+            runtime_dir=runtime.resolve(),
+            daemon_stop_timeout_seconds=1,
+        )
+        with (
+            patch("src.cli.daemon.CoreClient.request", return_value={"status": "shutting_down"}),
+            patch("src.cli.daemon.daemon_status", return_value={"status": "ok"}),
+            patch("src.cli.daemon._terminate_pid", return_value=True) as terminate,
+            patch("src.cli.daemon._cleanup_runtime_files") as cleanup,
+            patch("src.cli.daemon.time.monotonic", side_effect=[10, 12, 13]),
+        ):
+            result = stop_daemon(config, force=True)
+
+        self.assertEqual("forced_stopped", result["status"])
+        terminate.assert_called_once_with(12345, 1)
+        cleanup.assert_called_once_with(config)
+
 
 if __name__ == "__main__":
     unittest.main()

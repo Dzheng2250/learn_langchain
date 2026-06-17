@@ -129,7 +129,7 @@ response completed != maintenance completed
 | Telemetry 队列满 | 丢弃观测事件并记录计数；不阻塞输出 |
 | 客户端断开 | 停止通知；Core Turn 继续完成 |
 | Core 正常关闭 | 停止接收新请求，并在超时内 drain 后台任务 |
-| Core 强制终止 | 已返回成功的最小提交不得丢失；允许丢失 best-effort Telemetry，持久化维护任务下次启动恢复 |
+| Core 强制终止 | `learn-agent stop --force` 可终止卡住的 daemon；已返回成功的最小提交不得丢失；允许丢失 best-effort Telemetry/Trace，持久化维护任务下次启动恢复 |
 | 同一 Session 快速连续请求 | 不覆盖、不乱序、不读取未提交旧状态 |
 
 ## 6. 可观测性要求
@@ -160,6 +160,7 @@ response completed != maintenance completed
 | 消息、Session、Execution 与维护任务单事务提交 | 已实现：`CompletedTurnCommitter` |
 | 上下文压缩后台执行并带版本检查 | 已实现：摘要任务与 `summary_through_turn` CAS |
 | 慢客户端发送超时 | **未实现** |
+| 任意工具级抢占式取消 | **未实现**：Python 不能安全终止任意同步工具线程；当前提供 daemon 级 `stop --force` 逃生口，后续应为长耗时工具实现协作取消或进程隔离 |
 | IO 型 Console/JSONL Sink 默认缓冲 | **未实现** |
 | 业务数据库池与 Telemetry 池资源隔离 | **未实现** |
 | 完整延迟指标和回归门禁 | **未实现** |

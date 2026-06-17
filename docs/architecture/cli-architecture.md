@@ -342,6 +342,7 @@ CLI 当前提供五组命令：
 ```text
 learn-agent start
 learn-agent stop
+learn-agent stop --force
 learn-agent status
 learn-agent chat
 learn-agent session status
@@ -682,7 +683,10 @@ CliRenderError
 
 - 不自动重试 `agent.chat`，因为请求可能已在 Core 中执行，自动重试可能造成重复工具调用或重复写入。
 - 不支持连接恢复和事件续传；中断后需要用户检查 daemon 日志。
-- 不强制终止关闭超时的 daemon，只返回明确错误。
+- 默认不强制终止关闭超时的 daemon，只返回明确错误，并提示用户检查日志。
+- `learn-agent stop --force` 是显式人工逃生口：当同步工具或底层系统调用卡住导致 daemon 无法完成
+  优雅关闭时，CLI 会在优雅关闭超时后根据 PID 终止 daemon 进程并清理 runtime 文件。该能力不是
+  工具级取消机制；它会中断整个 Core 进程，允许丢失尚未 flush 的 best-effort Trace/Telemetry。
 - Core 内部任务失败通过 RPC/流式事件返回，CLI 不尝试替代 Core 恢复业务状态。
 
 ## 后续方向

@@ -13,6 +13,7 @@ class ToolAudience(StrEnum):
 class ToolRisk(StrEnum):
     """Static capability risk used for policy and future approvals."""
     READ_ONLY = "read_only"
+    INTERNAL_STATE = "internal_state"
     CONTROLLED_EXECUTION = "controlled_execution"
     DELEGATION = "delegation"
 

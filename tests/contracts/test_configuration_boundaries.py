@@ -142,6 +142,18 @@ class PromptBoundaryTest(unittest.TestCase):
         self.assertIn("at most 200 lines", prompt)
         self.assertIn("pdf: read PDFs", prompt)
 
+    def test_goal_prompt_requires_planning_before_delegation_for_complex_goals(self):
+        prompt = build_parent_system_prompt(
+            "pdf: read PDFs",
+            200,
+            task_planning_enabled=True,
+        )
+
+        self.assertIn("create a task_plan before broad inspection", prompt)
+        self.assertIn("Do not make delegate_to_subagent your first tool", prompt)
+        self.assertIn("mention the relevant task_key", prompt)
+        self.assertIn("write a brief summary to the user", prompt)
+
     def test_context_prompt_builder_returns_model_messages(self):
         messages = build_context_summary_messages(
             source="conversation",

@@ -90,6 +90,7 @@ CREATE TABLE IF NOT EXISTS executions (
     controlled_executions_used INTEGER NOT NULL DEFAULT 0,
     delegations_used INTEGER NOT NULL DEFAULT 0,
     tool_calls_used INTEGER NOT NULL DEFAULT 0,
+    goal_mode INTEGER NOT NULL DEFAULT 0,
     checkpoint_state TEXT NOT NULL DEFAULT 'uninitialized' CHECK (
         checkpoint_state IN ('uninitialized', 'available', 'cleanup_pending', 'cleaned', 'missing')
     ),
@@ -116,6 +117,40 @@ CREATE TABLE IF NOT EXISTS execution_slices (
     started_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
     finished_at TEXT,
     UNIQUE(execution_id, grant_index, slice_index)
+);
+
+CREATE TABLE IF NOT EXISTS execution_tasks (
+    task_id TEXT PRIMARY KEY,
+    execution_id TEXT NOT NULL REFERENCES executions(execution_id) ON DELETE CASCADE,
+    task_key TEXT NOT NULL,
+    subject TEXT NOT NULL,
+    description TEXT NOT NULL DEFAULT '',
+    status TEXT NOT NULL CHECK (
+        status IN ('pending', 'in_progress', 'completed', 'cancelled')
+    ),
+    notes TEXT NOT NULL DEFAULT '',
+    ordinal INTEGER NOT NULL DEFAULT 0,
+    version INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    completed_at TEXT,
+    UNIQUE(execution_id, task_key),
+    -- Required by SQLite composite foreign keys from execution_task_dependencies.
+    -- task_id is globally unique, but the child table also carries execution_id
+    -- to prevent cross-Execution dependency links at the schema boundary.
+    UNIQUE(execution_id, task_id)
+);
+
+CREATE TABLE IF NOT EXISTS execution_task_dependencies (
+    execution_id TEXT NOT NULL,
+    task_id TEXT NOT NULL,
+    depends_on_task_id TEXT NOT NULL,
+    PRIMARY KEY(execution_id, task_id, depends_on_task_id),
+    FOREIGN KEY(execution_id, task_id)
+        REFERENCES execution_tasks(execution_id, task_id) ON DELETE CASCADE,
+    FOREIGN KEY(execution_id, depends_on_task_id)
+        REFERENCES execution_tasks(execution_id, task_id) ON DELETE CASCADE,
+    CHECK(task_id <> depends_on_task_id)
 );
 
 CREATE TABLE IF NOT EXISTS tool_ledger (
@@ -232,6 +267,12 @@ ON messages(workspace_id, session_id, turn_index, created_at, message_id);
 
 CREATE INDEX IF NOT EXISTS idx_executions_session
 ON executions(workspace_id, session_id, updated_at DESC);
+
+CREATE INDEX IF NOT EXISTS idx_execution_tasks_execution
+ON execution_tasks(execution_id, ordinal, task_key);
+
+CREATE INDEX IF NOT EXISTS idx_execution_task_dependencies_dep
+ON execution_task_dependencies(execution_id, depends_on_task_id);
 
 CREATE INDEX IF NOT EXISTS idx_memories_workspace
 ON memories(workspace_id, importance DESC, updated_at DESC);

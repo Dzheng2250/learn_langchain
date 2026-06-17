@@ -8,6 +8,7 @@ from uuid import UUID
 from src.core.agent.models import RunLimits
 from src.core.agent.graph import create_parent_graph
 from src.core.llm.provider import ModelProvider, OpenAICompatibleProvider
+from src.core.tasks.service import TaskPlanningService
 from src.core.tools.registry import WorkspaceToolset, create_workspace_toolset
 from src.core.workspace.models import WorkspaceContext
 
@@ -19,6 +20,8 @@ class WorkspaceRuntime:
     workspace: WorkspaceContext
     toolset: WorkspaceToolset
     graph: object
+    goal_toolset: WorkspaceToolset
+    goal_graph: object
 
 
 class WorkspaceRuntimeFactory:
@@ -30,11 +33,13 @@ class WorkspaceRuntimeFactory:
         run_limits: RunLimits | None = None,
         checkpointer=None,
         checkpointer_provider: Callable[[], object] | None = None,
+        task_service: TaskPlanningService | None = None,
     ) -> None:
         self.model_provider = model_provider or OpenAICompatibleProvider()
         self.run_limits = run_limits or RunLimits()
         self.checkpointer = checkpointer
         self.checkpointer_provider = checkpointer_provider
+        self.task_service = task_service
 
     def create(self, workspace: WorkspaceContext) -> WorkspaceRuntime:
         """Build Workspace-bound tools and compile the parent Agent graph."""
@@ -44,6 +49,12 @@ class WorkspaceRuntimeFactory:
             workspace,
             self.model_provider,
             subagent_max_steps=self.run_limits.max_subagent_steps,
+        )
+        goal_toolset = create_workspace_toolset(
+            workspace,
+            self.model_provider,
+            subagent_max_steps=self.run_limits.max_subagent_steps,
+            task_service=self.task_service,
         )
         checkpointer = (
             self.checkpointer_provider()
@@ -56,8 +67,17 @@ class WorkspaceRuntimeFactory:
             self.model_provider,
             checkpointer=checkpointer,
             risk_by_name={spec.name: spec.risk for spec in toolset.registry.specs()},
+            task_planning_enabled=False,
         )
-        return WorkspaceRuntime(workspace, toolset, graph)
+        goal_graph = create_parent_graph(
+            goal_toolset.parent_tools,
+            goal_toolset.skill_manifest,
+            self.model_provider,
+            checkpointer=checkpointer,
+            risk_by_name={spec.name: spec.risk for spec in goal_toolset.registry.specs()},
+            task_planning_enabled=self.task_service is not None,
+        )
+        return WorkspaceRuntime(workspace, toolset, graph, goal_toolset, goal_graph)
 
 
 class WorkspaceRuntimeRegistry:

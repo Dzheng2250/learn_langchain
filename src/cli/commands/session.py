@@ -1,6 +1,7 @@
 """Session pending-execution inspection and control commands."""
 
 from src.cli.client import CoreClient
+from src.cli.render import AgentEventRenderer
 from src.cli.workspace import discover_workspace_root
 
 
@@ -25,18 +26,25 @@ def run(args, config) -> int:
     workspace = discover_workspace_root(args.workspace)
     client = CoreClient(config)
     params = {"workspace_root": str(workspace), "session_name": args.session}
+    renderer = AgentEventRenderer()
     if args.session_action == "resume":
         params["instruction"] = args.instruction
     result = client.request(
         f"session.{args.session_action}",
         params,
-        on_event=_render_notification if args.session_action == "resume" else None,
+        on_event=renderer.render if args.session_action == "resume" else None,
     )
+    if args.session_action == "resume":
+        print()
+        if result.get("status") == "paused":
+            print(result.get("message", "Agent execution paused."))
+            print(
+                "Use 'learn-agent session resume --session "
+                f"{args.session}' to continue, or 'learn-agent session discard --session "
+                f"{args.session}' to discard it."
+            )
+            return 0
+        if result.get("status") == "ok" and result.get("goal_mode") and not renderer.done_announced:
+            print("Goal mode execution completed. You can continue with a new message or exit.")
     print(result)
     return 0
-
-
-def _render_notification(notification: dict) -> None:
-    """Render resumed token events without exposing persistence internals."""
-    if notification.get("event") == "token":
-        print(notification.get("data", {}).get("content", ""), end="", flush=True)

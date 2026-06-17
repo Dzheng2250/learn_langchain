@@ -96,12 +96,14 @@ request_id
 run_id
 workspace_root
 session_name
+goal_mode
 received_token
 connection_state
 last_stop_reason
 ```
 
 `execution_id` 由 `done` 或 `session.status` 提供，用于展示恢复能力。
+当用户选择“目标/Goal”类入口时，TUI 可以在 `agent.chat.params` 中发送 `goal_mode=true`。普通聊天入口应保持默认 `false`，避免短问题被父 Agent 误拆成私有任务计划。
 
 ## 渲染建议
 
@@ -128,5 +130,6 @@ TUI 关闭或连接中断时，不应自动重发 `agent.chat`。重新连接后
 - Session 列表和历史查询。
 - 多连接订阅同一个 Run。
 - capabilities 协商。
+- 任务计划的公开 CRUD。Goal 模式任务是父 Agent 的私有认知工具，不是 TUI 项目管理接口。
 
 实现 TUI 时应将这些能力视为未来扩展，不要通过读取 SQLite 或 Core 私有模块绕过协议。

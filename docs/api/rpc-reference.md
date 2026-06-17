@@ -69,6 +69,7 @@ Core 先写回最终响应，再开始优雅关闭。客户端不应假设收到
 | `workspace_root` | string | 1..4000 字符 | 当前工作区根目录 |
 | `session_name` | string | 1..200 字符，默认 `default` | Workspace 内 Session 名称 |
 | `message` | string | 1..200000 字符 | 用户输入 |
+| `goal_mode` | boolean | 默认 `false` | 是否启用父 Agent 私有任务规划工具 |
 
 示例：
 
@@ -81,10 +82,13 @@ Core 先写回最终响应，再开始优雅关闭。客户端不应假设收到
     "auth_token": "...",
     "workspace_root": "D:\\project",
     "session_name": "default",
-    "message": "分析当前项目结构"
+    "message": "分析当前项目结构",
+    "goal_mode": false
   }
 }
 ```
+
+`goal_mode=true` 适合复杂目标，会让父 Agent 获得 `task_plan`、`task_update`、`task_list` 和 `task_get` 私有工具。该字段不是任务 API；客户端不能直接管理任务，只能选择本轮是否以 goal 模式启动。若 goal Execution 因预算暂停，后续 `session.resume` 会继承该 Execution 的 goal 模式，不需要客户端再次传入该字段。
 
 执行期间会产生 `agent.event` 通知。最终结果通常包含：
 

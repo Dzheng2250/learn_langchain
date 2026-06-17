@@ -9,6 +9,7 @@ from src.core.common.debug import debug_print, format_message, format_messages
 from src.core.telemetry import emit_event, record_error
 from src.core.llm.provider import LlmPurpose, ModelProvider, OpenAICompatibleProvider
 from src.core.prompts import build_parent_system_prompt
+from src.core.tasks.context import ToolExecutionContext
 from src.core.tools.observed import ObservedToolNode
 
 
@@ -19,6 +20,7 @@ def create_parent_graph(
     *,
     checkpointer=None,
     risk_by_name=None,
+    task_planning_enabled: bool = False,
 ):
     """Create one compiled graph permanently bound to a WorkspaceRuntime."""
     provider = model_provider or OpenAICompatibleProvider()
@@ -33,7 +35,11 @@ def create_parent_graph(
         """Call the parent LLM with system policy and current graph messages."""
         llm_messages = [
             SystemMessage(
-                content=build_parent_system_prompt(skill_manifest, FILE_READ_CHUNK_LINES)
+                content=build_parent_system_prompt(
+                    skill_manifest,
+                    FILE_READ_CHUNK_LINES,
+                    task_planning_enabled=task_planning_enabled,
+                )
             ),
             *state["messages"],
         ]
@@ -58,7 +64,7 @@ def create_parent_graph(
         )
         return {"messages": [response]}
 
-    builder = StateGraph(MessagesState)
+    builder = StateGraph(MessagesState, context_schema=ToolExecutionContext)
     builder.add_node("agent", agent_node)
     builder.add_node("tools", ObservedToolNode(parent_tools, risk_by_name=risk_by_name))
     # The graph is the AgentLoop: LLM output without tool calls terminates;
