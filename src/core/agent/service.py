@@ -749,6 +749,7 @@ class AgentTurnService:
                         graph_steps_used=int(item["data"].get("graph_steps_used", 0)),
                         usage=budget.snapshot(),
                     )
+                    snapshot = budget.snapshot()
                     active_slice_id = None
                     record_trace(
                         TraceDirection.INTERNAL,
