@@ -67,6 +67,7 @@ class ChatScreen(Screen):
         self._busy = False  # True while a chat/resume request is in flight
         self._auth_token = ""
         self._workspace_root = ""
+        self._streamed_response_active = False
 
     def compose(self):
         yield StatusBar()
@@ -388,12 +389,22 @@ class ChatScreen(Screen):
             return
         event = params.get("event")
         if event == "token":
+            self._streamed_response_active = True
             self.query_one(ChatLog).write_token(markup)
         else:
+            data = params.get("data", {})
+            if (
+                event == "step"
+                and data.get("type") == "agent_message"
+                and self._streamed_response_active
+            ):
+                self.query_one(ChatLog).flush_tokens()
+                self._streamed_response_active = False
+                return
             log = self.query_one(ChatLog)
             log.write_event(markup)
+            self._streamed_response_active = False
             if event == "done":
-                data = params.get("data", {})
                 status = data.get("status")
                 self._handle_done(status, data)
 

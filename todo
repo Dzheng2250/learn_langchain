@@ -111,26 +111,28 @@ GitHub 推送新分支，如何创建新pr 并编写描述信息？
 1. 上下文使用额度
 2. 主动压缩
 3. 技能列表
-4. 流式输出失效，界面中看到的ai回复的消息不是流式的，而是等待很久再一下子加载出来的
 5. 进入到旧session中不会主动加载历史对话到界面中
 6. claude code 没有及时更新设计文档，特别是TUI部分的，如何设计，遇到了什么问题，怎么处理的
 7. agent生成时，滚动条无效，无法滚动
 
-又卡死了，无法恢复会话
-(agent_learn) PS D:\Desktop_logo\github\test> learn-agent chat
+8. tui流式输出有问题，
+- 流式输出到界面后每个小chunk后都有个换行，导致内容全部错位
+src/tui/widgets/chat_log.py
+不再每个 token chunk 都直接 RichLog.write()。
+改为维护 _entries 已提交日志 + _token_buf 当前流式回复。
+token 到来时重绘当前回复，避免每个 chunk 变成一行。
+
+- 全部输出完后，又输出了一边完整的
+
+9. 仍然模型拒绝后无法人工恢复，discard 与 resume 都不行，我们的目的是即使触发了服务商的限制，回复的消息被拒绝了，但是仍然能够自己回复到上一轮完全正常的状态，最好是自行恢复
+(agent_learn) PS D:\Desktop_logo\github\test> learn-agent chat                      
 Connected to Core daemon. Type 'exit' or 'quit' to stop.
 
-You: ？
+You: 为什么
 AI: 
 
 Error: The model provider rejected the request content. This turn was terminated; revise the input and continue.
 
-(agent_learn) PS D:\Desktop_logo\github\test> learn-agent session status --session default 
-{'workspace_id': '09ac2f92-2445-4bbc-839c-d108d761af99', 'session_id': '3d0f3eac-6fb3-4dd4-a4f4-81534bbb198d', 'session_name': 'default', 'context_tokens': 7246, 'pending_execution': None, 'execution_recoverable': False, 'checkpoint_state': None, 'maintenance': {'pending': 0, 'running': 0, 'failed': 0}}
-(agent_learn) PS D:\Desktop_logo\github\test> learn-agent session resume --session default
-Error: Core rejected the request: Internal error (-32603).
-(agent_learn) PS D:\Desktop_logo\github\test> learn-agent session discard --session default
-Error: Core rejected the request: Internal error (-32603).
 
 ## LLM Token 使用量统计规划（暂不实施）
 

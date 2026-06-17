@@ -388,6 +388,35 @@ class GoalModeRoutingTest(unittest.TestCase):
         self.assertIn("session resume", second[-1]["data"]["message"])
         self.assertTrue(second[-1]["data"]["goal_mode"])
 
+    def test_resume_without_pending_execution_returns_idle(self):
+        service = self._service(Mock(graph=Mock(), goal_graph=Mock()))
+        workspace_root = str(Path("tests/fixtures/workspace_a").resolve())
+        try:
+            events = list(
+                service.stream_resume(
+                    workspace_root,
+                    "idle-resume",
+                    run_id="idle-resume-run",
+                )
+            )
+        finally:
+            service.close()
+
+        self.assertEqual("done", events[-1]["event"])
+        self.assertEqual("idle", events[-1]["data"]["status"])
+        self.assertIn("no pending execution", events[-1]["data"]["message"])
+
+    def test_discard_without_pending_execution_returns_idle(self):
+        service = self._service(Mock(graph=Mock(), goal_graph=Mock()))
+        workspace_root = str(Path("tests/fixtures/workspace_a").resolve())
+        try:
+            result = service.discard_pending(workspace_root, "idle-discard")
+        finally:
+            service.close()
+
+        self.assertEqual("idle", result["status"])
+        self.assertIn("no pending execution", result["message"])
+
     def test_resume_uses_goal_graph_for_goal_execution(self):
         class RecordingGraph:
             def __init__(self, name):

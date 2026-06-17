@@ -390,6 +390,19 @@ class AgentTurnService:
         workspace = self.workspace_repository.resolve(workspace_root)
         session, _ = self.workspace_repository.resolve_session(workspace, session_name)
         with self.lock_registry.get(session.session_id):
+            if self.execution_repository.get_attached(session) is None:
+                yield {
+                    "event": "done",
+                    "data": {
+                        "run_id": run_id,
+                        "status": "idle",
+                        "workspace_id": str(session.workspace.workspace_id),
+                        "session_id": str(session.session_id),
+                        "session_name": session.session_name,
+                        "message": "Session has no pending execution to resume.",
+                    },
+                }
+                return
             pending = self.execution_repository.resume(session)
             record_trace(
                 TraceDirection.INTERNAL,
@@ -498,6 +511,14 @@ class AgentTurnService:
         workspace = self.workspace_repository.resolve(workspace_root)
         session, _ = self.workspace_repository.resolve_session(workspace, session_name)
         with self.lock_registry.get(session.session_id):
+            if self.execution_repository.get_attached(session) is None:
+                return {
+                    "status": "idle",
+                    "workspace_id": str(session.workspace.workspace_id),
+                    "session_id": str(session.session_id),
+                    "session_name": session.session_name,
+                    "message": "Session has no pending execution to discard.",
+                }
             pending = self.execution_repository.discard(session)
             if self.maintenance_repository is not None:
                 from src.core.maintenance.models import MaintenanceJobSpec
