@@ -97,12 +97,31 @@ def stop_daemon(config: CliConfig, *, force: bool = False) -> dict:
     deadline = time.monotonic() + config.daemon_stop_timeout_seconds
     while time.monotonic() < deadline and daemon_status(config) is not None:
         time.sleep(0.1)
+
     if daemon_status(config) is not None:
+        # Daemon HTTP is still responsive — graceful shutdown timed out
         if force:
             pid = _read_daemon_pid(config)
-            if pid is not None and _terminate_pid(pid, config.daemon_stop_timeout_seconds):
+            if pid is None:
+                raise DaemonLifecycleError(
+                    "Cannot force-stop daemon: advisory PID file not found.",
+                    hint=(
+                        f"The daemon is still responding but no PID file was found at "
+                        f"{pid_path(config.runtime_dir)}. Check {log_path(config.runtime_dir)} "
+                        "for the daemon process."
+                    ),
+                )
+            if _terminate_pid(pid, config.daemon_stop_timeout_seconds):
                 _cleanup_runtime_files(config)
                 return {"status": "forced_stopped", "graceful_result": result}
+            raise DaemonLifecycleError(
+                "Force-stop failed: daemon process did not terminate.",
+                hint=(
+                    f"Checked PID {pid} from {pid_path(config.runtime_dir)} — "
+                    "the process could not be killed after SIGTERM and SIGKILL. "
+                    "Check system logs and consider manual termination."
+                ),
+            )
         raise DaemonLifecycleError(
             "Core daemon did not stop before the shutdown timeout.",
             hint=(
@@ -111,6 +130,29 @@ def stop_daemon(config: CliConfig, *, force: bool = False) -> dict:
                 "'learn-agent stop --force'."
             ),
         )
+
+    # HTTP server is down — verify the process actually exited
+    daemon_pid = _read_daemon_pid(config)
+    if daemon_pid is not None and _pid_is_running(daemon_pid):
+        if force:
+            if _terminate_pid(daemon_pid, config.daemon_stop_timeout_seconds):
+                _cleanup_runtime_files(config)
+                return {"status": "forced_stopped", "graceful_result": result}
+            raise DaemonLifecycleError(
+                "Force-stop failed: daemon process did not terminate.",
+                hint=(
+                    f"The process (PID {daemon_pid}) could not be killed after "
+                    "SIGTERM and SIGKILL. Check system logs."
+                ),
+            )
+        raise DaemonLifecycleError(
+            "Core daemon HTTP server stopped, but the process is still running.",
+            hint=(
+                f"The daemon process (PID {daemon_pid}) may be stuck in a system "
+                "call. Run 'learn-agent stop --force' to terminate it."
+            ),
+        )
+
     _cleanup_runtime_files(config)
     return result
 

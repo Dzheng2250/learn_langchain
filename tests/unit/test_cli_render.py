@@ -149,7 +149,7 @@ class AgentEventRendererTest(unittest.TestCase):
             )
 
         rendered = output.getvalue()
-        self.assertIn("<redacted>", rendered)
+        self.assertIn("[REDACTED]", rendered)
         self.assertNotIn("should-not-render", rendered)
         self.assertIn("... truncated ...", rendered)
 

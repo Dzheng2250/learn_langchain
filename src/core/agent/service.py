@@ -296,6 +296,7 @@ class AgentTurnService:
             if on_event:
                 on_event(item)
             if item["event"] == "done":
+                result["status"] = "ok"
                 result.update(item["data"])
             elif item["event"] == "error":
                 result["error"] = item["data"].get("message", "Agent resume failed.")

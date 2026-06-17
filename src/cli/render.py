@@ -13,6 +13,7 @@ TASK_TOOLS = {"task_plan", "task_update", "task_list", "task_get"}
 VISIBLE_RESULT_TOOLS = TASK_TOOLS | {"delegate_to_subagent"}
 SENSITIVE_ARG_KEY_PARTS = (
     "api_key",
+    "apikey",
     "authorization",
     "passwd",
     "password",
@@ -34,23 +35,25 @@ def _preview(value: Any, limit: int = DETAIL_PREVIEW_LIMIT) -> str:
 def _is_sensitive_arg_key(key: str) -> bool:
     """Return whether an argument key should never be rendered verbatim."""
     key = key.casefold()
-    return any(part in key for part in SENSITIVE_ARG_KEY_PARTS) or key == ".env"
+    return any(part in key for part in SENSITIVE_ARG_KEY_PARTS) or ".env" in key
 
 
-def _sanitize_arg_value(key: str, value: Any) -> Any:
+def _sanitize_arg_value(key: str, value: Any, *, _depth: int = 0) -> Any:
     """Build a terminal-safe preview value for one tool argument."""
+    if _depth > 20:
+        return "[MAX_DEPTH]"
     if _is_sensitive_arg_key(key):
-        return "<redacted>"
+        return "[REDACTED]"
     if isinstance(value, str):
         return _preview(value, ARG_FIELD_PREVIEW_LIMIT)
     if isinstance(value, dict):
         return {
-            str(child_key): _sanitize_arg_value(str(child_key), child_value)
+            str(child_key): _sanitize_arg_value(str(child_key), child_value, _depth=_depth + 1)
             for child_key, child_value in value.items()
         }
     if isinstance(value, list):
         return [
-            _sanitize_arg_value(key, item)
+            _sanitize_arg_value(key, item, _depth=_depth + 1)
             for item in value[:20]
         ] + (["... truncated ..."] if len(value) > 20 else [])
     return value
