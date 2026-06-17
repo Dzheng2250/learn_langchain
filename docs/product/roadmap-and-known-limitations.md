@@ -9,6 +9,7 @@
 ## 1. 当前稳定能力
 
 - 本地用户级 Core daemon 与 CLI。
+- 基于 Textual 的 TUI 客户端（`learn-agent tui`）—— 实时流式 token、工具步骤、暂停恢复和上下文用量展示。
 - Workspace 隔离的 Session、消息、记忆、工具和 Skill。
 - Agent 工具循环、子 Agent 委托和多维预算控制。
 - SQLite 权威状态、后台维护与 checkpoint 恢复。
@@ -33,7 +34,7 @@
 | GAP-007 | Branch Schema 已存在但无公开操作 | 无法正式编辑历史或派生对话分支 | 不对外承诺该能力 |
 | GAP-008 | Tool Artifact 策略未覆盖所有工具 | 新工具可能将大结果直接放入消息 | 新工具 Review 必须检查输出上限 |
 | GAP-009 | Core 未注册为操作系统服务 | 重启系统后需手动启动 | 使用显式 `learn-agent start` |
-| GAP-010 | 缺少异步客户端库 | TUI 需要自行实现异步通信或包装同步 client | 已通过 `src/tui/client.py` 的 `AsyncCoreClient` 解决 |
+| GAP-010 | 缺少异步客户端库 | TUI 需要自行实现异步通信或包装同步 client | 已通过 `src/tui/client.py` 的 `AsyncCoreClient` 解决，详见 [TUI 架构](/docs/architecture/tui-architecture.md) |
 | GAP-011 | daemon token 没有独立过期与撤销机制 | 凭据生命周期依赖 daemon 停止和重新启动 | 保持 loopback 与用户级文件权限；未来增加显式轮换策略 |
 
 ## 4. 工程治理缺口
@@ -68,7 +69,6 @@
 ### 后续阶段
 
 1. 任务取消与事件续传。
-2. TUI 和异步客户端。
-3. 语义记忆检索。
-4. Session 分支、编辑和版本控制。
-5. OpenTelemetry 或其他外部观测导出。
+2. 语义记忆检索。
+3. Session 分支、编辑和版本控制。
+4. OpenTelemetry 或其他外部观测导出。

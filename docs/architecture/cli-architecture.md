@@ -693,6 +693,6 @@ CliRenderError
 
 - 将项目包名从通用的 `src` 调整为正式包名，例如 `learn_agent`。
 - 将内部策略常量逐步收敛为严格配置模型；仅在确有层次化配置需求时引入 TOML。
-- 为 TUI 复用 `ipc` 模型和 RPC client。
+- 为 TUI 复用 `ipc` 模型和异步 RPC client（`AsyncCoreClient`）。详见 [TUI 架构](/docs/architecture/tui-architecture.md)。
 - Core 已拆分 `bus`、`handlers` 与 `transport`，并由 `CoreApp` 统一组装和管理生命周期。详见
   [`Core 架构`](/docs/architecture/core-architecture.md)。

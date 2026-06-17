@@ -14,7 +14,7 @@
 learn-agent tui
 ```
 
-完整实现细节见 [src/tui/app.py](/src/tui/app.py) 和相关模块。第三方前端可在此基础上定制。
+完整实现细节见 [TUI 架构文档](/docs/architecture/tui-architecture.md) 和相关模块。第三方前端可在此基础上定制。
 
 ## 前端职责
 

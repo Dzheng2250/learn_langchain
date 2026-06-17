@@ -12,6 +12,7 @@ class TuiChatLogTest(unittest.TestCase):
         log = ChatLog.__new__(ChatLog)
         log._entries = []
         log._token_buf = ""
+        log._token_line_start = None
         log._size_known = True
         log.lines = []
         log.refreshed = 0
