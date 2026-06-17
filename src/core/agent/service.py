@@ -686,6 +686,41 @@ class AgentTurnService:
                 "cleanup_enqueued": cleanup_enqueued,
             }
 
+    def reset_session(self, workspace_root: str, session_name: str) -> dict:
+        """Rebuild recent_messages from archived messages and reset context_tokens.
+
+        This is a recovery operation for Sessions whose ``recent_messages``
+        cache contains content that causes provider-side rejection. Archived
+        messages in the ``messages`` table are replayed into ``recent_messages``
+        up to ``RECENT_MESSAGE_LIMIT``, and ``context_tokens`` is reset to 0 so
+        the compression policy evaluates the next turn's input size fresh.
+        """
+        workspace = self.workspace_repository.resolve(workspace_root)
+        found = self._get_existing_session_by_name(workspace, session_name)
+        if found is not None and found[1]:
+            session = found[0]
+            return {
+                "status": "archived",
+                "workspace_id": str(workspace.workspace_id),
+                "session_id": str(session.session_id),
+                "session_name": session.session_name,
+                "recovered_messages": 0,
+            }
+        session, _ = self.workspace_repository.resolve_session(workspace, session_name)
+        with self.lock_registry.get(session.session_id):
+            store = self.state_store_factory()
+            try:
+                count = store.rebuild_recent_messages_from_archive(session)
+            finally:
+                store.close()
+        return {
+            "status": "ok",
+            "workspace_id": str(workspace.workspace_id),
+            "session_id": str(session.session_id),
+            "session_name": session.session_name,
+            "recovered_messages": count,
+        }
+
     def _enqueue_checkpoint_cleanup(self, session: SessionContext, pending) -> bool:
         """Queue checkpoint cleanup for a discarded pending execution."""
         if self.maintenance_repository is None:

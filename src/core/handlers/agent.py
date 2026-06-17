@@ -30,6 +30,7 @@ class AgentHandlers:
         router.register("session.resume", SessionResumeParams, self.session_resume)
         router.register("session.discard", SessionParams, self.session_discard)
         router.register("session.delete", SessionDeleteParams, self.session_delete)
+        router.register("session.reset", SessionParams, self.session_reset)
 
     async def chat(self, params: ChatParams, context: RequestContext) -> dict:
         """Execute one Turn and bridge worker events to RPC notifications."""
@@ -73,6 +74,14 @@ class AgentHandlers:
             params.workspace_root,
             params.session_name,
             hard_delete=params.hard_delete,
+        )
+
+    async def session_reset(self, params: SessionParams, _context: RequestContext) -> dict:
+        """Rebuild recent_messages from archived message history."""
+        return await asyncio.to_thread(
+            self.agent_service.reset_session,
+            params.workspace_root,
+            params.session_name,
         )
 
     async def session_resume(self, params: SessionResumeParams, context: RequestContext) -> dict:

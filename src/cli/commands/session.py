@@ -9,7 +9,7 @@ def register(subparsers, _config) -> None:
     """Register explicit Session recovery commands."""
     parser = subparsers.add_parser("session", help="inspect or control a pending Session execution")
     actions = parser.add_subparsers(dest="session_action", required=True)
-    for name in ("status", "discard"):
+    for name in ("status", "discard", "reset"):
         action = actions.add_parser(name)
         action.add_argument("--session", default="default")
         action.add_argument("--workspace")

@@ -13,6 +13,7 @@ from src.config.settings import (
     MEMORY_MIN_IMPORTANCE,
     MEMORY_RETRIEVAL_LIMIT,
     POSTGRES_PROJECTION_ENABLED,
+    RECENT_MESSAGE_LIMIT,
 )
 from src.core.context.models import AgentContextState
 from src.core.memory.extractor import MemoryCandidateExtractor
@@ -151,6 +152,52 @@ class LocalStateStore:
         )
         if cur.rowcount != 1:
             raise RuntimeError("Fast Session context update did not affect exactly one row.")
+
+    def rebuild_recent_messages_from_archive(self, session: SessionContext) -> int:
+        """Rebuild ``recent_messages`` from archived message history.
+
+        Loads the most recent ``RECENT_MESSAGE_LIMIT`` messages from the
+        ``messages`` table, deserialises their ``raw`` JSON via
+        ``messages_from_dict``, and writes them back into the session row.
+        ``context_tokens`` is reset to 0 so the next compression decision is
+        based on fresh token estimates.
+
+        Returns the number of recovered messages.
+        """
+        with self.database.connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT raw FROM messages
+                WHERE workspace_id=? AND session_id=?
+                ORDER BY created_at DESC, message_id DESC
+                LIMIT ?
+                """,
+                (
+                    str(session.workspace.workspace_id),
+                    str(session.session_id),
+                    RECENT_MESSAGE_LIMIT,
+                ),
+            ).fetchall()
+        recovered = messages_from_dict(
+            [json.loads(row["raw"]) for row in reversed(rows)]
+        )
+        with self.database.transaction() as conn:
+            recent = json.dumps(
+                messages_to_dict(recovered), ensure_ascii=False, default=str
+            )
+            conn.execute(
+                """
+                UPDATE sessions SET recent_messages=?, context_tokens=0,
+                    version=version + 1, updated_at=CURRENT_TIMESTAMP
+                WHERE workspace_id=? AND session_id=?
+                """,
+                (
+                    recent,
+                    str(session.workspace.workspace_id),
+                    str(session.session_id),
+                ),
+            )
+        return len(recovered)
 
     def load_turn_messages(self, session: SessionContext, turn_index: int) -> tuple[list, list[str]]:
         """Load one committed Turn for a durable maintenance handler."""

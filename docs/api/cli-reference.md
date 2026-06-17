@@ -16,6 +16,7 @@
 | `learn-agent session status` | 查询 Session 和待恢复任务 | 是 |
 | `learn-agent session resume` | 恢复待执行任务 | 是 |
 | `learn-agent session discard` | 丢弃待恢复任务 | 是 |
+| `learn-agent session reset` | 从归档消息重建 Session 缓存 | 是 |
 | `learn-agent session delete` | 归档或硬删除 Session | 是 |
 | `learn-agent trace` | 查询本地系统 Trace | 否 |
 
@@ -85,6 +86,7 @@ learn-agent session status --session default
 learn-agent session resume --session default
 learn-agent session resume --session default --instruction "继续，但只修改测试"
 learn-agent session discard --session default
+learn-agent session reset --session default
 learn-agent session delete --session old-session
 learn-agent session delete --session old-session --hard
 ```
@@ -92,6 +94,8 @@ learn-agent session delete --session old-session --hard
 - `status` 返回 pending Execution、checkpoint 状态和维护任务计数。
 - `resume` 只适用于可恢复 Execution。
 - `discard` 释放 Session，但不会删除已经提交的历史消息。
+- `reset` 从 `messages` 表的归档消息重建 `sessions.recent_messages` 缓存，同时将 `context_tokens`
+  重置为 0。用于解决 `recent_messages` 中包含导致 LLM 供应商拒绝请求的内容时的 session "卡死"问题。
 - `delete` 默认归档 Session，使其不可继续使用但保留历史；`--hard` 才会永久删除 Session 及其本地关联数据。
 
 ## Trace 查询
