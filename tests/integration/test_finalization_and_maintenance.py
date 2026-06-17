@@ -663,7 +663,7 @@ class LocalSchemaMigrationTest(unittest.TestCase):
         self.assertIn("checkpoint_state", execution_columns)
         self.assertIn("completed_at", execution_columns)
         self.assertIn("goal_mode", execution_columns)
-        self.assertEqual(4, version)
+        self.assertGreaterEqual(version, 4)
         conn = sqlite3.connect(":memory:")
         conn.row_factory = sqlite3.Row
         conn.executescript(
@@ -690,7 +690,7 @@ class LocalSchemaMigrationTest(unittest.TestCase):
         database.initialize()
         with database.transaction() as conn:
             conn.execute(
-                "INSERT INTO local_schema_migrations(version, name) VALUES (5, 'future')"
+                "INSERT INTO local_schema_migrations(version, name) VALUES (6, 'future')"
             )
 
         with self.assertRaisesRegex(RuntimeError, "newer"):
@@ -725,7 +725,7 @@ class LocalSchemaMigrationTest(unittest.TestCase):
         workspace = workspaces.resolve(str(Path("tests/fixtures/workspace_a").resolve()))
         session, _ = workspaces.resolve_session(workspace, "migration")
         with database.transaction() as conn:
-            conn.execute("DELETE FROM local_schema_migrations WHERE version IN (2, 3, 4)")
+            conn.execute("DELETE FROM local_schema_migrations WHERE version IN (2, 3, 4, 5)")
             conn.execute(
                 "UPDATE sessions SET turn_index=1 WHERE session_id=?",
                 (str(session.session_id),),

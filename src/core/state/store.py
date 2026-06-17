@@ -53,7 +53,7 @@ class LocalStateStore:
         with self.database.connect() as conn:
             row = conn.execute(
                 """
-                SELECT summary, recent_messages, turn_index FROM sessions
+                SELECT summary, recent_messages, context_tokens, turn_index FROM sessions
                 WHERE workspace_id = ? AND session_id = ?
                 """,
                 (str(session.workspace.workspace_id), str(session.session_id)),
@@ -61,7 +61,14 @@ class LocalStateStore:
         if not row:
             raise RuntimeError("Resolved session disappeared before it could be loaded.")
         recent = json.loads(row["recent_messages"] or "[]")
-        return AgentContextState(row["summary"] or "", messages_from_dict(recent)), int(row["turn_index"])
+        return (
+            AgentContextState(
+                row["summary"] or "",
+                messages_from_dict(recent),
+                context_tokens=int(row["context_tokens"] or 0),
+            ),
+            int(row["turn_index"]),
+        )
 
     def save_session(self, session: SessionContext, state: AgentContextState, turn_index: int) -> None:
         with self.database.transaction() as conn:
@@ -443,13 +450,14 @@ class LocalStateStore:
         recent = json.dumps(messages_to_dict(state.recent_messages), ensure_ascii=False, default=str)
         cur = conn.execute(
             """
-            UPDATE sessions SET summary = ?, recent_messages = ?, turn_index = ?,
-                version = version + 1, updated_at = CURRENT_TIMESTAMP
+            UPDATE sessions SET summary = ?, recent_messages = ?, context_tokens = ?,
+                turn_index = ?, version = version + 1, updated_at = CURRENT_TIMESTAMP
             WHERE workspace_id = ? AND session_id = ?
             """,
             (
                 state.summary,
                 recent,
+                state.context_tokens,
                 turn_index,
                 str(session.workspace.workspace_id),
                 str(session.session_id),

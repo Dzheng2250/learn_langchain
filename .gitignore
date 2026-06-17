@@ -8,3 +8,5 @@ __pycache__/
 .agent_runtime/
 .test_tmp/
 面试答辩文档.md
+.codegraph
+.claude

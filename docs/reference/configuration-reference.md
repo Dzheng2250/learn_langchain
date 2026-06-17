@@ -34,6 +34,7 @@ learn-agent start
 | `LEARN_AGENT_LLM_API_KEY` | 空 | OpenAI 兼容模型 API 密钥。为空时进入无状态诊断模式，不执行真实 Agent Turn。 |
 | `LEARN_AGENT_LLM_BASE_URL` | 空 | OpenAI 兼容 API 地址。留空时使用客户端默认地址。 |
 | `LEARN_AGENT_MODEL` | `deepseek-v4-flash` | 传给模型服务的模型名称，必须与服务端支持的名称一致。 |
+| `LEARN_AGENT_MODEL_CONTEXT_LIMIT` | `128000` | 模型上下文窗口大小（token），用于 TUI 显示上下文使用百分比。不影响实际提交给模型的 token 数量。 |
 | `LEARN_AGENT_LLM_STREAM_USAGE_ENABLED` | `true` | 流式调用时请求服务商返回 Token usage。若兼容接口拒绝 `stream_options.include_usage`，设为 `false`。 |
 
 旧变量 `ALIYUN_API_KEY` 与 `ALIYUN_BASE_URL` 仅作为兼容回退，新配置应使用通用名称。

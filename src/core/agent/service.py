@@ -463,6 +463,14 @@ class AgentTurnService:
         """Return compact pending-execution state without running the graph."""
         workspace = self.workspace_repository.resolve(workspace_root)
         session, _ = self.workspace_repository.resolve_session(workspace, session_name)
+        # Load context state to read current context_tokens
+        store = self.state_store_factory()
+        try:
+            context_state, _ = store.load_session(session)
+        except Exception:
+            context_state = None
+        finally:
+            store.close()
         pending = self.execution_repository.get_attached(session) if self.execution_repository else None
         maintenance = (
             self.maintenance_repository.counts_for_session(
@@ -476,6 +484,7 @@ class AgentTurnService:
             "workspace_id": str(workspace.workspace_id),
             "session_id": str(session.session_id),
             "session_name": session.session_name,
+            "context_tokens": context_state.context_tokens if context_state else 0,
             "pending_execution": pending.__dict__ if pending else None,
             "execution_recoverable": pending.recoverable if pending else False,
             "checkpoint_state": pending.checkpoint_state if pending else None,
@@ -791,6 +800,7 @@ class AgentTurnService:
                             "maintenance_status": finalization.maintenance_status,
                             "memory_status": finalization.memory_status,
                             "memory_request_explicit": finalization.memory_request_explicit,
+                            "context_tokens": snapshot.get("input_tokens", 0),
                         },
                     }
                     return

@@ -32,6 +32,8 @@ class ExecutionBudget:
     tool_calls: int = 0
     controlled_executions: int = 0
     delegations: int = 0
+    input_tokens: int = 0
+    output_tokens: int = 0
     _lock: Lock = field(default_factory=Lock, repr=False)
     _started_at: float = field(default_factory=monotonic, repr=False)
     _tool_slots: BoundedSemaphore = field(init=False, repr=False)
@@ -84,6 +86,8 @@ class ExecutionBudget:
                 "controlled_executions": self.controlled_executions,
                 "delegations": self.delegations,
                 "elapsed_ms": int((monotonic() - self._started_at) * 1000),
+                "input_tokens": self.input_tokens,
+                "output_tokens": self.output_tokens,
             }
 
 

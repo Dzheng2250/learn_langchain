@@ -27,6 +27,7 @@ BASH_PATH = "bash"
 # Shared OpenAI-compatible model configuration. The generic LEARN_AGENT names
 # take precedence; ALIYUN aliases remain only for backward compatibility.
 MODEL = env_str("LEARN_AGENT_MODEL", "deepseek-v4-flash")
+MODEL_CONTEXT_LIMIT = env_int("LEARN_AGENT_MODEL_CONTEXT_LIMIT", 128_000)
 LLM_API_KEY = env_str("LEARN_AGENT_LLM_API_KEY", env_str("ALIYUN_API_KEY", ""))
 LLM_BASE_URL = env_str("LEARN_AGENT_LLM_BASE_URL", env_str("ALIYUN_BASE_URL", ""))
 LLM_STREAM_USAGE_ENABLED = env_bool("LEARN_AGENT_LLM_STREAM_USAGE_ENABLED", True)

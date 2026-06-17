@@ -6,6 +6,16 @@
 
 本文面向希望替换当前 CLI、实现 TUI/GUI 的开发者。
 
+## 已有实现
+
+项目已包含一个基于 Textual 的 TUI 客户端（`src/tui/`），作为参考实现：
+
+```shell
+learn-agent tui
+```
+
+完整实现细节见 [src/tui/app.py](/src/tui/app.py) 和相关模块。第三方前端可在此基础上定制。
+
 ## 前端职责
 
 前端负责：

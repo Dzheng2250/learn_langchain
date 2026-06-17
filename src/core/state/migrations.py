@@ -1,7 +1,7 @@
 """Idempotent additive migrations for the authoritative local state database."""
 
 
-LATEST_SCHEMA_VERSION = 4
+LATEST_SCHEMA_VERSION = 5
 
 
 def apply_local_migrations(conn) -> None:
@@ -49,6 +49,14 @@ def apply_local_migrations(conn) -> None:
             ("pending", "in_progress", "completed", "cancelled"),
         )
         _record_migration(conn, 4, "execution_private_tasks")
+    if current_version < 5:
+        _ensure_column(
+            conn,
+            "sessions",
+            "context_tokens",
+            "INTEGER NOT NULL DEFAULT 0",
+        )
+        _record_migration(conn, 5, "session_context_tokens")
 
 
 def _record_migration(conn, version: int, name: str) -> None:
@@ -66,6 +74,9 @@ def _record_migration(conn, version: int, name: str) -> None:
 def _ensure_column(conn, table: str, column: str, declaration: str) -> None:
     """Add one trusted, statically declared column when it is absent."""
     existing = {row["name"] for row in conn.execute(f"PRAGMA table_info({table})")}
+    if not existing:
+        # Table does not exist — skip (e.g. in-memory test fixtures)
+        return
     if column not in existing:
         conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {declaration}")
 

@@ -107,6 +107,14 @@ learn-agent chat --goal --session default "重构这部分代码并补充测试"
 
 普通 `learn-agent chat` 不暴露任务规划工具，适合短问题和单步操作。
 
+TUI 终端界面（Terminal User Interface，基于 Textual 框架的富文本终端界面）：
+
+```shell
+learn-agent tui
+```
+
+TUI 提供彩色事件流、流式 token 展示、自动暂停检测、`/` 快捷命令（`/goal`、`/resume`、`/discard`）和实时状态栏，适合需要持续交互的复杂任务。
+
 停止服务：
 
 ```shell
@@ -161,6 +169,11 @@ src/
   config/            CLI 与 Core 共用配置
   ipc/               JSON-RPC 模型和本地凭据
   cli/               CLI 命令、client 和 daemon 管理
+  tui/               TUI 终端界面（Textual 框架）
+    client.py        异步 JSON-RPC 客户端
+    renderer.py      Rich 标记事件渲染器
+    widgets/         状态栏、事件日志、输入框
+    screens/         聊天屏幕
   core/
     app.py           依赖组装与生命周期管理
     bus/             JSON-RPC 验证、鉴权和路由
