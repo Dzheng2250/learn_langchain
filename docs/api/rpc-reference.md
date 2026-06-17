@@ -29,6 +29,7 @@
 | `session.status` | 查询待恢复 Execution | 是 | 是 |
 | `session.resume` | 恢复待执行任务 | 否 | 否 |
 | `session.discard` | 丢弃待恢复 Execution | 基本幂等 | 谨慎 |
+| `session.delete` | 归档或硬删除 Session | 基本幂等 | 谨慎 |
 
 “不可自动重试”表示连接中断时请求可能已经在 Core 内执行。直接重发可能造成重复模型调用、工具调用或消息写入。
 
@@ -147,6 +148,8 @@ Core 先写回最终响应，再开始优雅关闭。客户端不应假设收到
 `job_type=context_summary` 或 `job_type=memory_extract`，前端应提示这是后台派生任务失败，而不是
 本轮用户输入导致当前对话失败。
 
+如果 Session 已被归档，`session.status` 返回 `status=archived`，不会自动创建同名新 Session。
+
 ## `session.resume`
 
 参数与 `session.status` 相同，并可增加：
@@ -163,6 +166,34 @@ Core 先写回最终响应，再开始优雅关闭。客户端不应假设收到
 
 ```json
 {"status":"discarded","execution_id":"..."}
+```
+
+## `session.delete`
+
+默认归档指定 Session，使其不可继续 `chat/resume/discard`，但保留历史消息、Execution、任务计划和维护记录。
+归档适合隐藏不再使用的 Session，同时保留审计与排障数据。
+
+参数：
+
+```json
+{
+  "workspace_root": "D:\\project",
+  "session_name": "default",
+  "hard_delete": false
+}
+```
+
+成功归档结果：
+
+```json
+{"status":"archived","mode":"archive","session_name":"default"}
+```
+
+设置 `hard_delete=true` 会永久删除该 Session，并依赖本地 SQLite 外键级联删除与它绑定的消息、分支、
+Execution、任务计划和维护任务。该操作不可恢复，应只用于明确不再需要历史数据的场景。
+
+```json
+{"status":"deleted","mode":"hard_delete","session_name":"default"}
 ```
 
 checkpoint 删除通过后台维护任务完成，因此返回成功不表示 checkpoint 文件已立即清理。

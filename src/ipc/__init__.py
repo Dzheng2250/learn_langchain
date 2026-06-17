@@ -7,6 +7,7 @@ from .models import (
     JsonRpcRequest,
     JsonRpcSuccess,
     PingParams,
+    SessionDeleteParams,
     ShutdownParams,
 )
 
@@ -17,5 +18,6 @@ __all__ = [
     "JsonRpcRequest",
     "JsonRpcSuccess",
     "PingParams",
+    "SessionDeleteParams",
     "ShutdownParams",
 ]

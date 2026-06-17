@@ -1,7 +1,7 @@
 """Idempotent additive migrations for the authoritative local state database."""
 
 
-LATEST_SCHEMA_VERSION = 5
+LATEST_SCHEMA_VERSION = 6
 
 
 def apply_local_migrations(conn) -> None:
@@ -57,6 +57,9 @@ def apply_local_migrations(conn) -> None:
             "INTEGER NOT NULL DEFAULT 0",
         )
         _record_migration(conn, 5, "session_context_tokens")
+    if current_version < 6:
+        _ensure_column(conn, "sessions", "archived_at", "TEXT")
+        _record_migration(conn, 6, "session_archive_marker")
 
 
 def _record_migration(conn, version: int, name: str) -> None:

@@ -77,6 +77,15 @@ flowchart LR
 
 Session 是用户看到的对话，例如 Workspace 中的 `default`。Session 使用内部 UUID 标识，因此不同 Workspace 都可以拥有自己的 `default`。
 
+Session 支持两种清理方式：
+
+- 归档：默认的 `session.delete` 行为。系统设置 `sessions.archived_at`，让该 Session 不再接受新的
+  `chat/resume/discard`，但保留完整消息、Execution、任务计划和维护记录。
+- 硬删除：显式传入 `--hard` 时才执行。系统删除 `sessions` 行，并通过数据库外键级联删除关联的本地状态。
+
+归档适合“这个会话不再使用，但以后可能还要查历史”的场景；硬删除适合“确认不再需要任何相关内容”的场景。
+详细表结构和级联边界见[本地数据库设计与一致性机制](/docs/architecture/database-state-and-consistency.md)。
+
 Branch 表示消息历史的一条分支。目前每个 Session 自动创建 `main` 分支。表结构已经为“从历史消息派生新分支”预留了：
 
 - `head_message_id`：当前分支最后一条消息。

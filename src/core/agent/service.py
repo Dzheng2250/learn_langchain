@@ -336,6 +336,10 @@ class AgentTurnService:
         if not normalized:
             raise ValueError("message must not be empty")
         workspace = self.workspace_repository.resolve(workspace_root)
+        existing = self._get_existing_session_by_name(workspace, session_name)
+        if existing is not None and existing[1]:
+            yield self._archived_session_event(existing[0], run_id)
+            return
         session, _new_session = self.workspace_repository.resolve_session(workspace, session_name)
         # The UUID lock is the consistency boundary for loading and saving one
         # Session. Different Session UUIDs may execute concurrently.
@@ -396,6 +400,10 @@ class AgentTurnService:
         if self.execution_repository is None:
             raise RuntimeError("Resumable execution is not configured.")
         workspace = self.workspace_repository.resolve(workspace_root)
+        existing = self._get_existing_session_by_name(workspace, session_name)
+        if existing is not None and existing[1]:
+            yield self._archived_session_event(existing[0], run_id)
+            return
         session, _ = self.workspace_repository.resolve_session(workspace, session_name)
         with self.lock_registry.get(session.session_id):
             if self.execution_repository.get_attached(session) is None:
@@ -480,9 +488,56 @@ class AgentTurnService:
             },
         }
 
+    def _archived_session_event(self, session: SessionContext, run_id: str) -> dict:
+        """Return a terminal event when a Session is intentionally unavailable."""
+        return {
+            "event": "done",
+            "data": {
+                "run_id": run_id,
+                "status": "archived",
+                "workspace_id": str(session.workspace.workspace_id),
+                "session_id": str(session.session_id),
+                "session_name": session.session_name,
+                "message": (
+                    "Session is archived. Use a different session name, or run "
+                    "`learn-agent session delete --hard` before recreating it."
+                ),
+            },
+        }
+
+    def _get_existing_session_by_name(
+        self,
+        workspace,
+        session_name: str,
+    ) -> tuple[SessionContext, bool] | None:
+        """Return an existing Session when the repository supports lookup-only access."""
+        getter = getattr(self.workspace_repository, "get_session_by_name", None)
+        if getter is None:
+            return None
+        return getter(workspace, session_name, include_archived=True)
+
     def session_status(self, workspace_root: str, session_name: str) -> dict:
         """Return compact pending-execution state without running the graph."""
         workspace = self.workspace_repository.resolve(workspace_root)
+        existing = self._get_existing_session_by_name(workspace, session_name)
+        if existing is not None and existing[1]:
+            session = existing[0]
+            return {
+                "status": "archived",
+                "workspace_id": str(workspace.workspace_id),
+                "session_id": str(session.session_id),
+                "session_name": session.session_name,
+                "context_tokens": 0,
+                "pending_execution": None,
+                "execution_recoverable": False,
+                "checkpoint_state": None,
+                "maintenance": {
+                    "pending": 0,
+                    "running": 0,
+                    "failed": 0,
+                    "recent_failures": [],
+                },
+            }
         session, _ = self.workspace_repository.resolve_session(workspace, session_name)
         # Load context state to read current context_tokens
         store = self.state_store_factory()
@@ -526,6 +581,16 @@ class AgentTurnService:
         if self.execution_repository is None:
             raise RuntimeError("Resumable execution is not configured.")
         workspace = self.workspace_repository.resolve(workspace_root)
+        existing = self._get_existing_session_by_name(workspace, session_name)
+        if existing is not None and existing[1]:
+            session = existing[0]
+            return {
+                "status": "archived",
+                "workspace_id": str(session.workspace.workspace_id),
+                "session_id": str(session.session_id),
+                "session_name": session.session_name,
+                "message": "Session is archived and has no active execution to discard.",
+            }
         session, _ = self.workspace_repository.resolve_session(workspace, session_name)
         with self.lock_registry.get(session.session_id):
             if self.execution_repository.get_attached(session) is None:
@@ -555,9 +620,94 @@ class AgentTurnService:
                         priority=MaintenancePriority.CHECKPOINT_CLEANUP,
                     )
                 )
-                if self.maintenance_scheduler is not None:
-                    self.maintenance_scheduler.wake()
+            if self.maintenance_scheduler is not None:
+                self.maintenance_scheduler.wake()
         return {"status": "discarded", "execution_id": pending.execution_id}
+
+    def delete_session(
+        self,
+        workspace_root: str,
+        session_name: str,
+        *,
+        hard_delete: bool = False,
+    ) -> dict:
+        """Archive by default, or permanently delete one Workspace-local Session."""
+        workspace = self.workspace_repository.resolve(workspace_root)
+        found = self._get_existing_session_by_name(workspace, session_name)
+        if found is None:
+            return {
+                "status": "not_found",
+                "mode": "hard_delete" if hard_delete else "archive",
+                "workspace_id": str(workspace.workspace_id),
+                "session_name": session_name,
+            }
+        session, archived = found
+        with self.lock_registry.get(session.session_id):
+            if hard_delete:
+                checkpoint_threads = self.workspace_repository.checkpoint_threads_for_session(
+                    session
+                )
+                if self.checkpoint_manager is not None:
+                    for thread_id in checkpoint_threads:
+                        try:
+                            self.checkpoint_manager.delete_thread(thread_id)
+                        except Exception:
+                            # Some executions may have no materialized
+                            # checkpoint. State deletion is still the source of
+                            # truth for removing this Session.
+                            pass
+                deleted = self.workspace_repository.delete_session(session)
+                return {
+                    "status": "deleted" if deleted else "not_found",
+                    "mode": "hard_delete",
+                    "workspace_id": str(workspace.workspace_id),
+                    "session_id": str(session.session_id),
+                    "session_name": session.session_name,
+                    "checkpoint_threads_deleted": len(checkpoint_threads),
+                }
+
+            cleanup_enqueued = False
+            if not archived and self.execution_repository is not None:
+                pending = self.execution_repository.get_attached(session)
+                if pending is not None:
+                    self.execution_repository.discard(session)
+                    cleanup_enqueued = self._enqueue_checkpoint_cleanup(session, pending)
+            archived_now = (
+                False if archived else self.workspace_repository.archive_session(session)
+            )
+            if cleanup_enqueued and self.maintenance_scheduler is not None:
+                self.maintenance_scheduler.wake()
+            return {
+                "status": "archived" if archived_now else "already_archived",
+                "mode": "archive",
+                "workspace_id": str(workspace.workspace_id),
+                "session_id": str(session.session_id),
+                "session_name": session.session_name,
+                "cleanup_enqueued": cleanup_enqueued,
+            }
+
+    def _enqueue_checkpoint_cleanup(self, session: SessionContext, pending) -> bool:
+        """Queue checkpoint cleanup for a discarded pending execution."""
+        if self.maintenance_repository is None:
+            return False
+        from src.core.maintenance.models import MaintenanceJobSpec
+        from src.core.maintenance.types import (
+            MaintenanceJobType,
+            MaintenancePriority,
+        )
+
+        self.maintenance_repository.enqueue(
+            MaintenanceJobSpec(
+                MaintenanceJobType.CHECKPOINT_CLEANUP,
+                f"checkpoint_cleanup:{pending.execution_id}",
+                str(session.workspace.workspace_id),
+                str(session.session_id),
+                {"checkpoint_thread_id": pending.checkpoint_thread_id},
+                execution_id=pending.execution_id,
+                priority=MaintenancePriority.CHECKPOINT_CLEANUP,
+            )
+        )
+        return True
 
     def close(self) -> None:
         """Stop foreground Turn workers, then stop durable maintenance safely."""

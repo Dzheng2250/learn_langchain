@@ -50,6 +50,9 @@ class AgentTurnRunner(Protocol):
     def discard_pending(self, workspace_root: str, session_name: str) -> dict:
         """Discard the Session's pending execution."""
 
+    def delete_session(self, workspace_root: str, session_name: str, *, hard_delete: bool = False) -> dict:
+        """Archive or permanently delete one Session."""
+
 
 class ManagedAgentService(AgentTurnRunner, Protocol):
     """Turn runner whose durable dependencies have an explicit lifecycle."""

@@ -48,6 +48,12 @@ class SessionParams(AuthenticatedParams):
     session_name: str = Field(default="default", min_length=1, max_length=200)
 
 
+class SessionDeleteParams(SessionParams):
+    """Parameters for archiving or permanently deleting one Session."""
+
+    hard_delete: bool = False
+
+
 class SessionResumeParams(SessionParams):
     """Optional guidance supplied while resuming a recoverable execution."""
 

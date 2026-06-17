@@ -14,6 +14,15 @@ def register(subparsers, _config) -> None:
         action.add_argument("--session", default="default")
         action.add_argument("--workspace")
         action.set_defaults(handler=run)
+    delete = actions.add_parser("delete")
+    delete.add_argument("--session", default="default")
+    delete.add_argument("--workspace")
+    delete.add_argument(
+        "--hard",
+        action="store_true",
+        help="permanently delete the Session and all locally linked rows",
+    )
+    delete.set_defaults(handler=run)
     resume = actions.add_parser("resume")
     resume.add_argument("--session", default="default")
     resume.add_argument("--workspace")
@@ -29,6 +38,8 @@ def run(args, config) -> int:
     renderer = AgentEventRenderer()
     if args.session_action == "resume":
         params["instruction"] = args.instruction
+    elif args.session_action == "delete":
+        params["hard_delete"] = bool(args.hard)
     result = client.request(
         f"session.{args.session_action}",
         params,

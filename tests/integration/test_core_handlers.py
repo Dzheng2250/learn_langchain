@@ -4,7 +4,7 @@ from unittest.mock import patch
 
 from src.core.handlers.agent import AgentHandlers
 from src.core.handlers.core import CoreHandlers
-from src.ipc.models import ChatParams, PingParams, ShutdownParams
+from src.ipc.models import ChatParams, PingParams, SessionDeleteParams, ShutdownParams
 
 
 class FakeRequestContext:
@@ -40,6 +40,14 @@ class FakeAgentService:
             "session_name": session_name,
             "message": message,
             "goal_mode": goal_mode,
+        }
+
+    def delete_session(self, workspace_root, session_name, *, hard_delete=False):
+        return {
+            "status": "deleted" if hard_delete else "archived",
+            "workspace_root": workspace_root,
+            "session_name": session_name,
+            "hard_delete": hard_delete,
         }
 
 
@@ -126,6 +134,21 @@ class AgentHandlersTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(1, context.attempts)
         self.assertTrue(service.control.pause_after_slice.is_set())
         record_error.assert_called_once()
+
+    async def test_session_delete_passes_hard_delete_flag(self):
+        handlers = AgentHandlers(FakeAgentService())
+        result = await handlers.session_delete(
+            SessionDeleteParams(
+                auth_token="token",
+                workspace_root=".",
+                session_name="old",
+                hard_delete=True,
+            ),
+            FakeRequestContext(),
+        )
+
+        self.assertEqual("deleted", result["status"])
+        self.assertTrue(result["hard_delete"])
 
 
 if __name__ == "__main__":

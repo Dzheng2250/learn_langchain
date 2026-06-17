@@ -637,6 +637,60 @@ class ProviderErrorResolutionIntegrationTest(unittest.TestCase):
             status["maintenance"]["recent_failures"][0]["last_error"],
         )
 
+    def test_session_delete_archives_by_default_and_hard_delete_removes_rows(self):
+        workspace_root = str(Path("tests/fixtures/workspace_a").resolve())
+        workspace = self.workspace_repository.resolve(workspace_root)
+        session, _ = self.workspace_repository.resolve_session(workspace, "delete-me")
+        with self.database.transaction() as conn:
+            conn.execute(
+                """
+                INSERT INTO messages(
+                    message_id, workspace_id, session_id, role, message_type,
+                    content, raw, turn_index
+                ) VALUES (?, ?, ?, 'human', 'HumanMessage', 'hello', '{}', 1)
+                """,
+                (
+                    "message-delete-me",
+                    str(workspace.workspace_id),
+                    str(session.session_id),
+                ),
+            )
+        service = AgentTurnService(
+            workspace_repository=self.workspace_repository,
+            runtime_registry=Mock(),
+            state_store_factory=lambda: LocalStateStore(self.database),
+            execution_repository=self.execution_repository,
+        )
+        try:
+            archived = service.delete_session(workspace_root, "delete-me")
+            blocked = list(
+                service.stream_turn(
+                    workspace_root,
+                    "delete-me",
+                    "hello again",
+                    run_id="run-archived",
+                )
+            )
+            deleted = service.delete_session(
+                workspace_root,
+                "delete-me",
+                hard_delete=True,
+            )
+        finally:
+            service.close()
+
+        self.assertEqual("archived", archived["status"])
+        self.assertEqual("archived", blocked[-1]["data"]["status"])
+        self.assertEqual("deleted", deleted["status"])
+        with self.database.connect() as conn:
+            self.assertEqual(
+                0,
+                conn.execute(
+                    "SELECT count(*) FROM messages WHERE session_id=?",
+                    (str(session.session_id),),
+                ).fetchone()[0],
+            )
+
 
 if __name__ == "__main__":
     unittest.main()

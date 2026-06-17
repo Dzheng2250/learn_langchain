@@ -25,6 +25,7 @@ CREATE TABLE IF NOT EXISTS sessions (
     version INTEGER NOT NULL DEFAULT 0,
     active_branch_id TEXT,
     pending_execution_id TEXT,
+    archived_at TEXT,
     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
     UNIQUE(workspace_id, session_name),

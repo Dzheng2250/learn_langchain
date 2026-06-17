@@ -8,7 +8,13 @@ from src.core.bus.context import RequestContext
 from src.core.bus.router import RpcRouter
 from src.core.telemetry import record_error
 from src.core.tracing import bind_trace_context, reset_trace_context
-from src.ipc.models import AgentEventNotification, ChatParams, SessionParams, SessionResumeParams
+from src.ipc.models import (
+    AgentEventNotification,
+    ChatParams,
+    SessionDeleteParams,
+    SessionParams,
+    SessionResumeParams,
+)
 
 
 class AgentHandlers:
@@ -23,6 +29,7 @@ class AgentHandlers:
         router.register("session.status", SessionParams, self.session_status)
         router.register("session.resume", SessionResumeParams, self.session_resume)
         router.register("session.discard", SessionParams, self.session_discard)
+        router.register("session.delete", SessionDeleteParams, self.session_delete)
 
     async def chat(self, params: ChatParams, context: RequestContext) -> dict:
         """Execute one Turn and bridge worker events to RPC notifications."""
@@ -57,6 +64,15 @@ class AgentHandlers:
             self.agent_service.discard_pending,
             params.workspace_root,
             params.session_name,
+        )
+
+    async def session_delete(self, params: SessionDeleteParams, _context: RequestContext) -> dict:
+        """Archive or permanently delete one Session."""
+        return await asyncio.to_thread(
+            self.agent_service.delete_session,
+            params.workspace_root,
+            params.session_name,
+            hard_delete=params.hard_delete,
         )
 
     async def session_resume(self, params: SessionResumeParams, context: RequestContext) -> dict:
