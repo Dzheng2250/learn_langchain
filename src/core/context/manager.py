@@ -5,9 +5,10 @@ from langchain_core.messages import HumanMessage, SystemMessage
 from src.config.settings import (
     RECENT_MESSAGE_LIMIT,
     SESSION_SUMMARY_MAX_CHARS,
-    SUMMARY_TRIGGER_CHAR_LIMIT,
     SUMMARY_SOURCE_CHAR_LIMIT,
+    SUMMARY_TRIGGER_CHAR_LIMIT,
     SUMMARY_TRIGGER_MESSAGE_LIMIT,
+    SUMMARY_TRIGGER_TOKEN_LIMIT,
 )
 from src.core.common.debug import debug_print, format_message
 from src.core.telemetry import emit_event, event_span, record_error
@@ -31,6 +32,7 @@ class AgentContextManager:
         recent_message_limit: int = RECENT_MESSAGE_LIMIT,
         summary_trigger_message_limit: int = SUMMARY_TRIGGER_MESSAGE_LIMIT,
         summary_trigger_char_limit: int = SUMMARY_TRIGGER_CHAR_LIMIT,
+        summary_trigger_token_limit: int = SUMMARY_TRIGGER_TOKEN_LIMIT,
         summary_max_chars: int = SESSION_SUMMARY_MAX_CHARS,
         summary_source_char_limit: int = SUMMARY_SOURCE_CHAR_LIMIT,
         model_provider: ModelProvider | None = None,
@@ -38,6 +40,7 @@ class AgentContextManager:
         self.recent_message_limit = recent_message_limit
         self.summary_trigger_message_limit = summary_trigger_message_limit
         self.summary_trigger_char_limit = summary_trigger_char_limit
+        self.summary_trigger_token_limit = summary_trigger_token_limit
         self.summary_max_chars = summary_max_chars
         self.summary_source_char_limit = summary_source_char_limit
         self.model_provider = model_provider or OpenAICompatibleProvider()
@@ -74,7 +77,11 @@ class AgentContextManager:
         unsent_previous_messages = state.recent_messages[:-self.recent_message_limit]
         conversation_messages = [*unsent_previous_messages, *final_conversation_messages]
 
-        should_summarize = force_summarize or self._should_summarize(conversation_messages)
+        should_summarize = (
+            force_summarize
+            or state.context_tokens > self.summary_trigger_token_limit
+            or len(conversation_messages) > self.summary_trigger_message_limit
+        )
         if not should_summarize:
             emit_event(
                 "context_summary_skipped",

@@ -395,10 +395,13 @@ class ChatScreen(Screen):
             if event == "done":
                 data = params.get("data", {})
                 status = data.get("status")
-                self._handle_done(status)
+                self._handle_done(status, data)
 
-    def _handle_done(self, status: str | None) -> None:
-        """Handle done event status."""
+    def _handle_done(self, status: str | None, data: dict[str, Any]) -> None:
+        """Handle done event status and context usage."""
+        ctx_tokens = data.get("context_tokens", 0)
+        if ctx_tokens:
+            self.query_one(StatusBar).set_usage(int(ctx_tokens))
         if status == "paused":
             self._paused_execution = True
             self.query_one(StatusBar).set_paused(True)

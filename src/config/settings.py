@@ -64,8 +64,10 @@ SKILL_FILE_NAME = "SKILL.md"
 SKILL_READ_OUTPUT_LIMIT = 8000
 
 RECENT_MESSAGE_LIMIT = 12
-# Compression starts when either message count or character count crosses its
-# trigger; old messages are summarized while recent messages remain verbatim.
+# Compression starts when token count, message count, or character count
+# crosses its trigger; old messages are summarized while recent messages
+# remain verbatim.  Token-based compression is the primary path.
+SUMMARY_TRIGGER_TOKEN_LIMIT = env_int("LEARN_AGENT_SUMMARY_TRIGGER_TOKEN_LIMIT", 5_000)
 SUMMARY_TRIGGER_MESSAGE_LIMIT = 40
 SUMMARY_TRIGGER_CHAR_LIMIT = 24000
 SESSION_SUMMARY_MAX_CHARS = 4000

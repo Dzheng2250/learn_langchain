@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import Literal
+
 from src.config.settings import MODEL_CONTEXT_LIMIT
 
 from rich.text import Text

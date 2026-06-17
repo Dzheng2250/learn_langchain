@@ -35,6 +35,7 @@ learn-agent start
 | `LEARN_AGENT_LLM_BASE_URL` | 空 | OpenAI 兼容 API 地址。留空时使用客户端默认地址。 |
 | `LEARN_AGENT_MODEL` | `deepseek-v4-flash` | 传给模型服务的模型名称，必须与服务端支持的名称一致。 |
 | `LEARN_AGENT_MODEL_CONTEXT_LIMIT` | `128000` | 模型上下文窗口大小（token），用于 TUI 显示上下文使用百分比。不影响实际提交给模型的 token 数量。 |
+| `LEARN_AGENT_SUMMARY_TRIGGER_TOKEN_LIMIT` | `5000` | 上下文 token 数超过此值时触发自动压缩。测试阶段默认 5K，生产环境建议设为模型上下文窗口的 80%。 |
 | `LEARN_AGENT_LLM_STREAM_USAGE_ENABLED` | `true` | 流式调用时请求服务商返回 Token usage。若兼容接口拒绝 `stream_options.include_usage`，设为 `false`。 |
 
 旧变量 `ALIYUN_API_KEY` 与 `ALIYUN_BASE_URL` 仅作为兼容回退，新配置应使用通用名称。
@@ -160,7 +161,7 @@ PostgreSQL Schema。若只是需要本地观测记录，应保持该选项关闭
 - 工具与 Docker：镜像、超时、内存、CPU、输出截断长度。
 - 文件读取与大文件总结：分块行数、最大块数、并行 Map Worker 数。
 - 子 Agent：最大步骤、继承的上下文消息数、结果长度。
-- 上下文：近期消息数量、摘要触发阈值、摘要长度。
+- 上下文：近期消息数量、摘要长度。
 - 长期记忆：bootstrap/relevant 数量、提取周期、重要度下限。
 - Skill：目录名、文件名和内容读取上限。
 
