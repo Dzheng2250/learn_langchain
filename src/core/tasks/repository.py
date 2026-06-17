@@ -115,6 +115,25 @@ class TaskRepository:
                         (execution_id, task_id, key_to_id[dependency_key]),
                     )
 
+            # After rewriting dependencies, validate that existing tasks
+            # whose status is in_progress or completed do not now depend on
+            # unfinished tasks.  The plan() method preserves the existing
+            # row status for tasks that already exist, so an already-completed
+            # task could be rewired to a pending dependency without this check.
+            for item in items:
+                existing_row = existing_by_key.get(item.task_key)
+                if existing_row is None:
+                    continue
+                current_status = TaskStatus(existing_row["status"])
+                if current_status in {TaskStatus.IN_PROGRESS, TaskStatus.COMPLETED}:
+                    task_id = key_to_id[item.task_key]
+                    blockers = self._blocking_dependencies(conn, execution_id, task_id)
+                    if blockers:
+                        raise ValueError(
+                            f"task {item.task_key} is blocked by unfinished "
+                            f"dependencies: {blockers}"
+                        )
+
         return self.list(context)
 
     def update(
@@ -167,6 +186,18 @@ class TaskRepository:
                         """,
                         (execution_id, row["task_id"], key_to_id[dependency_key]),
                     )
+
+                # After rewriting dependencies, validate that the effective
+                # status remains consistent with the new dependency graph.
+                # An in_progress or completed task must not depend on tasks
+                # that are still unfinished.
+                effective_status = next_status if next_status is not None else TaskStatus(row["status"])
+                if effective_status in {TaskStatus.IN_PROGRESS, TaskStatus.COMPLETED}:
+                    blockers = self._blocking_dependencies(conn, execution_id, row["task_id"])
+                    if blockers:
+                        raise ValueError(
+                            f"task {task_key} is blocked by unfinished dependencies: {blockers}"
+                        )
 
             if next_status in {TaskStatus.IN_PROGRESS, TaskStatus.COMPLETED}:
                 blockers = self._blocking_dependencies(conn, execution_id, row["task_id"])

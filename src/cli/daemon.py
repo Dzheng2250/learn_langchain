@@ -88,6 +88,21 @@ def stop_daemon(config: CliConfig, *, force: bool = False) -> dict:
     try:
         result = CoreClient(config).request("core.shutdown")
     except CoreUnavailableError:
+        # HTTP is already down, but the process may still be alive.
+        if force:
+            pid = _read_daemon_pid(config)
+            if pid is not None and _pid_is_running(pid):
+                if _terminate_pid(pid, config.daemon_stop_timeout_seconds):
+                    _cleanup_runtime_files(config)
+                    return {"status": "forced_stopped"}
+                _cleanup_runtime_files(config)
+                raise DaemonLifecycleError(
+                    "Force-stop failed: daemon process did not terminate.",
+                    hint=(
+                        f"PID {pid} could not be killed after SIGTERM and SIGKILL. "
+                        f"Check {log_path(config.runtime_dir)}."
+                    ),
+                )
         _cleanup_runtime_files(config)
         raise DaemonLifecycleError(
             "Core daemon is not running.",
