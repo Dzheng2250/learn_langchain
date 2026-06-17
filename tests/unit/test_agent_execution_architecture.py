@@ -8,6 +8,7 @@ from tests.support.paths import REPOSITORY_ROOT
 from langchain_core.messages import AIMessage, HumanMessage
 from langchain_core.tools import tool
 
+from src.core.agent.graph import create_parent_graph
 from src.core.agent.models import AgentRunContext, RunLimits, StopReason
 from src.core.context.manager import AgentContextManager
 from src.core.telemetry import (
@@ -31,17 +32,24 @@ ROOT = REPOSITORY_ROOT
 
 
 class FakeModel:
-    def invoke(self, _messages):
+    def __init__(self):
+        self.received_configs = []
+
+    def invoke(self, _messages, config=None):
+        self.received_configs.append(config)
         return AIMessage(content="[]")
 
 
 class RecordingProvider:
     def __init__(self):
         self.calls = []
+        self.models = []
 
     def create_chat_model(self, purpose, **kwargs):
         self.calls.append((purpose, kwargs))
-        return FakeModel()
+        model = FakeModel()
+        self.models.append(model)
+        return model
 
 
 class MemorySink(BaseEventSink):
@@ -115,6 +123,15 @@ class AgentExecutionArchitectureTest(unittest.TestCase):
             ).create_chat_model(LlmPurpose.MEMORY_EXTRACTION, streaming=False)
 
         self.assertFalse(constructor.call_args.kwargs["stream_usage"])
+
+    def test_parent_graph_passes_runnable_config_to_model_call(self):
+        provider = RecordingProvider()
+        graph = create_parent_graph([], "", provider)
+
+        list(stream_graph_events(graph, [HumanMessage(content="hello")]))
+
+        self.assertTrue(provider.models)
+        self.assertIsNotNone(provider.models[0].received_configs[0])
 
     def test_stream_usage_can_be_disabled_for_incompatible_provider(self):
         with patch("src.core.llm.provider.ChatOpenAI") as constructor:

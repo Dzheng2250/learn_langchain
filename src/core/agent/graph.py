@@ -1,6 +1,7 @@
 """Factory for workspace-bound parent Agent graphs."""
 
 from langchain_core.messages import SystemMessage
+from langchain_core.runnables import RunnableConfig
 from langgraph.graph import END, START, MessagesState, StateGraph
 from langgraph.prebuilt import tools_condition
 
@@ -31,8 +32,8 @@ def create_parent_graph(
         tools=parent_tools,
     )
 
-    def agent_node(state: MessagesState) -> dict:
-        """Call the parent LLM with system policy and current graph messages."""
+    def agent_node(state: MessagesState, config: RunnableConfig) -> dict:
+        """Call the parent LLM and propagate LangGraph streaming callbacks."""
         llm_messages = [
             SystemMessage(
                 content=build_parent_system_prompt(
@@ -51,7 +52,7 @@ def create_parent_graph(
             {"purpose": LlmPurpose.PARENT_AGENT.value},
         )
         try:
-            response = llm_with_tools.invoke(llm_messages)
+            response = llm_with_tools.invoke(llm_messages, config=config)
         except Exception as exc:
             record_error("agent_loop", "llm", exc, "Parent LLM call failed.", event_type="llm_failed")
             raise
