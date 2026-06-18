@@ -16,6 +16,9 @@ from src.config.settings import (
     RECENT_MESSAGE_LIMIT,
 )
 from src.core.context.models import AgentContextState
+from src.core.adapters.sqlite.conversation_history import SQLiteConversationHistoryStore
+from src.core.adapters.sqlite.memory_store import SQLiteMemoryRetrievalStore
+from src.core.adapters.sqlite.session_store import SQLiteSessionStore
 from src.core.memory.extractor import MemoryCandidateExtractor
 from src.core.memory.models import RetrievedMemory
 from src.core.state.database import LocalStateDatabase
@@ -43,6 +46,12 @@ class LocalStateStore:
         self.min_importance = min_importance
         self.extractor = MemoryCandidateExtractor(model_provider)
         self.projection_enabled = projection_enabled
+        self.history = SQLiteConversationHistoryStore(database)
+        self.sessions = SQLiteSessionStore(database)
+        self.memory_retrieval = SQLiteMemoryRetrievalStore(
+            database,
+            retrieval_limit=retrieval_limit,
+        )
 
     def initialize(self) -> None:
         self.database.initialize()
@@ -51,25 +60,7 @@ class LocalStateStore:
         """Connections are short-lived, so the facade owns no open resource."""
 
     def load_session(self, session: SessionContext) -> tuple[AgentContextState, int]:
-        with self.database.connect() as conn:
-            row = conn.execute(
-                """
-                SELECT summary, recent_messages, context_tokens, turn_index FROM sessions
-                WHERE workspace_id = ? AND session_id = ?
-                """,
-                (str(session.workspace.workspace_id), str(session.session_id)),
-            ).fetchone()
-        if not row:
-            raise RuntimeError("Resolved session disappeared before it could be loaded.")
-        recent = json.loads(row["recent_messages"] or "[]")
-        return (
-            AgentContextState(
-                row["summary"] or "",
-                messages_from_dict(recent),
-                context_tokens=int(row["context_tokens"] or 0),
-            ),
-            int(row["turn_index"]),
-        )
+        return self.sessions.load_context(session)
 
     def save_session(self, session: SessionContext, state: AgentContextState, turn_index: int) -> None:
         with self.database.transaction() as conn:
@@ -164,54 +155,11 @@ class LocalStateStore:
 
         Returns the number of recovered messages.
         """
-        with self.database.connect() as conn:
-            rows = conn.execute(
-                """
-                SELECT raw FROM messages
-                WHERE workspace_id=? AND session_id=?
-                ORDER BY created_at DESC, message_id DESC
-                LIMIT ?
-                """,
-                (
-                    str(session.workspace.workspace_id),
-                    str(session.session_id),
-                    RECENT_MESSAGE_LIMIT,
-                ),
-            ).fetchall()
-        recovered = messages_from_dict(
-            [json.loads(row["raw"]) for row in reversed(rows)]
-        )
-        with self.database.transaction() as conn:
-            recent = json.dumps(
-                messages_to_dict(recovered), ensure_ascii=False, default=str
-            )
-            conn.execute(
-                """
-                UPDATE sessions SET recent_messages=?, context_tokens=0,
-                    version=version + 1, updated_at=CURRENT_TIMESTAMP
-                WHERE workspace_id=? AND session_id=?
-                """,
-                (
-                    recent,
-                    str(session.workspace.workspace_id),
-                    str(session.session_id),
-                ),
-            )
-        return len(recovered)
+        return self.history.rebuild_recent(session)
 
     def load_turn_messages(self, session: SessionContext, turn_index: int) -> tuple[list, list[str]]:
         """Load one committed Turn for a durable maintenance handler."""
-        with self.database.connect() as conn:
-            rows = conn.execute(
-                """
-                SELECT message_id, raw FROM messages
-                WHERE workspace_id=? AND session_id=? AND turn_index=?
-                ORDER BY created_at, message_id
-                """,
-                (str(session.workspace.workspace_id), str(session.session_id), turn_index),
-            ).fetchall()
-        raw = [json.loads(row["raw"]) for row in rows]
-        return messages_from_dict(raw), [row["message_id"] for row in rows]
+        return self.history.load_turn(session, turn_index)
 
     def load_summary_source(
         self,
@@ -284,60 +232,17 @@ class LocalStateStore:
         return cur.rowcount == 1
 
     def retrieve_relevant(self, workspace_id: UUID, query: str, limit: int | None = None) -> list[RetrievedMemory]:
-        effective_limit = limit or self.retrieval_limit
-        terms = self._normalize_search_query(query).casefold().split()
-        if not terms:
-            return []
-        with self.database.connect() as conn:
-            rows = conn.execute(
-                """
-                SELECT memory_id, kind, content, tags, importance, confidence
-                FROM memories
-                WHERE workspace_id = ? AND archived_at IS NULL
-                ORDER BY importance DESC, updated_at DESC
-                """,
-                (str(workspace_id),),
-            ).fetchall()
-        selected = [row for row in rows if any(term in row["content"].casefold() for term in terms)]
-        if not selected and self._is_memory_recall_query(query):
-            # A vague recall request may need a relevance fallback, but it
-            # must never inject the entire Workspace memory collection.
-            selected = rows[:effective_limit]
-        memories = [self._memory_from_row(row) for row in selected[:effective_limit]]
-        self._record_retrieval(workspace_id, query, memories, "relevant")
-        return memories
+        return self.memory_retrieval.retrieve_relevant(workspace_id, query, limit)
 
     def retrieve_bootstrap(self, workspace_id: UUID, limit: int = MEMORY_BOOTSTRAP_LIMIT) -> list[RetrievedMemory]:
-        with self.database.connect() as conn:
-            rows = conn.execute(
-                """
-                SELECT memory_id, kind, content, tags, importance, confidence
-                FROM memories
-                WHERE workspace_id = ? AND archived_at IS NULL
-                ORDER BY importance DESC, updated_at DESC
-                LIMIT ?
-                """,
-                (str(workspace_id), limit),
-            ).fetchall()
-        memories = [self._memory_from_row(row) for row in rows]
-        self._record_retrieval(workspace_id, "", memories, "bootstrap")
-        return memories
+        return self.memory_retrieval.retrieve_bootstrap(workspace_id, limit)
 
     def retrieve_for_turn(self, workspace_id: UUID, query: str, *, new_session: bool) -> list[RetrievedMemory]:
-        combined = []
-        if new_session:
-            combined.extend(self.retrieve_bootstrap(workspace_id))
-        combined.extend(self.retrieve_relevant(workspace_id, query))
-        unique, seen, chars = [], set(), 0
-        for memory in combined:
-            if memory.id in seen:
-                continue
-            if unique and chars + len(memory.content) > MEMORY_CONTEXT_CHAR_LIMIT:
-                break
-            seen.add(memory.id)
-            chars += len(memory.content)
-            unique.append(memory)
-        return unique
+        return self.memory_retrieval.retrieve_for_turn(
+            workspace_id,
+            query,
+            new_session=new_session,
+        )
 
     def extract_and_save_memories(
         self,
@@ -427,14 +332,10 @@ class LocalStateStore:
         return saved
 
     def build_memory_message(self, memories: list[RetrievedMemory]) -> SystemMessage | None:
-        if not memories:
-            return None
-        return SystemMessage(content=f"{MEMORY_MESSAGE_PREFIX}\n{self.format_memories(memories)}")
+        return self.memory_retrieval.build_memory_message(memories)
 
     def format_memories(self, memories: list[RetrievedMemory]) -> str:
-        return "\n".join(
-            f"- [{memory.kind} | importance={memory.importance}] {memory.content}" for memory in memories
-        ) or "(none)"
+        return self.memory_retrieval.format_memories(memories)
 
     def _append_messages(
         self,

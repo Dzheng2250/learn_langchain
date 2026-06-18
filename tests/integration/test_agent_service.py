@@ -16,6 +16,7 @@ from src.core.llm.provider import LlmConfigurationStatus
 from src.core.maintenance.repository import MaintenanceRepository
 from src.config.settings import CORE_AGENT_WORKERS
 from src.core.agent.service import AgentTurnService, SessionLockRegistry
+from src.core.session import SessionLifecycleService
 from src.core.state import ExecutionRepository, LocalStateDatabase, LocalStateStore
 from src.core.state.workspace import LocalWorkspaceRepository
 from src.core.workspace.models import SessionContext, WorkspaceContext
@@ -408,12 +409,14 @@ class GoalModeRoutingTest(unittest.TestCase):
         self.assertIn("no pending execution", events[-1]["data"]["message"])
 
     def test_discard_without_pending_execution_returns_idle(self):
-        service = self._service(Mock(graph=Mock(), goal_graph=Mock()))
         workspace_root = str(Path("tests/fixtures/workspace_a").resolve())
-        try:
-            result = service.discard_pending(workspace_root, "idle-discard")
-        finally:
-            service.close()
+        service = SessionLifecycleService(
+            workspace_repository=self.workspace_repository,
+            state_store_factory=lambda: LocalStateStore(self.database),
+            lock_registry=SessionLockRegistry(),
+            execution_repository=self.execution_repository,
+        )
+        result = service.discard_pending(workspace_root, "idle-discard")
 
         self.assertEqual("idle", result["status"])
         self.assertIn("no pending execution", result["message"])
@@ -612,20 +615,17 @@ class ProviderErrorResolutionIntegrationTest(unittest.TestCase):
                 ),
             )
 
-        service = AgentTurnService(
+        service = SessionLifecycleService(
             workspace_repository=self.workspace_repository,
-            runtime_registry=Mock(),
             state_store_factory=lambda: LocalStateStore(self.database),
+            lock_registry=SessionLockRegistry(),
             execution_repository=self.execution_repository,
             maintenance_repository=MaintenanceRepository(self.database),
         )
-        try:
-            status = service.session_status(
-                str(Path("tests/fixtures/workspace_a").resolve()),
-                "default",
-            )
-        finally:
-            service.close()
+        status = service.session_status(
+            str(Path("tests/fixtures/workspace_a").resolve()),
+            "default",
+        )
 
         self.assertEqual(1, status["maintenance"]["failed"])
         self.assertEqual(
@@ -655,29 +655,35 @@ class ProviderErrorResolutionIntegrationTest(unittest.TestCase):
                     str(session.session_id),
                 ),
             )
-        service = AgentTurnService(
+        turn_service = AgentTurnService(
             workspace_repository=self.workspace_repository,
             runtime_registry=Mock(),
             state_store_factory=lambda: LocalStateStore(self.database),
             execution_repository=self.execution_repository,
         )
+        session_service = SessionLifecycleService(
+            workspace_repository=self.workspace_repository,
+            state_store_factory=lambda: LocalStateStore(self.database),
+            lock_registry=turn_service.lock_registry,
+            execution_repository=self.execution_repository,
+        )
         try:
-            archived = service.delete_session(workspace_root, "delete-me")
+            archived = session_service.delete_session(workspace_root, "delete-me")
             blocked = list(
-                service.stream_turn(
+                turn_service.stream_turn(
                     workspace_root,
                     "delete-me",
                     "hello again",
                     run_id="run-archived",
                 )
             )
-            deleted = service.delete_session(
+            deleted = session_service.delete_session(
                 workspace_root,
                 "delete-me",
                 hard_delete=True,
             )
         finally:
-            service.close()
+            turn_service.close()
 
         self.assertEqual("archived", archived["status"])
         self.assertEqual("archived", blocked[-1]["data"]["status"])

@@ -1,51 +1,16 @@
 """SQLite Unit of Work adapter for foreground state commits."""
 
-from src.core.finalization.models import CompletedTurn
-from src.core.maintenance.repository import MaintenanceRepository
-from src.core.state.database import LocalStateDatabase
-from src.core.state.executions import ExecutionRepository
+from __future__ import annotations
 
+from typing import TYPE_CHECKING
 
-class SQLiteConversationHistoryStore:
-    """SQLite-backed conversation history scoped to one open transaction."""
+from src.core.adapters.sqlite.conversation_history import SQLiteConversationHistoryStore
+from src.core.adapters.sqlite.session_store import SQLiteSessionStore
 
-    def __init__(self, conn, store) -> None:
-        self._conn = conn
-        self._store = store
-
-    def append_turn(self, completed: CompletedTurn) -> list[str]:
-        return self._store.append_messages_in_transaction(
-            self._conn,
-            completed.session,
-            completed.turn_index,
-            completed.messages,
-            execution_id=completed.execution_id,
-        )
-
-    def load_turn(self, session, turn_index: int) -> tuple[list, list[str]]:
-        return self._store.load_turn_messages(session, turn_index)
-
-    def rebuild_recent(self, session) -> int:
-        return self._store.rebuild_recent_messages_from_archive(session)
-
-
-class SQLiteSessionStore:
-    """SQLite-backed Session metadata scoped to one open transaction."""
-
-    def __init__(self, conn, store) -> None:
-        self._conn = conn
-        self._store = store
-
-    def load_context(self, session):
-        return self._store.load_session(session)
-
-    def save_fast_context(self, completed: CompletedTurn) -> None:
-        self._store.save_fast_session_in_transaction(
-            self._conn,
-            completed.session,
-            completed.state,
-            completed.turn_index,
-        )
+if TYPE_CHECKING:
+    from src.core.maintenance.repository import MaintenanceRepository
+    from src.core.state.database import LocalStateDatabase
+    from src.core.state.executions import ExecutionRepository
 
 
 class SQLiteExecutionStore:
@@ -106,8 +71,16 @@ class SQLiteStateUnitOfWork:
         self._connect_context = self._database.connect()
         self._conn = self._connect_context.__enter__()
         self._conn.execute("BEGIN IMMEDIATE")
-        self.history = SQLiteConversationHistoryStore(self._conn, self._store)
-        self.sessions = SQLiteSessionStore(self._conn, self._store)
+        self.history = SQLiteConversationHistoryStore(
+            self._database,
+            transaction_conn=self._conn,
+            write_delegate=self._store,
+        )
+        self.sessions = SQLiteSessionStore(
+            self._database,
+            transaction_conn=self._conn,
+            write_delegate=self._store,
+        )
         self.executions = SQLiteExecutionStore(self._conn, self._execution_repository)
         self.maintenance = SQLiteMaintenanceQueue(self._conn, self._maintenance_repository)
         return self

@@ -1,0 +1,294 @@
+"""Dependency-injector container for Core service composition."""
+
+from collections.abc import Callable
+from typing import Protocol
+
+from dependency_injector import containers, providers
+
+from src.config.maintenance import MaintenanceSettings
+from src.config.settings import MEMORY_ENABLED
+from src.core.adapters.sqlite import SQLiteStateUnitOfWorkFactory
+from src.core.agent.models import RunLimits
+from src.core.agent.service import AgentTurnService, SessionLockRegistry
+from src.core.bus.router import RpcRouter
+from src.core.config.models import CoreConfig
+from src.core.context.loader import ConversationContextLoader
+from src.core.context.manager import AgentContextManager
+from src.core.database.connection import create_pool
+from src.core.errors import ProviderErrorHandler
+from src.core.execution import ExecutionLifecycleService
+from src.core.finalization import CompletedTurnCommitter, TurnFinalizer
+from src.core.handlers import AgentHandlers, CoreHandlers
+from src.core.llm.provider import OpenAICompatibleProvider
+from src.core.maintenance import (
+    ExecutionRecoveryCoordinator,
+    MaintenanceJobType,
+    MaintenanceRepository,
+    MaintenanceScheduler,
+)
+from src.core.maintenance.handlers import (
+    CheckpointCleanupHandler,
+    ContextSummaryHandler,
+    MemoryExtractionHandler,
+)
+from src.core.session import SessionLifecycleService
+from src.core.state import (
+    CheckpointManager,
+    ExecutionRepository,
+    LocalStateDatabase,
+    LocalStateStore,
+    LocalWorkspaceRepository,
+)
+from src.core.tasks import TaskPlanningService, TaskRepository
+from src.core.telemetry import create_event_bus
+from src.core.transport.socket_server import SocketServer
+from src.core.workspace.runtime import WorkspaceRuntimeFactory, WorkspaceRuntimeRegistry
+from src.core.tracing import TracingModelProvider
+
+
+class CoreTransport(Protocol):
+    """Transport lifecycle required by the Core composition root."""
+
+    async def start(self) -> int:
+        """Start accepting requests and return the bound port."""
+
+    async def close(self, timeout_seconds: float) -> None:
+        """Stop accepting requests and close transport resources."""
+
+
+TransportFactory = Callable[[CoreConfig, RpcRouter], CoreTransport]
+
+
+def create_socket_transport(config: CoreConfig, router: RpcRouter) -> SocketServer:
+    """Create the default TCP/NDJSON transport from validated Core config."""
+    return SocketServer(
+        config.host,
+        config.port,
+        router,
+        max_message_bytes=config.max_message_bytes,
+    )
+
+
+def _create_optional_postgres_pool():
+    """Open PostgreSQL only when optional event/projection features need it."""
+    from src.config.settings import AGENT_EVENTS_POSTGRES_ENABLED
+
+    return create_pool() if AGENT_EVENTS_POSTGRES_ENABLED else None
+
+
+def _create_default_event_bus(pool, trace_recorder):
+    """Build the default event bus with optional trace mirroring."""
+    return create_event_bus(
+        pool,
+        include_trace_sink=trace_recorder is not None,
+    )
+
+
+def _create_transport(
+    config: CoreConfig,
+    router: RpcRouter,
+    transport_factory: TransportFactory,
+) -> CoreTransport:
+    """Invoke the configured transport factory from the DI container."""
+    return transport_factory(config, router)
+
+
+def _maintenance_handlers(
+    context_summary_handler,
+    memory_extraction_handler,
+    checkpoint_cleanup_handler,
+) -> dict:
+    """Return the scheduler handler map keyed by stable maintenance enum values."""
+    return {
+        MaintenanceJobType.CONTEXT_SUMMARY: context_summary_handler,
+        MaintenanceJobType.MEMORY_EXTRACT: memory_extraction_handler,
+        MaintenanceJobType.CHECKPOINT_CLEANUP: checkpoint_cleanup_handler,
+    }
+
+
+class CoreContainer(containers.DeclarativeContainer):
+    """Dependency graph for one Core daemon process.
+
+    The container is deliberately kept at the composition boundary. Business
+    services still receive explicit constructor dependencies and do not import
+    this module.
+    """
+
+    config = providers.Dependency(instance_of=CoreConfig)
+    auth_token = providers.Dependency(instance_of=str)
+    shutdown_event = providers.Dependency()
+    trace_recorder = providers.Object(None)
+    transport_factory = providers.Object(create_socket_transport)
+
+    state_database = providers.Singleton(LocalStateDatabase)
+    checkpoint_manager = providers.Singleton(CheckpointManager)
+    postgres_pool = providers.Singleton(_create_optional_postgres_pool)
+    event_bus = providers.Singleton(
+        _create_default_event_bus,
+        pool=postgres_pool,
+        trace_recorder=trace_recorder,
+    )
+
+    base_model_provider = providers.Singleton(OpenAICompatibleProvider)
+    model_provider = providers.Singleton(
+        TracingModelProvider,
+        inner=base_model_provider,
+    )
+    run_limits = providers.Factory(RunLimits)
+    memory_enabled = providers.Object(MEMORY_ENABLED)
+    maintenance_settings = providers.Singleton(MaintenanceSettings.load)
+    provider_error_handler = providers.Factory(ProviderErrorHandler)
+    session_lock_registry = providers.Singleton(SessionLockRegistry)
+
+    workspace_repository = providers.Singleton(
+        LocalWorkspaceRepository,
+        database=state_database,
+    )
+    execution_repository = providers.Singleton(
+        ExecutionRepository,
+        database=state_database,
+    )
+    execution_lifecycle_service = providers.Factory(
+        ExecutionLifecycleService,
+        execution_repository=execution_repository,
+    )
+    maintenance_repository = providers.Singleton(
+        MaintenanceRepository,
+        database=state_database,
+        settings=maintenance_settings,
+    )
+    task_repository = providers.Singleton(
+        TaskRepository,
+        database=state_database,
+    )
+    task_service = providers.Factory(
+        TaskPlanningService,
+        repository=task_repository,
+    )
+    context_manager = providers.Factory(
+        AgentContextManager,
+        model_provider=model_provider,
+    )
+    context_loader = providers.Factory(
+        ConversationContextLoader,
+        context_manager=context_manager,
+        memory_enabled=memory_enabled,
+    )
+    state_store_factory = providers.Factory(
+        LocalStateStore,
+        database=state_database,
+        model_provider=model_provider,
+    )
+
+    context_summary_handler = providers.Factory(
+        ContextSummaryHandler,
+        workspace_repository=workspace_repository,
+        store_factory=state_store_factory.provider,
+        context_manager=context_manager,
+    )
+    memory_extraction_handler = providers.Factory(
+        MemoryExtractionHandler,
+        workspace_repository=workspace_repository,
+        store_factory=state_store_factory.provider,
+    )
+    checkpoint_cleanup_handler = providers.Factory(
+        CheckpointCleanupHandler,
+        checkpoint_manager=checkpoint_manager,
+        execution_repository=execution_repository,
+    )
+    maintenance_handlers = providers.Callable(
+        _maintenance_handlers,
+        context_summary_handler=context_summary_handler,
+        memory_extraction_handler=memory_extraction_handler,
+        checkpoint_cleanup_handler=checkpoint_cleanup_handler,
+    )
+    maintenance_scheduler = providers.Singleton(
+        MaintenanceScheduler,
+        repository=maintenance_repository,
+        handlers=maintenance_handlers,
+        settings=maintenance_settings,
+    )
+
+    unit_of_work_factory = providers.Factory(
+        SQLiteStateUnitOfWorkFactory,
+        database=state_database,
+        execution_repository=execution_repository,
+        maintenance_repository=maintenance_repository,
+    )
+    completed_turn_committer = providers.Factory(
+        CompletedTurnCommitter,
+        unit_of_work_factory=unit_of_work_factory,
+    )
+    turn_finalizer = providers.Factory(
+        TurnFinalizer,
+        context_manager=context_manager,
+        committer=completed_turn_committer,
+        maintenance_scheduler=maintenance_scheduler,
+    )
+    recovery_coordinator = providers.Factory(
+        ExecutionRecoveryCoordinator,
+        execution_repository=execution_repository,
+        checkpoint_manager=checkpoint_manager,
+        maintenance_repository=maintenance_repository,
+    )
+
+    workspace_runtime_factory = providers.Factory(
+        WorkspaceRuntimeFactory,
+        model_provider=model_provider,
+        run_limits=run_limits,
+        checkpointer_provider=checkpoint_manager.provided.initialize,
+        task_service=task_service,
+    )
+    runtime_registry = providers.Singleton(
+        WorkspaceRuntimeRegistry,
+        factory=workspace_runtime_factory,
+    )
+    agent_service = providers.Factory(
+        AgentTurnService,
+        workspace_repository=workspace_repository,
+        runtime_registry=runtime_registry,
+        state_store_factory=state_store_factory.provider,
+        context_manager=context_manager,
+        context_loader=context_loader,
+        model_configuration=model_provider,
+        lock_registry=session_lock_registry,
+        run_limits=run_limits,
+        execution_repository=execution_repository,
+        checkpoint_manager=checkpoint_manager,
+        turn_finalizer=turn_finalizer,
+        execution_lifecycle=execution_lifecycle_service,
+        maintenance_repository=maintenance_repository,
+        maintenance_scheduler=maintenance_scheduler,
+        recovery_coordinator=recovery_coordinator,
+        provider_error_handler=provider_error_handler,
+    )
+    session_lifecycle_service = providers.Factory(
+        SessionLifecycleService,
+        workspace_repository=workspace_repository,
+        state_store_factory=state_store_factory.provider,
+        lock_registry=session_lock_registry,
+        execution_repository=execution_repository,
+        checkpoint_manager=checkpoint_manager,
+        maintenance_repository=maintenance_repository,
+        maintenance_scheduler=maintenance_scheduler,
+    )
+
+    router = providers.Singleton(
+        RpcRouter,
+        auth_token=auth_token,
+    )
+    core_handlers = providers.Factory(
+        CoreHandlers,
+        shutdown_event=shutdown_event,
+    )
+    agent_handlers = providers.Factory(
+        AgentHandlers,
+        agent_service=agent_service,
+        session_service=session_lifecycle_service,
+    )
+    transport = providers.Factory(
+        _create_transport,
+        config=config,
+        router=router,
+        transport_factory=transport_factory,
+    )

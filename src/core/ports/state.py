@@ -36,6 +36,16 @@ class SessionStore(Protocol):
         """Update recent context and turn index during the minimal commit."""
 
 
+class MemoryRetrievalStore(Protocol):
+    """Retrieve long-term memories for foreground prompt construction."""
+
+    def retrieve_for_turn(self, workspace_id, query: str, *, new_session: bool) -> list:
+        """Return bounded workspace memories relevant to one user Turn."""
+
+    def build_memory_message(self, memories: list):
+        """Build a model message from retrieved memories, if any."""
+
+
 class ExecutionStore(Protocol):
     """Persist Execution and Slice lifecycle transitions."""
 

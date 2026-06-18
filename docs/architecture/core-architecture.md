@@ -47,6 +47,9 @@ main
   -> CoreApp
       -> Handlers
       -> AgentTurnService
+      -> SessionLifecycleService
+      -> ConversationContextLoader
+      -> ExecutionLifecycleService
       -> RpcRouter
       -> Transport
 ```
@@ -59,6 +62,30 @@ Handlers  -> RequestContext + Application Service
 CoreApp   -> 组装所有组件并管理生命周期
 Agent     -> 不依赖 RPC、Transport 或 CLI
 ```
+
+## DI 组合方式
+
+Core 使用 `dependency-injector` 描述进程级依赖图。`CoreApp` 仍然是生命周期入口，
+但不再手写所有构造细节，而是从 `CoreContainer` 获取已经装配好的组件。
+
+```text
+CoreApp
+  -> 创建/接收 CoreContainer
+  -> 注入 CoreConfig、auth_token、shutdown_event、trace_recorder
+  -> 从容器取得 AgentTurnService、SessionLifecycleService、ConversationContextLoader、ExecutionLifecycleService、Router、Handlers、Transport
+  -> 按固定顺序 start / close
+```
+
+选择 `dependency-injector` 的原因：
+
+- 它是成熟的 Python DI 容器，支持 `Singleton`、`Factory`、`Object` 和测试 override。
+- 它不要求应用是 HTTP/ASGI 服务，适合当前 TCP/NDJSON/JSON-RPC daemon。
+- 它能把对象图集中在组合根，业务服务仍然通过构造函数显式声明依赖。
+
+约束：业务模块不能把容器当 service locator 使用。`AgentTurnService`、
+`SessionLifecycleService`、`TurnFinalizer`、handlers 等应用层代码不得 import
+`CoreContainer` 或 `dependency_injector`；这些边界由契约测试保护。
+
 
 ## 当前结构
 
@@ -242,6 +269,10 @@ daemon PID/token 管理
 - `RpcRouter` 只处理验证和分发。
 - Handlers 只适配协议与业务。
 - `AgentTurnService` 编排 Slice 循环与暂停恢复。
+- `SessionLifecycleService` 负责 status、discard、reset、archive 和 hard delete。
+- `ConversationContextLoader` 负责加载上下文、召回记忆并构造 graph 输入。
+- `ExecutionLifecycleService` 负责 Execution begin、resume、pending 判断和准备失败 pause。
+- `TurnResultBuilder` 负责把流式事件聚合为最终 JSON-RPC result。
 - `TurnCoordinator` 负责 Turn 准备和最终提交协调。
 - `CompletedTurnCommitter` 只负责最小业务事务。
 - `MaintenanceScheduler` 只负责持久化后台任务分发。

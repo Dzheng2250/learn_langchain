@@ -44,6 +44,10 @@ class AgentTurnRunner(Protocol):
     ) -> dict:
         """Resume one recoverable execution without blocking the event loop."""
 
+
+class SessionLifecycleController(Protocol):
+    """Session control interface required by RPC handlers."""
+
     def session_status(self, workspace_root: str, session_name: str) -> dict:
         """Return compact pending-execution state."""
 

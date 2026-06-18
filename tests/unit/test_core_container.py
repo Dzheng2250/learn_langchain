@@ -1,0 +1,80 @@
+import asyncio
+import unittest
+
+from dependency_injector import providers
+
+from src.core.agent.service import AgentTurnService
+from src.core.config.models import CoreConfig
+from src.core.container import CoreContainer
+from src.core.execution import ExecutionLifecycleService
+from src.core.session import SessionLifecycleService
+from src.core.state import LocalStateStore
+from src.core.transport.socket_server import SocketServer
+
+
+class CoreContainerTest(unittest.TestCase):
+    def _container(self) -> CoreContainer:
+        container = CoreContainer()
+        container.config.override(CoreConfig.load(port=0, manage_runtime_files=False))
+        container.auth_token.override("token")
+        container.shutdown_event.override(asyncio.Event())
+        self.addCleanup(container.unwire)
+        return container
+
+    def test_constructs_agent_service_and_transport(self):
+        container = self._container()
+
+        agent_service = container.agent_service()
+        session_service = container.session_lifecycle_service()
+        execution_service = container.execution_lifecycle_service()
+
+        self.assertIsInstance(agent_service, AgentTurnService)
+        self.assertIsInstance(session_service, SessionLifecycleService)
+        self.assertIsInstance(execution_service, ExecutionLifecycleService)
+        self.assertIs(agent_service.execution_lifecycle.execution_repository, execution_service.execution_repository)
+        self.assertIs(agent_service.lock_registry, session_service.lock_registry)
+        self.assertIsInstance(container.transport(), SocketServer)
+
+    def test_state_store_factory_creates_short_lived_store_instances(self):
+        container = self._container()
+
+        first = container.state_store_factory()
+        second = container.state_store_factory()
+
+        self.assertIsInstance(first, LocalStateStore)
+        self.assertIsInstance(second, LocalStateStore)
+        self.assertIsNot(first, second)
+        self.assertIs(first.database, second.database)
+
+    def test_process_level_state_database_is_singleton(self):
+        container = self._container()
+
+        self.assertIs(container.state_database(), container.state_database())
+        self.assertIs(
+            container.workspace_repository().database,
+            container.state_database(),
+        )
+
+    def test_overrides_transport_factory(self):
+        container = self._container()
+
+        class FakeTransport:
+            pass
+
+        def fake_transport(_config, _router):
+            return FakeTransport()
+
+        container.transport_factory.override(fake_transport)
+
+        self.assertIsInstance(container.transport(), FakeTransport)
+
+    def test_overrides_agent_service(self):
+        container = self._container()
+        fake_service = object()
+        container.agent_service.override(providers.Object(fake_service))
+
+        self.assertIs(fake_service, container.agent_service())
+
+
+if __name__ == "__main__":
+    unittest.main()

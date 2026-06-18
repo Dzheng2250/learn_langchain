@@ -2,45 +2,18 @@
 
 import asyncio
 import os
-from collections.abc import Callable
-from typing import Protocol
 
 from src.core.agent.contracts import ManagedAgentService
-from src.core.agent.service import AgentTurnService
-from src.core.agent.models import RunLimits
-from src.config.maintenance import MaintenanceSettings
-from src.core.adapters.sqlite import SQLiteStateUnitOfWorkFactory
 from src.core.bus.router import RpcRouter
+from src.core.container import (
+    CoreContainer,
+    TransportFactory,
+    create_socket_transport,
+)
 from src.core.config.models import CoreConfig
 from src.core.handlers import AgentHandlers, CoreHandlers
-from src.core.telemetry import EventBus, create_event_bus, install_event_bus
-from src.core.transport.socket_server import SocketServer
+from src.core.telemetry import EventBus, install_event_bus
 from src.ipc.auth import ensure_runtime_dir, pid_path
-from src.core.database.connection import create_pool
-from src.core.state import (
-    CheckpointManager,
-    ExecutionRepository,
-    LocalStateDatabase,
-    LocalStateStore,
-    LocalWorkspaceRepository,
-)
-from src.core.finalization import CompletedTurnCommitter, TurnFinalizer
-from src.core.maintenance import (
-    ExecutionRecoveryCoordinator,
-    MaintenanceJobType,
-    MaintenanceRepository,
-    MaintenanceScheduler,
-)
-from src.core.maintenance.handlers import (
-    CheckpointCleanupHandler,
-    ContextSummaryHandler,
-    MemoryExtractionHandler,
-)
-from src.core.context.manager import AgentContextManager
-from src.core.errors import ProviderErrorHandler
-from src.core.llm.provider import OpenAICompatibleProvider
-from src.core.tasks import TaskPlanningService, TaskRepository
-from src.core.workspace.runtime import WorkspaceRuntimeFactory, WorkspaceRuntimeRegistry
 from src.config.paths import trace_dir
 from src.core.tracing import (
     TraceDirection,
@@ -51,29 +24,6 @@ from src.core.tracing import (
     install_trace_recorder,
     record_trace,
 )
-
-
-class CoreTransport(Protocol):
-    """Transport lifecycle required by the Core composition root."""
-
-    async def start(self) -> int:
-        """Start accepting requests and return the bound port."""
-
-    async def close(self, timeout_seconds: float) -> None:
-        """Stop accepting requests and close transport resources."""
-
-
-TransportFactory = Callable[[CoreConfig, RpcRouter], CoreTransport]
-
-
-def create_socket_transport(config: CoreConfig, router: RpcRouter) -> SocketServer:
-    """Create the default TCP/NDJSON transport from validated Core config."""
-    return SocketServer(
-        config.host,
-        config.port,
-        router,
-        max_message_bytes=config.max_message_bytes,
-    )
 
 
 class CoreApp:
@@ -88,6 +38,7 @@ class CoreApp:
         transport_factory: TransportFactory = create_socket_transport,
         event_bus: EventBus | None = None,
         trace_recorder=None,
+        container: CoreContainer | None = None,
     ) -> None:
         self.config = config
         self.shutdown_event = asyncio.Event()
@@ -95,6 +46,7 @@ class CoreApp:
         self._state_database = None
         self._event_bus = event_bus
         self._trace_recorder = trace_recorder
+        self.container = container
         if self._trace_recorder is None:
             from src.config.settings import (
                 TRACE_BATCH_SIZE,
@@ -115,107 +67,34 @@ class CoreApp:
                 writer.cleanup()
                 self._trace_recorder = TraceRecorder(writer)
         if agent_service is None:
-            # CoreApp is the process-level composition root. These objects are
-            # intentionally shared across requests; workspace-specific graphs
-            # and tools are created lazily by WorkspaceRuntimeRegistry.
-            self._state_database = LocalStateDatabase()
-            checkpoint_manager = CheckpointManager()
-            # PostgreSQL is optional. It is opened only for explicitly enabled
-            # telemetry/projection features, never for authoritative Session IO.
-            from src.config.settings import AGENT_EVENTS_POSTGRES_ENABLED
-
-            self._pool = create_pool() if AGENT_EVENTS_POSTGRES_ENABLED else None
-            if self._event_bus is None:
-                self._event_bus = create_event_bus(
-                    self._pool,
-                    include_trace_sink=self._trace_recorder is not None,
-                )
-            base_model_provider = OpenAICompatibleProvider()
-            model_provider = TracingModelProvider(base_model_provider)
-            run_limits = RunLimits()
-            workspace_repository = LocalWorkspaceRepository(self._state_database)
-            execution_repository = ExecutionRepository(self._state_database)
-            maintenance_settings = MaintenanceSettings.load()
-            maintenance_repository = MaintenanceRepository(
-                self._state_database,
-                maintenance_settings,
-            )
-            task_repository = TaskRepository(self._state_database)
-            task_service = TaskPlanningService(task_repository)
-            context_manager = AgentContextManager(model_provider=model_provider)
-
-            def state_store_factory():
-                return LocalStateStore(
-                    self._state_database,
-                    model_provider=model_provider,
-                )
-
-            maintenance_scheduler = MaintenanceScheduler(
-                maintenance_repository,
-                {
-                    MaintenanceJobType.CONTEXT_SUMMARY: ContextSummaryHandler(
-                        workspace_repository,
-                        state_store_factory,
-                        context_manager,
-                    ),
-                    MaintenanceJobType.MEMORY_EXTRACT: MemoryExtractionHandler(
-                        workspace_repository,
-                        state_store_factory,
-                    ),
-                    MaintenanceJobType.CHECKPOINT_CLEANUP: CheckpointCleanupHandler(
-                        checkpoint_manager,
-                        execution_repository,
-                    ),
-                },
-                settings=maintenance_settings,
-            )
-            turn_finalizer = TurnFinalizer(
-                context_manager,
-                CompletedTurnCommitter(
-                    SQLiteStateUnitOfWorkFactory(
-                        self._state_database,
-                        execution_repository,
-                        maintenance_repository,
-                    ),
-                ),
-                maintenance_scheduler,
-            )
-            self.agent_service = AgentTurnService(
-                workspace_repository=workspace_repository,
-                runtime_registry=WorkspaceRuntimeRegistry(
-                    factory=WorkspaceRuntimeFactory(
-                        model_provider,
-                        run_limits,
-                        checkpointer_provider=checkpoint_manager.initialize,
-                        task_service=task_service,
-                    ),
-                ),
-                state_store_factory=state_store_factory,
-                context_manager=context_manager,
-                model_configuration=model_provider,
-                run_limits=run_limits,
-                execution_repository=execution_repository,
-                checkpoint_manager=checkpoint_manager,
-                turn_finalizer=turn_finalizer,
-                maintenance_repository=maintenance_repository,
-                maintenance_scheduler=maintenance_scheduler,
-                recovery_coordinator=ExecutionRecoveryCoordinator(
-                    execution_repository,
-                    checkpoint_manager,
-                    maintenance_repository,
-                ),
-                provider_error_handler=ProviderErrorHandler(),
-            )
+            self.container = self.container or CoreContainer()
+            self.container.config.override(config)
+            self.container.auth_token.override(auth_token)
+            self.container.shutdown_event.override(self.shutdown_event)
+            self.container.trace_recorder.override(self._trace_recorder)
+            self.container.transport_factory.override(transport_factory)
+            if event_bus is not None:
+                self.container.event_bus.override(event_bus)
+            self._state_database = self.container.state_database()
+            self._pool = self.container.postgres_pool()
+            self._event_bus = self.container.event_bus()
+            self.agent_service = self.container.agent_service()
+            self.router = self.container.router()
+            self.core_handlers = self.container.core_handlers()
+            self.agent_handlers = self.container.agent_handlers()
+            self.core_handlers.register(self.router)
+            self.agent_handlers.register(self.router)
+            self.transport = self.container.transport()
         else:
             self.agent_service = agent_service
-        self.router = RpcRouter(auth_token)
-        self.core_handlers = CoreHandlers(self.shutdown_event)
-        self.agent_handlers = AgentHandlers(self.agent_service)
-        self.core_handlers.register(self.router)
-        self.agent_handlers.register(self.router)
-        # Transport depends only on the validated router. It never imports or
-        # invokes Agent internals directly.
-        self.transport = transport_factory(config, self.router)
+            self.router = RpcRouter(auth_token)
+            self.core_handlers = CoreHandlers(self.shutdown_event)
+            self.agent_handlers = AgentHandlers(self.agent_service)
+            self.core_handlers.register(self.router)
+            self.agent_handlers.register(self.router)
+            # Transport depends only on the validated router. It never imports or
+            # invokes Agent internals directly.
+            self.transport = transport_factory(config, self.router)
         self._started = False
         self._closed = False
 

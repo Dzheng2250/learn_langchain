@@ -22,7 +22,8 @@ from src.core.maintenance.handlers import ContextSummaryHandler
 from src.core.state import ExecutionRepository, LocalStateDatabase, LocalStateStore
 from src.core.state.migrations import LATEST_SCHEMA_VERSION, apply_local_migrations
 from src.core.state.workspace import LocalWorkspaceRepository
-from src.core.agent.service import AgentTurnService
+from src.core.agent.service import SessionLockRegistry
+from src.core.session import SessionLifecycleService
 
 
 class WakeOnlyScheduler:
@@ -581,17 +582,14 @@ class RecoveryCoordinatorTest(unittest.TestCase):
                 str(session.session_id),
             )
         )
-        service = AgentTurnService(
+        service = SessionLifecycleService(
             workspace_repository=self.workspaces,
-            runtime_registry=Mock(),
             state_store_factory=lambda: LocalStateStore(self.database),
+            lock_registry=SessionLockRegistry(),
             execution_repository=self.executions,
             maintenance_repository=self.maintenance,
         )
-        try:
-            status = service.session_status(str(self.workspace.root), "status")
-        finally:
-            service.close()
+        status = service.session_status(str(self.workspace.root), "status")
 
         self.assertTrue(status["execution_recoverable"])
         self.assertEqual("available", status["checkpoint_state"])

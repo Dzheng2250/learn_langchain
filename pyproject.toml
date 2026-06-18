@@ -19,6 +19,7 @@ dependencies = [
     "platformdirs",
     "textual>=8.0",
     "rich>=13.0",
+    "dependency-injector",
 ]
 
 [project.scripts]

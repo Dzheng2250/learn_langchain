@@ -3,7 +3,11 @@
 import asyncio
 from uuid import uuid4
 
-from src.core.agent.contracts import AgentTurnRunner, ExecutionControl
+from src.core.agent.contracts import (
+    AgentTurnRunner,
+    ExecutionControl,
+    SessionLifecycleController,
+)
 from src.core.bus.context import RequestContext
 from src.core.bus.router import RpcRouter
 from src.core.telemetry import record_error
@@ -20,8 +24,13 @@ from src.ipc.models import (
 class AgentHandlers:
     """Adapt Agent application services to validated RPC methods."""
 
-    def __init__(self, agent_service: AgentTurnRunner) -> None:
+    def __init__(
+        self,
+        agent_service: AgentTurnRunner,
+        session_service: SessionLifecycleController | None = None,
+    ) -> None:
         self.agent_service = agent_service
+        self.session_service = session_service or agent_service
 
     def register(self, router: RpcRouter) -> None:
         """Expose chat and explicit Session recovery methods."""
@@ -54,7 +63,7 @@ class AgentHandlers:
     async def session_status(self, params: SessionParams, _context: RequestContext) -> dict:
         """Return the recoverable execution state for one Session."""
         return await asyncio.to_thread(
-            self.agent_service.session_status,
+            self.session_service.session_status,
             params.workspace_root,
             params.session_name,
         )
@@ -62,7 +71,7 @@ class AgentHandlers:
     async def session_discard(self, params: SessionParams, _context: RequestContext) -> dict:
         """Discard one pending execution without deleting its audit history."""
         return await asyncio.to_thread(
-            self.agent_service.discard_pending,
+            self.session_service.discard_pending,
             params.workspace_root,
             params.session_name,
         )
@@ -70,7 +79,7 @@ class AgentHandlers:
     async def session_delete(self, params: SessionDeleteParams, _context: RequestContext) -> dict:
         """Archive or permanently delete one Session."""
         return await asyncio.to_thread(
-            self.agent_service.delete_session,
+            self.session_service.delete_session,
             params.workspace_root,
             params.session_name,
             hard_delete=params.hard_delete,
@@ -79,7 +88,7 @@ class AgentHandlers:
     async def session_reset(self, params: SessionParams, _context: RequestContext) -> dict:
         """Rebuild recent_messages from archived message history."""
         return await asyncio.to_thread(
-            self.agent_service.reset_session,
+            self.session_service.reset_session,
             params.workspace_root,
             params.session_name,
         )

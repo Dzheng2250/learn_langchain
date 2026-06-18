@@ -57,11 +57,23 @@ Application Service
 
 ```text
 src/core/adapters/sqlite/
+  conversation_history.py
+  session_store.py
+  memory_store.py
   unit_of_work.py
 ```
 
 这个文件把现有 `LocalStateStore`、`ExecutionRepository` 和 `MaintenanceRepository`
 包装成端口实现。这样做是有意的低风险迁移：先纠正依赖方向，再逐步拆分原来的大型状态门面。
+
+当前已经完成第二轮低风险拆分：
+
+- `SQLiteConversationHistoryStore` 接管历史读取能力，包括按 turn 读取消息和从完整归档重建近期上下文。
+- `SQLiteSessionStore` 接管 Session 上下文读取，以及 Unit of Work 内的 fast context 更新委托。
+- `SQLiteMemoryRetrievalStore` 接管前台 turn 的长期记忆召回和记忆提示消息构造。
+- `SQLiteStateUnitOfWorkFactory` 继续负责一次成功 turn 的原子提交。
+
+`LocalStateStore` 仍保留为兼容 facade。它现在把低风险读取能力委托给这些 adapter，但仍持有若干高风险写入能力。这样做是有意的：先缩小万能门面的职责，再逐步迁移响应关键路径。
 
 ## 3. Unit of Work 是什么
 
@@ -96,26 +108,50 @@ with unit_of_work_factory.begin(store) as uow:
 
 这段代码描述的是业务事实，不是数据库实现。
 
-## 4. IoC 与 CoreApp
+## 4. IoC ? CoreApp
 
-IoC 是 Inversion of Control，中文常译为“控制反转”。在这里的意思是：
+IoC ? Inversion of Control?????????????????????
 
 ```text
-业务类不自己 new 数据库、Provider、Scheduler 或 Runtime。
-CoreApp 在启动时统一创建它们，并通过构造函数传进去。
+?????? new ????Provider?Scheduler ? Runtime?
+CoreApp ??????????????????????
 ```
 
-`CoreApp` 是组合根。它知道当前选择了 SQLite adapter，也知道如何把 adapter 注入到
-`CompletedTurnCommitter`、`TurnFinalizer` 和 `AgentTurnService`。
+`CoreApp` ???????????????????? `dependency-injector` ? `CoreContainer` ???
 
-业务服务不应该直接 import：
+?? `dependency-injector` ????
+
+- ????? Python DI ????? `Singleton`?`Factory`?`Object` ? provider override?
+- ????????? `CoreApp.__init__` ?????????????????
+- ????????? HTTP/ASGI?????? FastAPI ????????
+- ?????? provider override ?? Agent service?Transport??????????
+
+???? FastAPI `Depends` ?????? Core ??? TCP + NDJSON + JSON-RPC daemon??? HTTP ??????? FastAPI DI ???????????????????
+
+??????
+
+```text
+CoreApp
+  -> CoreContainer
+      -> SQLite adapters / repositories
+      -> ModelProvider / ContextManager
+      -> MaintenanceScheduler
+      -> TurnFinalizer / AgentTurnService
+      -> Router / Handlers / Transport
+```
+
+????????????????trace/event bus ??????????? `CoreApp` ???????????????????????????
+
+????????? import?
 
 ```text
 sqlite3
 src.core.adapters.sqlite
+dependency_injector
 ```
 
-这条边界由 `tests/contracts/test_interface_boundaries.py` 保护。
+????? `tests/contracts/test_interface_boundaries.py` ???
+
 
 ## 5. 为什么首版不直接拆完 LocalStateStore
 
@@ -133,6 +169,28 @@ src.core.adapters.sqlite
 
 这样可以让每一步都有测试保护。
 
+截至当前实现，以下能力已经拆出：
+
+| 能力 | 当前实现 | 风险等级 |
+|---|---|---|
+| 按 turn 读取消息 | `SQLiteConversationHistoryStore.load_turn()` | 低 |
+| 从归档重建近期上下文 | `SQLiteConversationHistoryStore.rebuild_recent()` | 低 |
+| 读取 Session 上下文 | `SQLiteSessionStore.load_context()` | 低 |
+| Unit of Work 内保存 fast context | `SQLiteSessionStore.save_fast_context()` | 中 |
+| 前台长期记忆召回 | `SQLiteMemoryRetrievalStore.retrieve_for_turn()` | 低 |
+
+以下能力仍留在 `LocalStateStore`，暂不拆出：
+
+| 能力 | 暂缓原因 |
+|---|---|
+| `append_messages_in_transaction()` | 直接影响完整消息历史、分支头和 execution 关联 |
+| `_append_messages()` | 负责 `messages.raw` 的 LangChain 消息序列化格式 |
+| `save_fast_session_in_transaction()` | 属于响应前最小提交路径 |
+| `extract_and_save_memories()` | 涉及 LLM 记忆提取、来源关系和去重 |
+| `update_summary_cas()` | 涉及摘要 CAS，拆错会导致旧摘要覆盖新摘要 |
+
+这些方法必须等 contract tests 更完整后再迁移。
+
 ## 6. 后端选择配置
 
 配置中已经预留后端选择变量：
@@ -149,11 +207,15 @@ LEARN_AGENT_CHECKPOINT_BACKEND=sqlite
 
 ## 7. 当前仍需继续重构的部分
 
-当前改动解决了最关键的提交路径依赖问题，但还没有完成全部目标：
+当前改动解决了最关键的提交路径依赖问题，并拆出了第一块非执行职责：
 
 - `LocalStateStore` 仍是兼容门面，后续应拆为更小的 SQLite adapter。
-- `AgentTurnService` 仍然偏大，后续应继续拆出 `ConversationContextLoader`、
-  `SessionLifecycleService` 和 `ExecutionLifecycleService`。
+- `SessionLifecycleService` 已接管 `status / discard / reset / archive / hard delete`。
+  RPC handler 通过独立接口调用它，不再要求 `AgentTurnService` 承担会话控制。
+- `ConversationContextLoader` 已接管 session context、长期记忆召回和 graph 输入消息构建。
+- `ExecutionLifecycleService` 已接管 Execution begin、resume、pending 判断和执行准备失败时的 pause。
+- `TurnResultBuilder` 已接管 `run_turn/resume_execution` 的最终 result 聚合逻辑。
+- `AgentTurnService` 仍然偏大，后续应继续拆出 provider failure 处理和 Slice 循环执行器。
 - 记忆、任务和 Workspace 也应逐步补充更细的端口契约。
 - 文件历史后端暂未实现；当前只是让接口层为它留出位置。
 
@@ -258,10 +320,19 @@ class MemoryStore(Protocol):
 
 推荐拆分顺序：
 
-1. `SessionLifecycleService`：接管 `status / discard / delete / resume` 等会话控制操作。
-2. `ConversationContextLoader`：接管摘要、近期消息、记忆上下文加载。
-3. `ExecutionLifecycleService`：接管 Execution 创建、暂停、恢复和终止。
-4. `ProviderFailureService`：接管服务商错误解析后的用户说明和 Execution 处置。
+已完成：
+
+1. `SessionLifecycleService`：接管 `status / discard / reset / archive / hard delete`
+   等不需要模型执行的会话控制操作。
+2. `ConversationContextLoader`：接管摘要、近期消息、长期记忆上下文加载，并返回
+   `PreparedTurn`。
+3. `ExecutionLifecycleService`：接管 Execution 创建、恢复、pending 判断和准备失败 pause。
+4. `TurnResultBuilder`：接管流式事件到 RPC result 的聚合。
+
+推荐继续拆分顺序：
+
+1. `ProviderFailureService`：接管服务商错误解析后的用户说明和 Execution 处置。
+2. `SliceExecutionService`：接管 LangGraph Slice 循环、预算暂停和 trace 记录。
 
 拆分后 `AgentTurnService` 应只保留：
 

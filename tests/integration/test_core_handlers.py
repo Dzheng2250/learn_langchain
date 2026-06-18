@@ -51,6 +51,16 @@ class FakeAgentService:
         }
 
 
+class FakeSessionService:
+    def delete_session(self, workspace_root, session_name, *, hard_delete=False):
+        return {
+            "status": "session-service",
+            "workspace_root": workspace_root,
+            "session_name": session_name,
+            "hard_delete": hard_delete,
+        }
+
+
 class CoreHandlersTest(unittest.IsolatedAsyncioTestCase):
     async def test_ping_returns_health_data(self):
         handlers = CoreHandlers(asyncio.Event(), server_version="test")
@@ -148,6 +158,21 @@ class AgentHandlersTest(unittest.IsolatedAsyncioTestCase):
         )
 
         self.assertEqual("deleted", result["status"])
+        self.assertTrue(result["hard_delete"])
+
+    async def test_session_delete_can_use_separate_session_service(self):
+        handlers = AgentHandlers(FakeAgentService(), FakeSessionService())
+        result = await handlers.session_delete(
+            SessionDeleteParams(
+                auth_token="token",
+                workspace_root=".",
+                session_name="old",
+                hard_delete=True,
+            ),
+            FakeRequestContext(),
+        )
+
+        self.assertEqual("session-service", result["status"])
         self.assertTrue(result["hard_delete"])
 
 
