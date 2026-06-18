@@ -51,6 +51,19 @@ class LlmTraceCallback(BaseCallbackHandler):
             duration_ms=duration_ms,
             data={"purpose": self.purpose, "model": self.model, "stop_reason": stop_reason, **usage},
         )
+        # Update the ExecutionBudget with token counts from this LLM call
+        try:
+            from src.core.agent.budget import current_execution_budget
+
+            budget = current_execution_budget()
+            if budget is not None:
+                input_tokens = usage.get("input_tokens") or 0
+                output_tokens = usage.get("output_tokens") or 0
+                with budget._lock:
+                    budget.input_tokens = input_tokens
+                    budget.output_tokens = output_tokens
+        except Exception:
+            pass
 
     def on_llm_error(self, error, *, run_id, **kwargs) -> None:
         call_id = str(run_id)

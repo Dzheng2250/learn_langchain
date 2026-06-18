@@ -38,6 +38,24 @@ class LocalStateTest(unittest.TestCase):
         again, _ = self.repository.resolve_session(self.workspace, "default")
         self.assertEqual(self.session.session_id, again.session_id)
 
+    def test_archived_session_is_unavailable_until_hard_deleted(self):
+        self.assertTrue(self.repository.archive_session(self.session))
+        self.assertFalse(self.repository.archive_session(self.session))
+        with self.assertRaisesRegex(RuntimeError, "archived"):
+            self.repository.resolve_session(self.workspace, "default")
+
+        existing = self.repository.get_session_by_name(
+            self.workspace,
+            "default",
+            include_archived=True,
+        )
+        self.assertIsNotNone(existing)
+        self.assertTrue(existing[1])
+
+        self.assertTrue(self.repository.delete_session(self.session))
+        recreated, _ = self.repository.resolve_session(self.workspace, "default")
+        self.assertNotEqual(self.session.session_id, recreated.session_id)
+
     def test_completed_turn_is_atomic_and_updates_branch_head(self):
         store = LocalStateStore(self.database, projection_enabled=True)
         state = AgentContextState(

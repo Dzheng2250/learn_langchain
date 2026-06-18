@@ -22,10 +22,311 @@
 7. 多模态数据处理
 8. 两级上下文历史summary处理。（或按时间间隔进行处理？/目前是固定缓冲区）
 
-遇到的问题：
+## 遇到的问题：
 1. 记忆系统可观测性和控制面板
     现在已经有短期记忆、长期记忆、异步提取、条件触发、数据库落盘，但如果效果不符合预期，定位成本还偏高
+    - 目前可以通过 trace 记录执行日志，后续需要进一步优化
+
+2. 会话延迟体验问题
+    - 由于历史对话要存入数据库，数据库的内容的一致性 与 用户会话体验存在一个不可调和的矛盾（是优先保证数据库数据的最新且任何数据不丢失？还是保证用户体验，但是会话延迟？） 
+
+为什么从这个问题引申到这个优化方案？为什么使用SQLite 就不会出现卡顿了？
+如果不是数据库的问题，那是由于做了什么设计优化了这一点？这种设计有什么风险与问题？
+
+记得编写我们遇到了什么问题，为什么有了本次的改动，以及本次改动实现了什么优化方案
+新修改优化是否符合设计模式？
+
+SQLite存储的数据在哪？
+
+SQLite如何访问与编辑数据？
+
+daemon进程应该及时保存任务日志（简略内容即可 eventbus?：执行了什么节点，发生了什么错误，加载了什么内容，执行完成状态如何）
+这部分能否抽出成为一个单独的模块？类似于AOP？
+
+
+参数含义，文档更新，一些文档版本过旧
+
+
+
+
+3. 非框架方面的问题，原理问题：如何设计上下文机制，使得agent在长上下文中仍能保证内容不偏离，不产生幻觉？
 
 未来方向：
 1. 传统tui-> code agent
 2. 移动app-> 什么应用场景？
+
+## **文档整理，构建文档简介目录**
+1. 审查文档是否更新，是否与代码实现一致
+2. 构建快速查找目录
+3. 补充测试文档，测试也需要分类
+4. 测试环境的构造与清理能否抽象出一个类？避免重复编写。已有的测试不再改动，新测试
+5. 缺少功能需求文档
+
+## 现在Vibe Coding 的问题：
+1. 每次让 agent 进行修改时涉及的改动太多，没有合理的将一次大改动分成多次小改动并 git
+2. 为什么每次改动都这么大？是否是一开始架构设计就不合理？如何避免这种情况？
+
+GitHub 推送新分支，如何创建新pr 并编写描述信息？
+修复后请提交到已有pr中，并请在pr中回复 review（@claude）
+
+
+## 体验优化
+
+1. 缺少是否开启思考模式，这部分应该也抽象集成到provider中，要考虑不同协议的输出格式（openai message/response、Anthropic message）
+
+2. 数据类未来是否迁移 Pydantic？
+
+3. 优化LLM接入配置，如和像已有的Agent一样从本地json文件中读取调用llm的配置项？
+
+4. 在agent已经接收到一个任务请求并在运行过程中，如何将一个新请求加入？（比如说当前任务的一些额外注意事项）（通过变更 agent 的运行任务规划文档数据结构实现吗？还有没有更好的方法？）
+
+5. 关于 若API 服务商因已有 Session 上下文持续拒绝请求的处理策略制定。
+- 定位原因：目前是由于对话中存在敏感信息导致的 上下文总结或记忆摘要失败 （是summary的问题还是上下文的问题）
+- 优化方案：回退到上一次成功 summary 的点？那么新对话内容是否也要加入summary，是否有可能导致 一次性要总结的 上下文过长？
+
+6. 上下文机制还得重新考虑
+
+
+## 非目前主线任务（TUI完成后的任务）
+1. 分支会话
+2. 主动暂停 + Agent 已执行状态保存 + 恢复（用户可能暂停后再次请求继续上一个任务，尽量保证不从头重新开始）
+3. 
+
+
+## 主线
+1. TaskManager：Agent的自主规划
+2. TUI 
+3. Tools 管理优化
+
+4. 问题：不知道context的管理机制（虽然是langGraph, 比如连续tool的执行结果是否会合并到一个User message中？）
+    - state 怎么更新的？难不成每次都从数据库读新的？太过浪费了吧
+5. 单个会话上下文进行压缩，不应该多次压缩后总维持一个固定的长度吧，那这样是否会丢失大量的信息？
+
+### 严重
+6. 关于 agent 每次执行了什么 tool, 具体参数完全没有，数据库中的message中也没有存放，我们只能看到调用了工具，但是工具中的参数完全看不见，这是很糟糕的状态。数据库中对于 ai 发起 tool 调用的记录是空白，是不是太不合理？应该至少要知道发起调用了什么 tool 以及 传入了什么参数吧？
+
+7. 调用 容器工具总是卡住，tool_ledger 又是个啥？为啥始终是空的
+
+## TUI 体验优化
+1. 上下文使用额度 over but bug
+2. 主动压缩 
+3. 技能列表
+5. 进入到旧session中不会主动加载历史对话到界面中
+6. claude code 没有及时更新设计文档，特别是TUI部分的，如何设计，遇到了什么问题，怎么处理的
+7. agent生成时，滚动条无效，无法滚动
+
+8. tui流式输出有问题 over
+
+- 全部输出完后，又输出了一遍完整的
+
+9. **!!!!**仍然模型拒绝后无法人工恢复，discard 与 resume 都不行（因为是goal模式），我们的目的是即使触发了服务商的限制，回复的消息被拒绝了，但是仍然能够自己回复到上一轮完全正常的状态，最好是自行恢复，但是要留有手动指令吧，而且每次输入，我们完全不知道当前输入给模型的上下文是什么？如何处理？
+
+就不应该在前端进行处理吧？应该前端只显示当前对话被拒绝，而其他的什么回滚和处理都应该在后端进行？
+而且也要让前端用户知道是什么导致的 对话失败吧？毕竟可能在多处调用了llm，单纯是本次会话失败，还是后台的上下文压缩失败，还是其他的有关调用llm的地方失败吧。
+
+仍存在问题，一旦服务商拒绝了回复，回退到上一轮未发送前的状态也不行，关键是输出特别是记忆总结中出现敏感词，后面再输入就会又问题
+
+
+10. 缺少历史会话分支，但是起码要在5之后实现，而且要先实现删除指定session
+
+11. 会话卡顿，因为每次都是刷新整个页面，开销太高，但是是为了避免chunk里的换行符，能否直接处理后端向前台发送的chunk块格式？避免出现特殊字符？
+
+12. 主动停止
+
+## LLM Token 使用量统计规划（暂不实施）
+
+### 优化目标
+
+- 记录每次 LLM 调用的输入、输出和总 Token 数量。
+- 能够按 Execution、Slice、Session、模型用途和服务商汇总 Token 消耗。
+- 区分父 Agent、子 Agent、上下文摘要、长期记忆提取和文件总结等不同调用来源。
+- 为后续成本统计、上下文预算控制、异常排查和性能优化提供可靠数据。
+- Token 统计失败不得导致 Agent 主流程失败，也不得增加用户可感知的响应延迟。
+
+### 当前问题
+
+- 当前 `ExecutionBudget.snapshot()` 只记录工具调用数、受控执行数、委派数和耗时。
+- `executions` 与 `execution_slices` 表没有 Token 使用量字段。
+- LangChain 返回的 `usage_metadata` 或 `response_metadata["token_usage"]` 没有被结构化提取。
+- 一轮 Agent 执行可能调用 LLM 多次，当前没有调用级记录，也无法区分消耗来源。
+- 不同服务商、模型和流式模式返回的 usage 字段结构可能不同。
+
+### 设计方案
+
+#### 1. 建立统一 TokenUsage 模型
+
+建议新增稳定的内部数据模型：
+
+```python
+@dataclass(frozen=True)
+class TokenUsage:
+    input_tokens: int = 0
+    output_tokens: int = 0
+    total_tokens: int = 0
+    cached_input_tokens: int = 0
+    reasoning_tokens: int = 0
+```
+
+要求：
+
+- 所有字段必须为非负整数。
+- `total_tokens` 缺失时可由输入与输出数量计算。
+- 服务商不支持的字段保持为 `0`，不能凭空估算。
+
+#### 2. 建立服务商兼容解析接口
+
+参考当前 Provider Error Parser，新增：
+
+```text
+TokenUsageParser Protocol
+TokenUsageParserRegistry
+OpenAICompatibleTokenUsageParser
+其他服务商 TokenUsageParser
+```
+
+Parser 负责从以下位置提取并标准化 usage：
+
+- `AIMessage.usage_metadata`
+- `AIMessage.response_metadata`
+- 流式响应的最终 Chunk
+- 服务商特有响应字段
+
+Parser 只负责理解服务商字段，不负责持久化和预算决策。
+
+#### 3. 建立调用级 Usage Collector
+
+新增一次 Execution 内共享的线程安全 `LlmUsageCollector`：
+
+```text
+每次 LLM 响应
+    -> TokenUsageParser
+    -> LlmUsageCollector.record(...)
+    -> 累加 Execution / Slice 使用量
+```
+
+每条调用记录至少包含：
+
+```text
+run_id
+execution_id
+slice_id
+purpose
+provider
+model
+input_tokens
+output_tokens
+total_tokens
+cached_input_tokens
+reasoning_tokens
+```
+
+`purpose` 使用现有 `LlmPurpose`，用于区分：
+
+- `parent_agent`
+- `subagent`
+- `context_summary`
+- `memory_extraction`
+- `file_summary`
+
+#### 4. 流式输出处理
+
+- 流式响应通常只在最后一个 Chunk 返回完整 usage。
+- 同一次调用只能累计一次，必须使用调用 ID 或稳定去重键防止重复计算。
+- 如果服务商没有返回 usage，本轮记录为“usage unavailable”，不能根据文本字符数冒充精确 Token。
+- usage 收集不能阻塞 token 流式输出。
+
+#### 5. 数据库存储设计
+
+建议新增调用级表，而不是只向 `executions` 增加汇总字段：
+
+```text
+llm_usage_records
+    usage_id
+    workspace_id
+    session_id
+    execution_id
+    slice_id
+    run_id
+    purpose
+    provider
+    model
+    input_tokens
+    output_tokens
+    total_tokens
+    cached_input_tokens
+    reasoning_tokens
+    created_at
+```
+
+同时在以下位置保存汇总数据，便于快速查询：
+
+- `execution_slices`：当前 Slice 的 Token 总量。
+- `executions`：整个 Execution 的 Token 总量。
+
+调用级记录是事实来源，Slice 与 Execution 字段是派生汇总。汇总失败时可通过调用级记录重新计算。
+
+#### 6. 写入与响应延迟
+
+- Token usage 不应在 token 流式输出过程中同步写数据库。
+- 最小完成事务中只写必要的 Execution 汇总，或将 usage 记录加入事务性 Outbox。
+- 调用级明细可由后台维护任务批量写入。
+- usage 写入失败不得阻止正常回答返回，但必须产生结构化遥测事件。
+
+#### 7. Token 预算控制
+
+统计能力稳定后，再考虑增加预算策略：
+
+```text
+max_input_tokens_per_grant
+max_output_tokens_per_grant
+max_total_tokens_per_grant
+max_context_tokens_per_request
+```
+
+预算控制与统计应分开实现：
+
+- Usage Collector 只负责记录事实。
+- Token Budget Policy 决定是否暂停或拒绝后续调用。
+- 不应在尚无可靠统计数据时直接启用强制 Token 限制。
+
+#### 8. 对外展示与可观测性
+
+后续可在以下位置展示汇总：
+
+- `session.status`
+- Turn 最终 `done` 事件
+- Telemetry Event
+- TUI 状态栏
+
+默认只展示汇总数据，不展示完整 Prompt 或模型响应内容。
+
+### 实施步骤
+
+1. 定义 `TokenUsage`、Parser Protocol 和 Parser Registry。
+2. 为 OpenAI 兼容响应实现 Parser，并验证阿里云响应格式。
+3. 在父 Agent 流式调用链中接入线程安全 Usage Collector。
+4. 为非流式后台任务接入相同 Collector。
+5. 增加本地 SQLite Schema migration 和调用级 usage 表。
+6. 将 Slice 与 Execution 汇总接入现有完成事务。
+7. 增加 Telemetry 与 `session.status` 查询能力。
+8. 数据稳定后，再设计 Token Budget Policy 和成本计算。
+
+### 测试计划
+
+- 正确解析 `usage_metadata` 和 `response_metadata["token_usage"]`。
+- 流式最终 Chunk 的 usage 只累计一次。
+- 同一 Execution 多次模型调用能够正确累加。
+- 父 Agent、子 Agent和后台任务可以按 `purpose` 区分。
+- 不同服务商 Parser 可以注册和替换。
+- Parser 异常不会中断模型回答。
+- 服务商未返回 usage 时不会伪造数据。
+- 数据库写入失败不会影响最终响应。
+- Slice 和 Execution 汇总等于对应调用级记录之和。
+- checkpoint resume 后不会重复累计已记录调用。
+
+### 当前不实施的内容
+
+- 暂不根据字符数估算 Token。
+- 暂不实现模型价格和费用计算。
+- 暂不启用强制 Token 预算限制。
+- 暂不修改数据库 Schema、Agent 流程或 CLI 输出。

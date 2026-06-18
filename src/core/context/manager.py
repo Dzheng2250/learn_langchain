@@ -5,9 +5,10 @@ from langchain_core.messages import HumanMessage, SystemMessage
 from src.config.settings import (
     RECENT_MESSAGE_LIMIT,
     SESSION_SUMMARY_MAX_CHARS,
-    SUMMARY_TRIGGER_CHAR_LIMIT,
     SUMMARY_SOURCE_CHAR_LIMIT,
+    SUMMARY_TRIGGER_CHAR_LIMIT,
     SUMMARY_TRIGGER_MESSAGE_LIMIT,
+    SUMMARY_TRIGGER_TOKEN_LIMIT,
 )
 from src.core.common.debug import debug_print, format_message
 from src.core.telemetry import emit_event, event_span, record_error
@@ -31,6 +32,7 @@ class AgentContextManager:
         recent_message_limit: int = RECENT_MESSAGE_LIMIT,
         summary_trigger_message_limit: int = SUMMARY_TRIGGER_MESSAGE_LIMIT,
         summary_trigger_char_limit: int = SUMMARY_TRIGGER_CHAR_LIMIT,
+        summary_trigger_token_limit: int = SUMMARY_TRIGGER_TOKEN_LIMIT,
         summary_max_chars: int = SESSION_SUMMARY_MAX_CHARS,
         summary_source_char_limit: int = SUMMARY_SOURCE_CHAR_LIMIT,
         model_provider: ModelProvider | None = None,
@@ -38,6 +40,7 @@ class AgentContextManager:
         self.recent_message_limit = recent_message_limit
         self.summary_trigger_message_limit = summary_trigger_message_limit
         self.summary_trigger_char_limit = summary_trigger_char_limit
+        self.summary_trigger_token_limit = summary_trigger_token_limit
         self.summary_max_chars = summary_max_chars
         self.summary_source_char_limit = summary_source_char_limit
         self.model_provider = model_provider or OpenAICompatibleProvider()
@@ -74,7 +77,11 @@ class AgentContextManager:
         unsent_previous_messages = state.recent_messages[:-self.recent_message_limit]
         conversation_messages = [*unsent_previous_messages, *final_conversation_messages]
 
-        should_summarize = force_summarize or self._should_summarize(conversation_messages)
+        should_summarize = (
+            force_summarize
+            or state.context_tokens > self.summary_trigger_token_limit
+            or len(conversation_messages) > self.summary_trigger_message_limit
+        )
         if not should_summarize:
             emit_event(
                 "context_summary_skipped",
@@ -90,6 +97,7 @@ class AgentContextManager:
             return AgentContextState(
                 summary=state.summary,
                 recent_messages=conversation_messages,
+                context_tokens=state.context_tokens,
             )
 
         old_messages = conversation_messages[:-self.recent_message_limit]
@@ -105,7 +113,9 @@ class AgentContextManager:
             },
         )
         try:
-            summary = self._summarize_messages(state.summary, old_messages, memory_context)
+            summary, summary_input_tokens, summary_output_tokens = self._summarize_messages(
+                state.summary, old_messages, memory_context
+            )
         except Exception as exc:
             record_error(
                 "agent_context",
@@ -120,9 +130,19 @@ class AgentContextManager:
             return AgentContextState(
                 summary=state.summary,
                 recent_messages=conversation_messages[-self.recent_message_limit:],
+                context_tokens=state.context_tokens,
             )
 
-        return AgentContextState(summary=summary, recent_messages=recent_messages)
+        # context_tokens = previous - compressed_old_messages + new_summary
+        new_context_tokens = max(
+            0,
+            state.context_tokens - summary_input_tokens + summary_output_tokens,
+        )
+        return AgentContextState(
+            summary=summary,
+            recent_messages=recent_messages,
+            context_tokens=new_context_tokens,
+        )
 
     def build_fast_state(self, state: AgentContextState, final_messages: list) -> AgentContextState:
         """Build bounded committed context without invoking a summary model."""
@@ -132,6 +152,7 @@ class AgentContextManager:
         return AgentContextState(
             summary=state.summary,
             recent_messages=conversation_messages[-self.recent_message_limit:],
+            context_tokens=state.context_tokens,
         )
 
     def should_summarize(self, messages: list) -> bool:
@@ -140,7 +161,8 @@ class AgentContextManager:
 
     def summarize_messages(self, previous_summary: str, messages: list, memory_context: str = "") -> str:
         """Create a derived summary outside the response critical path."""
-        return self._summarize_messages(previous_summary, messages, memory_context)
+        summary, _, _ = self._summarize_messages(previous_summary, messages, memory_context)
+        return summary
 
     def extract_turn_messages(self, state: AgentContextState, final_messages: list) -> list:
         """Return only messages created by the current Turn.
@@ -183,8 +205,13 @@ class AgentContextManager:
             stripped.append(message)
         return stripped
 
-    def _summarize_messages(self, previous_summary: str, messages: list, memory_context: str = "") -> str:
-        """Compress older messages into a structured session summary."""
+    def _summarize_messages(self, previous_summary: str, messages: list, memory_context: str = "") -> tuple[str, int, int]:
+        """Compress older messages into a structured session summary.
+
+        Returns:
+            ``(summary, input_tokens, output_tokens)`` — the compressed summary
+            text and the token counts from the summary LLM call.
+        """
         source = self._format_messages_for_summary(messages)
         if len(source) > self.summary_source_char_limit:
             source = source[-self.summary_source_char_limit:]
@@ -208,14 +235,29 @@ class AgentContextManager:
         if len(summary) > self.summary_max_chars:
             summary = summary[:self.summary_max_chars] + "\n... summary truncated ..."
 
+        # Extract token usage from the summary LLM response
+        input_tokens = 0
+        output_tokens = 0
+        try:
+            metadata = getattr(response, "usage_metadata", None) or {}
+            input_tokens = metadata.get("input_tokens", 0)
+            output_tokens = metadata.get("output_tokens", 0)
+        except Exception:
+            pass
+
         debug_print("CONTEXT SUMMARY UPDATED", summary)
         emit_event(
             "context_summarized",
             "agent_context",
             "Context summary updated.",
-            {"summary_chars": len(summary), "compressed_messages": len(messages)},
+            {
+                "summary_chars": len(summary),
+                "compressed_messages": len(messages),
+                "input_tokens": input_tokens,
+                "output_tokens": output_tokens,
+            },
         )
-        return summary
+        return summary, input_tokens, output_tokens
 
     def _format_messages_for_summary(self, messages: list) -> str:
         """Format messages for summarization with bounded per-message content."""

@@ -269,6 +269,10 @@ class AgentTurnService:
                     "provider",
                     "provider_code",
                     "http_status",
+                    "failure_source",
+                    "failure_stage",
+                    "failure_scope",
+                    "user_action",
                 ):
                     if field in item["data"]:
                         result[field] = item["data"][field]
@@ -308,6 +312,10 @@ class AgentTurnService:
                     "provider",
                     "provider_code",
                     "http_status",
+                    "failure_source",
+                    "failure_stage",
+                    "failure_scope",
+                    "user_action",
                 ):
                     if field in item["data"]:
                         result[field] = item["data"][field]
@@ -328,6 +336,10 @@ class AgentTurnService:
         if not normalized:
             raise ValueError("message must not be empty")
         workspace = self.workspace_repository.resolve(workspace_root)
+        existing = self._get_existing_session_by_name(workspace, session_name)
+        if existing is not None and existing[1]:
+            yield self._archived_session_event(existing[0], run_id)
+            return
         session, _new_session = self.workspace_repository.resolve_session(workspace, session_name)
         # The UUID lock is the consistency boundary for loading and saving one
         # Session. Different Session UUIDs may execute concurrently.
@@ -388,8 +400,25 @@ class AgentTurnService:
         if self.execution_repository is None:
             raise RuntimeError("Resumable execution is not configured.")
         workspace = self.workspace_repository.resolve(workspace_root)
+        existing = self._get_existing_session_by_name(workspace, session_name)
+        if existing is not None and existing[1]:
+            yield self._archived_session_event(existing[0], run_id)
+            return
         session, _ = self.workspace_repository.resolve_session(workspace, session_name)
         with self.lock_registry.get(session.session_id):
+            if self.execution_repository.get_attached(session) is None:
+                yield {
+                    "event": "done",
+                    "data": {
+                        "run_id": run_id,
+                        "status": "idle",
+                        "workspace_id": str(session.workspace.workspace_id),
+                        "session_id": str(session.session_id),
+                        "session_name": session.session_name,
+                        "message": "Session has no pending execution to resume.",
+                    },
+                }
+                return
             pending = self.execution_repository.resume(session)
             record_trace(
                 TraceDirection.INTERNAL,
@@ -459,10 +488,65 @@ class AgentTurnService:
             },
         }
 
+    def _archived_session_event(self, session: SessionContext, run_id: str) -> dict:
+        """Return a terminal event when a Session is intentionally unavailable."""
+        return {
+            "event": "done",
+            "data": {
+                "run_id": run_id,
+                "status": "archived",
+                "workspace_id": str(session.workspace.workspace_id),
+                "session_id": str(session.session_id),
+                "session_name": session.session_name,
+                "message": (
+                    "Session is archived. Use a different session name, or run "
+                    "`learn-agent session delete --hard` before recreating it."
+                ),
+            },
+        }
+
+    def _get_existing_session_by_name(
+        self,
+        workspace,
+        session_name: str,
+    ) -> tuple[SessionContext, bool] | None:
+        """Return an existing Session when the repository supports lookup-only access."""
+        getter = getattr(self.workspace_repository, "get_session_by_name", None)
+        if getter is None:
+            return None
+        return getter(workspace, session_name, include_archived=True)
+
     def session_status(self, workspace_root: str, session_name: str) -> dict:
         """Return compact pending-execution state without running the graph."""
         workspace = self.workspace_repository.resolve(workspace_root)
+        existing = self._get_existing_session_by_name(workspace, session_name)
+        if existing is not None and existing[1]:
+            session = existing[0]
+            return {
+                "status": "archived",
+                "workspace_id": str(workspace.workspace_id),
+                "session_id": str(session.session_id),
+                "session_name": session.session_name,
+                "context_tokens": 0,
+                "pending_execution": None,
+                "execution_recoverable": False,
+                "checkpoint_state": None,
+                "maintenance": {
+                    "pending": 0,
+                    "running": 0,
+                    "failed": 0,
+                    "recent_failures": [],
+                },
+            }
         session, _ = self.workspace_repository.resolve_session(workspace, session_name)
+        # Load context state to read current context_tokens
+        store = self.state_store_factory()
+        try:
+            context_state, _ = store.load_session(session)
+        except Exception:
+            context_state = None
+        finally:
+            store.close()
         pending = self.execution_repository.get_attached(session) if self.execution_repository else None
         maintenance = (
             self.maintenance_repository.counts_for_session(
@@ -472,10 +556,20 @@ class AgentTurnService:
             if self.maintenance_repository is not None
             else {"pending": 0, "running": 0, "failed": 0}
         )
+        if self.maintenance_repository is not None:
+            maintenance["recent_failures"] = (
+                self.maintenance_repository.recent_failures_for_session(
+                    str(workspace.workspace_id),
+                    str(session.session_id),
+                )
+            )
+        else:
+            maintenance["recent_failures"] = []
         return {
             "workspace_id": str(workspace.workspace_id),
             "session_id": str(session.session_id),
             "session_name": session.session_name,
+            "context_tokens": context_state.context_tokens if context_state else 0,
             "pending_execution": pending.__dict__ if pending else None,
             "execution_recoverable": pending.recoverable if pending else False,
             "checkpoint_state": pending.checkpoint_state if pending else None,
@@ -487,8 +581,26 @@ class AgentTurnService:
         if self.execution_repository is None:
             raise RuntimeError("Resumable execution is not configured.")
         workspace = self.workspace_repository.resolve(workspace_root)
+        existing = self._get_existing_session_by_name(workspace, session_name)
+        if existing is not None and existing[1]:
+            session = existing[0]
+            return {
+                "status": "archived",
+                "workspace_id": str(session.workspace.workspace_id),
+                "session_id": str(session.session_id),
+                "session_name": session.session_name,
+                "message": "Session is archived and has no active execution to discard.",
+            }
         session, _ = self.workspace_repository.resolve_session(workspace, session_name)
         with self.lock_registry.get(session.session_id):
+            if self.execution_repository.get_attached(session) is None:
+                return {
+                    "status": "idle",
+                    "workspace_id": str(session.workspace.workspace_id),
+                    "session_id": str(session.session_id),
+                    "session_name": session.session_name,
+                    "message": "Session has no pending execution to discard.",
+                }
             pending = self.execution_repository.discard(session)
             if self.maintenance_repository is not None:
                 from src.core.maintenance.models import MaintenanceJobSpec
@@ -508,9 +620,129 @@ class AgentTurnService:
                         priority=MaintenancePriority.CHECKPOINT_CLEANUP,
                     )
                 )
-                if self.maintenance_scheduler is not None:
-                    self.maintenance_scheduler.wake()
+            if self.maintenance_scheduler is not None:
+                self.maintenance_scheduler.wake()
         return {"status": "discarded", "execution_id": pending.execution_id}
+
+    def delete_session(
+        self,
+        workspace_root: str,
+        session_name: str,
+        *,
+        hard_delete: bool = False,
+    ) -> dict:
+        """Archive by default, or permanently delete one Workspace-local Session."""
+        workspace = self.workspace_repository.resolve(workspace_root)
+        found = self._get_existing_session_by_name(workspace, session_name)
+        if found is None:
+            return {
+                "status": "not_found",
+                "mode": "hard_delete" if hard_delete else "archive",
+                "workspace_id": str(workspace.workspace_id),
+                "session_name": session_name,
+            }
+        session, archived = found
+        with self.lock_registry.get(session.session_id):
+            if hard_delete:
+                checkpoint_threads = self.workspace_repository.checkpoint_threads_for_session(
+                    session
+                )
+                if self.checkpoint_manager is not None:
+                    for thread_id in checkpoint_threads:
+                        try:
+                            self.checkpoint_manager.delete_thread(thread_id)
+                        except Exception:
+                            # Some executions may have no materialized
+                            # checkpoint. State deletion is still the source of
+                            # truth for removing this Session.
+                            pass
+                deleted = self.workspace_repository.delete_session(session)
+                return {
+                    "status": "deleted" if deleted else "not_found",
+                    "mode": "hard_delete",
+                    "workspace_id": str(workspace.workspace_id),
+                    "session_id": str(session.session_id),
+                    "session_name": session.session_name,
+                    "checkpoint_threads_deleted": len(checkpoint_threads),
+                }
+
+            cleanup_enqueued = False
+            if not archived and self.execution_repository is not None:
+                pending = self.execution_repository.get_attached(session)
+                if pending is not None:
+                    self.execution_repository.discard(session)
+                    cleanup_enqueued = self._enqueue_checkpoint_cleanup(session, pending)
+            archived_now = (
+                False if archived else self.workspace_repository.archive_session(session)
+            )
+            if cleanup_enqueued and self.maintenance_scheduler is not None:
+                self.maintenance_scheduler.wake()
+            return {
+                "status": "archived" if archived_now else "already_archived",
+                "mode": "archive",
+                "workspace_id": str(workspace.workspace_id),
+                "session_id": str(session.session_id),
+                "session_name": session.session_name,
+                "cleanup_enqueued": cleanup_enqueued,
+            }
+
+    def reset_session(self, workspace_root: str, session_name: str) -> dict:
+        """Rebuild recent_messages from archived messages and reset context_tokens.
+
+        This is a recovery operation for Sessions whose ``recent_messages``
+        cache contains content that causes provider-side rejection. Archived
+        messages in the ``messages`` table are replayed into ``recent_messages``
+        up to ``RECENT_MESSAGE_LIMIT``, and ``context_tokens`` is reset to 0 so
+        the compression policy evaluates the next turn's input size fresh.
+        """
+        workspace = self.workspace_repository.resolve(workspace_root)
+        found = self._get_existing_session_by_name(workspace, session_name)
+        if found is not None and found[1]:
+            session = found[0]
+            return {
+                "status": "archived",
+                "workspace_id": str(workspace.workspace_id),
+                "session_id": str(session.session_id),
+                "session_name": session.session_name,
+                "recovered_messages": 0,
+            }
+        session, _ = self.workspace_repository.resolve_session(workspace, session_name)
+        with self.lock_registry.get(session.session_id):
+            store = self.state_store_factory()
+            try:
+                count = store.rebuild_recent_messages_from_archive(session)
+            finally:
+                store.close()
+        return {
+            "status": "ok",
+            "workspace_id": str(workspace.workspace_id),
+            "session_id": str(session.session_id),
+            "session_name": session.session_name,
+            "recovered_messages": count,
+        }
+
+    def _enqueue_checkpoint_cleanup(self, session: SessionContext, pending) -> bool:
+        """Queue checkpoint cleanup for a discarded pending execution."""
+        if self.maintenance_repository is None:
+            return False
+        from src.core.maintenance.models import MaintenanceJobSpec
+        from src.core.maintenance.types import (
+            MaintenanceJobType,
+            MaintenancePriority,
+        )
+
+        self.maintenance_repository.enqueue(
+            MaintenanceJobSpec(
+                MaintenanceJobType.CHECKPOINT_CLEANUP,
+                f"checkpoint_cleanup:{pending.execution_id}",
+                str(session.workspace.workspace_id),
+                str(session.session_id),
+                {"checkpoint_thread_id": pending.checkpoint_thread_id},
+                execution_id=pending.execution_id,
+                priority=MaintenancePriority.CHECKPOINT_CLEANUP,
+            )
+        )
+        return True
 
     def close(self) -> None:
         """Stop foreground Turn workers, then stop durable maintenance safely."""
@@ -688,17 +920,23 @@ class AgentTurnService:
                                         StopReason.TURN_ERROR.value,
                                     ),
                                 )
-                            else:
-                                self.execution_repository.pause(
-                                    execution.execution_id,
-                                    ExecutionStatus.PAUSED_ERROR,
-                                    item["data"].get(
-                                        "stop_reason",
-                                        StopReason.TURN_ERROR.value,
-                                    ),
-                                    item["data"].get("message", ""),
-                                    usage=usage,
+                                yield from self._emit_terminal_provider_error(
+                                    session,
+                                    execution,
+                                    run_id,
+                                    item,
                                 )
+                                return
+                            self.execution_repository.pause(
+                                execution.execution_id,
+                                ExecutionStatus.PAUSED_ERROR,
+                                item["data"].get(
+                                    "stop_reason",
+                                    StopReason.TURN_ERROR.value,
+                                ),
+                                item["data"].get("message", ""),
+                                usage=usage,
+                            )
                         terminated = (
                             item["data"].get("error_action") == ErrorAction.TERMINATE
                         )
@@ -749,6 +987,7 @@ class AgentTurnService:
                         graph_steps_used=int(item["data"].get("graph_steps_used", 0)),
                         usage=budget.snapshot(),
                     )
+                    snapshot = budget.snapshot()
                     active_slice_id = None
                     record_trace(
                         TraceDirection.INTERNAL,
@@ -790,6 +1029,7 @@ class AgentTurnService:
                             "maintenance_status": finalization.maintenance_status,
                             "memory_status": finalization.memory_status,
                             "memory_request_explicit": finalization.memory_request_explicit,
+                            "context_tokens": snapshot.get("input_tokens", 0),
                         },
                     }
                     return
@@ -934,6 +1174,113 @@ class AgentTurnService:
                 "Terminal execution released, but checkpoint cleanup could not be queued.",
                 {"execution_id": execution.execution_id},
             )
+
+    def _emit_terminal_provider_error(
+        self,
+        session: SessionContext,
+        execution,
+        run_id: str,
+        item: dict,
+    ) -> Iterator[dict]:
+        """Report a deterministic provider rejection after automatic rollback.
+
+        Content filtering and invalid-request failures are not recoverable
+        execution pauses. The failed input is not committed to Session history,
+        the Session is released immediately, and the user can continue from the
+        last successfully committed turn without calling resume or discard.
+        """
+        message = item["data"].get("message", "The model provider rejected this turn.")
+        failure_stage = item["data"].get("failure_stage", "parent_graph")
+        failure_scope = item["data"].get("failure_scope", "current_turn")
+        failure_source = item["data"].get("failure_source", "agent_turn")
+        user_action = item["data"].get("user_action", "revise_input_and_retry")
+        recovery_note = self._user_failure_explanation(
+            failure_source=failure_source,
+            failure_scope=failure_scope,
+            failure_stage=failure_stage,
+            user_action=user_action,
+        )
+        yield {
+            "event": "token",
+            "data": {
+                "content": message + recovery_note,
+            },
+        }
+        yield {
+            "event": "done",
+            "data": {
+                "run_id": run_id,
+                "status": "terminated",
+                "workspace_id": str(session.workspace.workspace_id),
+                "session_id": str(session.session_id),
+                "session_name": session.session_name,
+                "execution_id": execution.execution_id if execution else None,
+                "stop_reason": item["data"].get(
+                    "stop_reason",
+                    StopReason.TURN_ERROR.value,
+                ),
+                "message": message,
+                "auto_recovered": True,
+                "failed_turn_saved": False,
+                "goal_mode": bool(getattr(execution, "goal_mode", False)),
+                "tool_call_count": 0,
+                "slices_used": 1,
+                "error_category": item["data"].get("error_category"),
+                "error_action": item["data"].get("error_action"),
+                "retryable": item["data"].get("retryable"),
+                "provider": item["data"].get("provider"),
+                "provider_code": item["data"].get("provider_code"),
+                "http_status": item["data"].get("http_status"),
+                "failure_source": failure_source,
+                "failure_stage": failure_stage,
+                "failure_scope": failure_scope,
+                "user_action": item["data"].get("user_action"),
+            },
+        }
+
+    def _user_failure_explanation(
+        self,
+        *,
+        failure_source: str,
+        failure_scope: str,
+        failure_stage: str,
+        user_action: str,
+    ) -> str:
+        """Build a user-facing explanation from structured failure fields."""
+        source_labels = {
+            "agent_turn": "当前这轮前台对话",
+            "maintenance": "后台维护任务",
+            "tool": "工具调用",
+            "telemetry": "事件记录/遥测",
+        }
+        stage_labels = {
+            "parent_model_provider": "父 Agent 调用模型服务商",
+            "parent_graph": "父 Agent 图执行阶段发生异常",
+            "parent_model_or_graph": "父 Agent 模型或图执行阶段发生异常",
+            "context_summary": "后台上下文摘要压缩调用模型失败",
+            "memory_extraction": "后台长期记忆提取调用模型失败",
+            "subagent": "子 Agent 执行阶段失败",
+            "tool_execution": "工具执行阶段失败",
+        }
+        scope_labels = {
+            "current_turn": "只影响当前这一轮请求",
+            "background_job": "只影响后台派生任务，不影响当前对话结果",
+            "execution": "影响当前可恢复 Execution",
+        }
+        action_labels = {
+            "revise_input_and_retry": "请修改输入后继续对话",
+            "resume_later": "稍后可以使用 session resume 恢复",
+            "inspect_status": "请先查看 session status 再决定恢复或丢弃",
+        }
+        lines = [
+            "",
+            f"失败来源：{source_labels.get(failure_source, failure_source)}。",
+            f"LLM 调用位置：{stage_labels.get(failure_stage, failure_stage)}。",
+            f"影响范围：{scope_labels.get(failure_scope, failure_scope)}。",
+            "处理结果：本轮失败输入没有保存，Session 已回到上一轮成功提交的状态。",
+            f"下一步：{action_labels.get(user_action, user_action)}。",
+        ]
+        return "\n".join(lines)
 
     def _stream_unconfigured_turn(
         self,

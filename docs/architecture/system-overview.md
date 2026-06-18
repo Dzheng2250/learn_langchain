@@ -11,7 +11,9 @@
 ```mermaid
 flowchart LR
     User[用户] --> CLI[learn-agent CLI]
+    User --> TUI[learn-agent TUI]
     CLI <-->|TCP + NDJSON + JSON-RPC| Core[learn-agent-core daemon]
+    TUI <-->|TCP + NDJSON + JSON-RPC| Core
 
     Core --> Agent[AgentTurnService]
     Agent --> Runtime[WorkspaceRuntime]
@@ -34,16 +36,25 @@ flowchart LR
 
 ## 2. 进程职责
 
-### CLI 进程
+### CLI / TUI 进程
 
-负责：
+CLI 和 TUI 是 Core daemon 的前端客户端，共享同一套 IPC 协议。它们只负责用户交互层，不触达业务逻辑。
+
+CLI 负责：
 
 - 命令解析、Workspace 发现和用户输入。
 - 读取 daemon token，构造 JSON-RPC 请求。
-- 展示 token、步骤、错误和最终结果。
 - 管理 daemon 的启动、停止与状态。
+- 流式事件终端渲染。
 
-不负责：
+TUI 负责（基于 Textual 框架）：
+
+- 实时流式 token 展示（每个 chunk 到达即显示）。
+- 状态栏展示连接、session 和上下文用量（`ctx: 3K/128K (2%)`）。
+- 暂停 execution 检测与恢复（`/resume` / `/discard`）。
+- Goal 模式任务规划展示。
+
+二者都不负责：
 
 - 直接调用模型或工具。
 - 直接读取或修改 Session 数据库。
@@ -65,21 +76,21 @@ Core daemon 是唯一允许执行 Agent 与工具的进程。
 ```mermaid
 sequenceDiagram
     participant U as User
-    participant C as CLI
+    participant F as CLI / TUI
     participant R as RpcRouter
     participant A as AgentTurnService
     participant G as LangGraph / Tools
     participant S as state.db
     participant M as Maintenance
 
-    U->>C: 输入消息
-    C->>R: agent.chat
+    U->>F: 输入消息
+    F->>R: agent.chat
     R->>A: 已验证 Workspace + Session + message
     A->>S: 加载 Session、近期上下文和记忆
     A->>G: 执行一个或多个受预算 Slice
-    G-->>C: token / step / error 通知
+    G-->>F: token / step / error 通知
     A->>S: 原子提交完整消息和 Execution 状态
-    A-->>C: done + 最终响应
+    A-->>F: done + 最终响应
     A->>M: 唤醒后台任务
     M->>S: 摘要、记忆提取或状态写回
 ```
@@ -143,6 +154,7 @@ Agent 由 LangGraph 控制模型与工具节点循环；应用层负责并发、
 |---|---|
 | Agent 具体调用哪些函数 | [Agent 执行架构](/docs/architecture/agent-execution-architecture.md) |
 | CLI 与 Core 如何解耦 | [CLI 架构](/docs/architecture/cli-architecture.md) |
+| TUI 如何实现流式展示 | [TUI 架构](/docs/architecture/tui-architecture.md) |
 | Core 如何组装与关闭组件 | [Core 架构](/docs/architecture/core-architecture.md) |
 | 数据库表与事务如何工作 | [本地数据库与一致性](/docs/architecture/database-state-and-consistency.md) |
 | 长任务如何暂停恢复 | [可恢复执行](/docs/architecture/resumable-execution.md) |

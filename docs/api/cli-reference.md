@@ -12,9 +12,12 @@
 | `learn-agent stop` | 请求 Core 优雅关闭 | 是 |
 | `learn-agent status` | 检查 daemon 状态 | 否 |
 | `learn-agent chat` | 交互式或单次 Agent 对话 | 是 |
+| `learn-agent tui` | 启动 TUI 终端界面 | 是 |
 | `learn-agent session status` | 查询 Session 和待恢复任务 | 是 |
 | `learn-agent session resume` | 恢复待执行任务 | 是 |
 | `learn-agent session discard` | 丢弃待恢复任务 | 是 |
+| `learn-agent session reset` | 从归档消息重建 Session 缓存 | 是 |
+| `learn-agent session delete` | 归档或硬删除 Session | 是 |
 | `learn-agent trace` | 查询本地系统 Trace | 否 |
 
 `learn-agent-core` 是管理与调试入口，不用于日常对话：
@@ -83,11 +86,17 @@ learn-agent session status --session default
 learn-agent session resume --session default
 learn-agent session resume --session default --instruction "继续，但只修改测试"
 learn-agent session discard --session default
+learn-agent session reset --session default
+learn-agent session delete --session old-session
+learn-agent session delete --session old-session --hard
 ```
 
 - `status` 返回 pending Execution、checkpoint 状态和维护任务计数。
 - `resume` 只适用于可恢复 Execution。
 - `discard` 释放 Session，但不会删除已经提交的历史消息。
+- `reset` 从 `messages` 表的归档消息重建 `sessions.recent_messages` 缓存，同时将 `context_tokens`
+  重置为 0。用于解决 `recent_messages` 中包含导致 LLM 供应商拒绝请求的内容时的 session "卡死"问题。
+- `delete` 默认归档 Session，使其不可继续使用但保留历史；`--hard` 才会永久删除 Session 及其本地关联数据。
 
 ## Trace 查询
 
@@ -103,6 +112,49 @@ learn-agent trace --raw --limit 50
 ```
 
 Trace 命令直接读取本地 JSONL 文件，不要求 daemon 运行。多个过滤条件采用 AND 关系。
+
+## TUI 终端界面
+
+```shell
+learn-agent tui
+```
+
+TUI（Terminal User Interface，终端用户界面）是一个基于 Textual 框架的富文本交互界面，
+相比纯命令行模式提供更好的视觉反馈和操作体验。
+
+### 界面布局
+
+TUI 启动后分为三个区域：
+
+- **顶部状态栏**：显示 Core daemon 连接状态（绿色=已连接，红色=断开），
+  当前 Session（会话）名称，以及 goal 模式 / paused（暂停）标记。
+- **中间事件日志**：显示 Agent 的流式输出。不同事件类型用不同颜色标记 —
+  token（LLM 生成的文本片段）直接流式展示，工具调用用绿色，错误用红色，暂停用黄色。
+- **底部输入区**：支持多行输入，`Ctrl+Enter` 提交，`Ctrl+D` 退出。
+
+### 快捷键与命令
+
+| 操作 | 方式 | 说明 |
+|---|---|---|
+| 发送消息 | 输入文本后 `Ctrl+Enter` | 发送到当前 Session |
+| 目标模式 | `/goal <消息>` | 发送一个复杂目标，Agent 会自主拆解为多步骤计划 |
+| 恢复执行 | `/resume` | 恢复之前因预算限制暂停的 Execution（执行任务） |
+| 丢弃任务 | `/discard` | 丢弃暂停的 Execution |
+| 切换会话 | `/session <名称>` | 切换到指定 Session |
+| 清屏 | `/clear` | 清除当前日志 |
+| 帮助 | `/help` | 显示所有命令 |
+| 退出 | `Ctrl+D` | 退出 TUI |
+
+### 与 CLI 聊天模式的关系
+
+TUI 和 `learn-agent chat` 使用相同的 JSON-RPC（基于 JSON 的远程过程调用）协议
+和 daemon 认证机制，收到的事件流完全一致。二者的区别仅在于展示方式：
+CLI 是纯文本输出，TUI 是结构化彩色界面。
+
+TUI 断开连接后不会自动重试 `agent.chat`（避免重复执行），而是通过
+`session.status` 检查是否有可恢复的 paused execution，让你决定是否恢复。
+
+详细接入指南见 [TUI 与其他前端接入指南](/docs/api/tui-client-guide.md)。
 
 ## Core 管理命令
 

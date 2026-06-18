@@ -27,6 +27,7 @@ BASH_PATH = "bash"
 # Shared OpenAI-compatible model configuration. The generic LEARN_AGENT names
 # take precedence; ALIYUN aliases remain only for backward compatibility.
 MODEL = env_str("LEARN_AGENT_MODEL", "deepseek-v4-flash")
+MODEL_CONTEXT_LIMIT = env_int("LEARN_AGENT_MODEL_CONTEXT_LIMIT", 128_000)
 LLM_API_KEY = env_str("LEARN_AGENT_LLM_API_KEY", env_str("ALIYUN_API_KEY", ""))
 LLM_BASE_URL = env_str("LEARN_AGENT_LLM_BASE_URL", env_str("ALIYUN_BASE_URL", ""))
 LLM_STREAM_USAGE_ENABLED = env_bool("LEARN_AGENT_LLM_STREAM_USAGE_ENABLED", True)
@@ -63,8 +64,10 @@ SKILL_FILE_NAME = "SKILL.md"
 SKILL_READ_OUTPUT_LIMIT = 8000
 
 RECENT_MESSAGE_LIMIT = 12
-# Compression starts when either message count or character count crosses its
-# trigger; old messages are summarized while recent messages remain verbatim.
+# Compression starts when token count, message count, or character count
+# crosses its trigger; old messages are summarized while recent messages
+# remain verbatim.  Token-based compression is the primary path.
+SUMMARY_TRIGGER_TOKEN_LIMIT = env_int("LEARN_AGENT_SUMMARY_TRIGGER_TOKEN_LIMIT", 5_000)
 SUMMARY_TRIGGER_MESSAGE_LIMIT = 40
 SUMMARY_TRIGGER_CHAR_LIMIT = 24000
 SESSION_SUMMARY_MAX_CHARS = 4000

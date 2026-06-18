@@ -13,6 +13,7 @@ from src.core.agent.coordinator import PreparedTurn
 from src.core.context.models import AgentContextState
 from src.core.errors import ErrorCategory
 from src.core.llm.provider import LlmConfigurationStatus
+from src.core.maintenance.repository import MaintenanceRepository
 from src.config.settings import CORE_AGENT_WORKERS
 from src.core.agent.service import AgentTurnService, SessionLockRegistry
 from src.core.state import ExecutionRepository, LocalStateDatabase, LocalStateStore
@@ -388,6 +389,35 @@ class GoalModeRoutingTest(unittest.TestCase):
         self.assertIn("session resume", second[-1]["data"]["message"])
         self.assertTrue(second[-1]["data"]["goal_mode"])
 
+    def test_resume_without_pending_execution_returns_idle(self):
+        service = self._service(Mock(graph=Mock(), goal_graph=Mock()))
+        workspace_root = str(Path("tests/fixtures/workspace_a").resolve())
+        try:
+            events = list(
+                service.stream_resume(
+                    workspace_root,
+                    "idle-resume",
+                    run_id="idle-resume-run",
+                )
+            )
+        finally:
+            service.close()
+
+        self.assertEqual("done", events[-1]["event"])
+        self.assertEqual("idle", events[-1]["data"]["status"])
+        self.assertIn("no pending execution", events[-1]["data"]["message"])
+
+    def test_discard_without_pending_execution_returns_idle(self):
+        service = self._service(Mock(graph=Mock(), goal_graph=Mock()))
+        workspace_root = str(Path("tests/fixtures/workspace_a").resolve())
+        try:
+            result = service.discard_pending(workspace_root, "idle-discard")
+        finally:
+            service.close()
+
+        self.assertEqual("idle", result["status"])
+        self.assertIn("no pending execution", result["message"])
+
     def test_resume_uses_goal_graph_for_goal_execution(self):
         class RecordingGraph:
             def __init__(self, name):
@@ -476,17 +506,35 @@ class ProviderErrorResolutionIntegrationTest(unittest.TestCase):
         finally:
             service.close()
 
-        error = events[-1]["data"]
-        self.assertEqual("error", events[-1]["event"])
-        self.assertEqual(ErrorCategory.CONTENT_REJECTED, error["error_category"])
-        self.assertEqual("terminate", error["error_action"])
-        self.assertNotIn("data_inspection_failed", error["message"])
+        self.assertEqual(["step", "token", "done"], [event["event"] for event in events])
+        self.assertIn(
+            "失败来源：当前这轮前台对话",
+            events[1]["data"]["content"],
+        )
+        self.assertIn(
+            "LLM 调用位置：父 Agent 调用模型服务商",
+            events[1]["data"]["content"],
+        )
+        terminal = events[-1]["data"]
+        self.assertEqual("terminated", terminal["status"])
+        self.assertTrue(terminal["auto_recovered"])
+        self.assertFalse(terminal["failed_turn_saved"])
+        self.assertEqual(ErrorCategory.CONTENT_REJECTED, terminal["error_category"])
+        self.assertEqual("terminate", terminal["error_action"])
+        self.assertEqual("agent_turn", terminal["failure_source"])
+        self.assertEqual("parent_model_provider", terminal["failure_stage"])
+        self.assertEqual("current_turn", terminal["failure_scope"])
+        self.assertEqual("revise_input_and_retry", terminal["user_action"])
+        self.assertNotIn("data_inspection_failed", terminal["message"])
 
         workspace = self.workspace_repository.resolve(
             str(Path("tests/fixtures/workspace_a").resolve())
         )
         session, _ = self.workspace_repository.resolve_session(workspace, "default")
         self.assertIsNone(self.execution_repository.get_attached(session))
+        state, turn_index = LocalStateStore(self.database).load_session(session)
+        self.assertEqual(0, turn_index)
+        self.assertEqual([], state.recent_messages)
         next_execution = self.execution_repository.begin(session, "safe input")
         self.assertIsNotNone(next_execution)
 
@@ -536,6 +584,112 @@ class ProviderErrorResolutionIntegrationTest(unittest.TestCase):
         pending = self.execution_repository.get_pending(session)
         self.assertIsNotNone(pending)
         self.assertEqual("paused_error", pending.status)
+
+    def test_session_status_reports_recent_background_maintenance_failures(self):
+        workspace = self.workspace_repository.resolve(
+            str(Path("tests/fixtures/workspace_a").resolve())
+        )
+        session, _ = self.workspace_repository.resolve_session(workspace, "default")
+        with self.database.transaction() as conn:
+            conn.execute(
+                """
+                INSERT INTO maintenance_jobs(
+                    job_id, workspace_id, session_id, job_type, dedupe_key,
+                    status, payload, attempts, max_attempts, last_error
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    "job-memory-failed",
+                    str(workspace.workspace_id),
+                    str(session.session_id),
+                    "memory_extract",
+                    "memory_extract:test",
+                    "failed",
+                    "{}",
+                    3,
+                    3,
+                    "provider rejected background memory extraction",
+                ),
+            )
+
+        service = AgentTurnService(
+            workspace_repository=self.workspace_repository,
+            runtime_registry=Mock(),
+            state_store_factory=lambda: LocalStateStore(self.database),
+            execution_repository=self.execution_repository,
+            maintenance_repository=MaintenanceRepository(self.database),
+        )
+        try:
+            status = service.session_status(
+                str(Path("tests/fixtures/workspace_a").resolve()),
+                "default",
+            )
+        finally:
+            service.close()
+
+        self.assertEqual(1, status["maintenance"]["failed"])
+        self.assertEqual(
+            "memory_extract",
+            status["maintenance"]["recent_failures"][0]["job_type"],
+        )
+        self.assertIn(
+            "background memory extraction",
+            status["maintenance"]["recent_failures"][0]["last_error"],
+        )
+
+    def test_session_delete_archives_by_default_and_hard_delete_removes_rows(self):
+        workspace_root = str(Path("tests/fixtures/workspace_a").resolve())
+        workspace = self.workspace_repository.resolve(workspace_root)
+        session, _ = self.workspace_repository.resolve_session(workspace, "delete-me")
+        with self.database.transaction() as conn:
+            conn.execute(
+                """
+                INSERT INTO messages(
+                    message_id, workspace_id, session_id, role, message_type,
+                    content, raw, turn_index
+                ) VALUES (?, ?, ?, 'human', 'HumanMessage', 'hello', '{}', 1)
+                """,
+                (
+                    "message-delete-me",
+                    str(workspace.workspace_id),
+                    str(session.session_id),
+                ),
+            )
+        service = AgentTurnService(
+            workspace_repository=self.workspace_repository,
+            runtime_registry=Mock(),
+            state_store_factory=lambda: LocalStateStore(self.database),
+            execution_repository=self.execution_repository,
+        )
+        try:
+            archived = service.delete_session(workspace_root, "delete-me")
+            blocked = list(
+                service.stream_turn(
+                    workspace_root,
+                    "delete-me",
+                    "hello again",
+                    run_id="run-archived",
+                )
+            )
+            deleted = service.delete_session(
+                workspace_root,
+                "delete-me",
+                hard_delete=True,
+            )
+        finally:
+            service.close()
+
+        self.assertEqual("archived", archived["status"])
+        self.assertEqual("archived", blocked[-1]["data"]["status"])
+        self.assertEqual("deleted", deleted["status"])
+        with self.database.connect() as conn:
+            self.assertEqual(
+                0,
+                conn.execute(
+                    "SELECT count(*) FROM messages WHERE session_id=?",
+                    (str(session.session_id),),
+                ).fetchone()[0],
+            )
 
 
 if __name__ == "__main__":

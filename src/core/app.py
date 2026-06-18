@@ -130,11 +130,7 @@ class CoreApp:
                     include_trace_sink=self._trace_recorder is not None,
                 )
             base_model_provider = OpenAICompatibleProvider()
-            model_provider = (
-                TracingModelProvider(base_model_provider)
-                if self._trace_recorder is not None
-                else base_model_provider
-            )
+            model_provider = TracingModelProvider(base_model_provider)
             run_limits = RunLimits()
             workspace_repository = LocalWorkspaceRepository(self._state_database)
             execution_repository = ExecutionRepository(self._state_database)

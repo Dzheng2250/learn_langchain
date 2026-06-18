@@ -40,6 +40,10 @@ class TurnFinalizer:
         """Commit a completed Turn without invoking LLM-backed maintenance."""
         messages = self.context_manager.extract_turn_messages(previous_state, final_messages)
         fast_state = self.context_manager.build_fast_state(previous_state, final_messages)
+        # Update context_tokens with this turn's actual LLM input_tokens so
+        # the maintenance handler and next session.status see the real value.
+        if usage and usage.get("input_tokens"):
+            fast_state.context_tokens = int(usage["input_tokens"])
         workspace_id = str(session.workspace.workspace_id)
         session_id = str(session.session_id)
         jobs = [

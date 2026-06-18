@@ -188,7 +188,40 @@ flowchart LR
 - `messages.execution_id`：能追踪一条消息由哪次 Execution 产生。
 - `sessions.recent_messages`：只保存下一轮需要的近期原文，不等同于完整历史。
 
-### 3.3 短期上下文与摘要字段
+### 3.3 Session 生命周期：可用、归档与硬删除
+
+Session 不是只有“存在”和“不存在”两种状态。当前实现区分两种删除语义：
+
+| 操作 | 数据库行为 | 适用场景 |
+|---|---|---|
+| 归档 Session | 设置 `sessions.archived_at`，清除 `pending_execution_id`，保留消息、Execution、任务计划和维护记录 | 默认删除方式；不再继续使用这个 Session，但仍希望保留审计与历史 |
+| 硬删除 Session | 删除 `sessions` 行，并通过外键级联删除关联数据 | 明确不再需要该 Session 的所有本地历史 |
+
+`archived_at` 是软删除标记。它的作用不是隐藏一条消息，而是让整个 Session 变为不可继续对话的历史记录：
+
+- `chat`、`resume` 和 `discard` 不会继续操作已归档 Session。
+- `session.status` 会返回 `status=archived`，不会自动创建同名新 Session。
+- 归档不会删除 `messages`、`executions`、`execution_tasks` 或 `maintenance_jobs`，因此仍可用于审计、排障和未来历史查看。
+- 如果归档前存在待恢复 Execution，Core 会先将其标记为已丢弃，并把 checkpoint 清理任务写入 `maintenance_jobs`。
+
+硬删除才是真正的数据清除。删除 `sessions` 行后，数据库外键会级联删除：
+
+- `branches`
+- `messages`
+- `executions`
+- `execution_slices`
+- `execution_tasks`
+- `execution_task_dependencies`
+- 绑定该 Session 的 `maintenance_jobs`
+
+硬删除还会尽力删除对应的 LangGraph checkpoint thread。checkpoint 位于独立的 `checkpoints.db`，不属于同一个 SQLite
+事务；如果 checkpoint 文件清理失败，`state.db` 中的 Session 删除仍然以本地业务事实为准。这一点与本项目的
+Saga / 恢复协调原则一致：跨数据库清理是可重试的辅助动作，不应反过来阻止权威业务状态变更。
+
+设计上默认使用归档而不是硬删除，是为了避免误操作导致无法追溯。只有用户明确传入 `hard_delete=true` 或 CLI
+`--hard` 时，系统才执行不可恢复的数据删除。
+
+### 3.4 短期上下文与摘要字段
 
 `sessions` 中与上下文有关的字段：
 
@@ -199,6 +232,7 @@ flowchart LR
 | `turn_index` | 已成功提交的最后一轮编号 |
 | `summary_through_turn` | 当前摘要已经覆盖到哪一轮 |
 | `version` | Session 发生过多少次状态更新，供诊断和未来并发控制使用 |
+| `archived_at` | 为空表示 Session 可继续使用；非空表示已归档，只可查询状态，不可继续对话 |
 
 `summary_through_turn` 是摘要 CAS 的比较边界。例如：
 
@@ -209,7 +243,7 @@ flowchart LR
 任务 A 写回时仍要求数据库值为 10，因此更新失败，不会覆盖任务 B
 ```
 
-### 3.4 可恢复执行
+### 3.5 可恢复执行
 
 | 表 | 作用 |
 |---|---|
@@ -237,7 +271,7 @@ uninitialized -> available -> cleanup_pending -> cleaned
 
 业务状态和 checkpoint 状态分开，是因为“任务是否完成”和“断点文件是否已清理”是两个不同事实。
 
-### 3.5 长期记忆
+### 3.6 长期记忆
 
 | 表 | 作用 |
 |---|---|
@@ -247,7 +281,7 @@ uninitialized -> available -> cleanup_pending -> cleaned
 `memory_sources` 是多对多关系。一条记忆可能由多条消息支持，一条消息也可能支持多条记忆。来源关系
 用于追踪和审计，不代表每次加载记忆都要加载所有来源消息。
 
-### 3.6 后台维护与投影
+### 3.7 后台维护与投影
 
 | 表 | 作用 | 当前状态 |
 |---|---|---|

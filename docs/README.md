@@ -37,6 +37,7 @@
 - [系统架构总览](/docs/architecture/system-overview.md)
 - [Core 架构](/docs/architecture/core-architecture.md)
 - [CLI 架构](/docs/architecture/cli-architecture.md)
+- [TUI 架构](/docs/architecture/tui-architecture.md)
 - [Agent 执行架构](/docs/architecture/agent-execution-architecture.md)
 - [本地数据库与一致性](/docs/architecture/database-state-and-consistency.md)
 - [安全模型](/docs/architecture/security-model.md)

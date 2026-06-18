@@ -112,7 +112,33 @@ http_status
 error_category
 retryable
 error_action
+failure_source
+failure_scope
+failure_stage
+user_action
 ```
+
+其中 `failure_*` 字段不是服务商原始字段，而是 Core 补充的定位信息：
+
+| 字段 | 设计目的 |
+|---|---|
+| `failure_source` | 告诉前端是哪个系统失败，例如当前 Agent Turn、维护任务或工具链 |
+| `failure_scope` | 告诉前端失败影响范围，例如只影响当前 Turn，还是留下了可恢复 Execution |
+| `failure_stage` | 告诉前端失败发生在哪个阶段，例如父 Agent 模型调用、子 Agent、摘要或记忆提取 |
+| `user_action` | 给前端一个稳定的动作建议，避免解析自然语言错误消息 |
+
+当前前台对话链路使用：
+
+```text
+failure_source = agent_turn
+failure_scope = current_turn
+failure_stage = parent_model_provider
+```
+
+后台维护链路，例如上下文摘要和长期记忆提取，不会通过当前请求的 `agent.event` 报告失败。它们写入
+`maintenance_jobs.last_error`，并通过 `session.status.maintenance.failed` 和
+`session.status.maintenance.recent_failures` 暴露数量与最近失败任务类型。这样可以保证普通对话不会
+因为后台派生任务失败而被误判为当前 Turn 失败。
 
 ## 5. 如何接入新服务商
 
@@ -148,6 +174,8 @@ handler = ProviderErrorHandler(
 
 - 当前不会自动重试临时错误，只会暂停并允许显式 `session resume`。
 - 未知错误采用保守暂停策略。
+- 当前对话链路会向前端暴露 `failure_source/failure_scope/failure_stage/user_action`；后台维护任务通过
+  `session.status.maintenance.recent_failures` 返回最近失败任务的 `job_type` 和脱敏错误摘要。
 - 不可重试错误会脱敏 `executions.original_input`，但已经在更早成功 Turn 中
   持久化的历史消息、摘要或长期记忆不会被自动删除。
 - 若服务商因已有 Session 上下文持续拒绝请求，仍需要后续实现显式的

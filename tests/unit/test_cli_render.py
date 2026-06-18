@@ -176,6 +176,26 @@ class AgentEventRendererTest(unittest.TestCase):
         self.assertIn("[execution_paused: budget_limit]", output.getvalue())
         self.assertTrue(renderer.done_announced)
 
+    def test_terminated_done_event_renders_recovery_marker(self):
+        output = io.StringIO()
+        renderer = AgentEventRenderer()
+        with redirect_stdout(output):
+            renderer.render(
+                {
+                    "event": "done",
+                    "data": {
+                        "status": "terminated",
+                        "auto_recovered": True,
+                        "failure_source": "agent_turn",
+                        "failure_scope": "current_turn",
+                        "failure_stage": "parent_model_provider",
+                    },
+                }
+            )
+
+        self.assertEqual("", output.getvalue())
+        self.assertTrue(renderer.done_announced)
+
     def test_error_event_is_recorded_but_not_rendered_immediately(self):
         output = io.StringIO()
         renderer = AgentEventRenderer()

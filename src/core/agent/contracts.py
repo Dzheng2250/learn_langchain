@@ -50,6 +50,18 @@ class AgentTurnRunner(Protocol):
     def discard_pending(self, workspace_root: str, session_name: str) -> dict:
         """Discard the Session's pending execution."""
 
+    def delete_session(self, workspace_root: str, session_name: str, *, hard_delete: bool = False) -> dict:
+        """Archive or permanently delete one Session."""
+
+    def reset_session(self, workspace_root: str, session_name: str) -> dict:
+        """Rebuild recent_messages from archived message history.
+
+        This recovers a Session whose ``recent_messages`` cache contains stale
+        or provider-rejected content without destroying the Session or its
+        archived message history. ``context_tokens`` is reset to 0 so the
+        compression policy will re-evaluate the next context boundary.
+        """
+
 
 class ManagedAgentService(AgentTurnRunner, Protocol):
     """Turn runner whose durable dependencies have an explicit lifecycle."""

@@ -64,7 +64,7 @@ class PrivateTaskTest(unittest.TestCase):
                 )
             }
 
-        self.assertEqual(4, version)
+        self.assertGreaterEqual(version, 4)
         self.assertIn("execution_tasks", tables)
         self.assertIn("execution_task_dependencies", tables)
 

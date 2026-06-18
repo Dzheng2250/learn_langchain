@@ -13,6 +13,7 @@ from src.config.settings import (
     MEMORY_MIN_IMPORTANCE,
     MEMORY_RETRIEVAL_LIMIT,
     POSTGRES_PROJECTION_ENABLED,
+    RECENT_MESSAGE_LIMIT,
 )
 from src.core.context.models import AgentContextState
 from src.core.memory.extractor import MemoryCandidateExtractor
@@ -53,7 +54,7 @@ class LocalStateStore:
         with self.database.connect() as conn:
             row = conn.execute(
                 """
-                SELECT summary, recent_messages, turn_index FROM sessions
+                SELECT summary, recent_messages, context_tokens, turn_index FROM sessions
                 WHERE workspace_id = ? AND session_id = ?
                 """,
                 (str(session.workspace.workspace_id), str(session.session_id)),
@@ -61,7 +62,14 @@ class LocalStateStore:
         if not row:
             raise RuntimeError("Resolved session disappeared before it could be loaded.")
         recent = json.loads(row["recent_messages"] or "[]")
-        return AgentContextState(row["summary"] or "", messages_from_dict(recent)), int(row["turn_index"])
+        return (
+            AgentContextState(
+                row["summary"] or "",
+                messages_from_dict(recent),
+                context_tokens=int(row["context_tokens"] or 0),
+            ),
+            int(row["turn_index"]),
+        )
 
     def save_session(self, session: SessionContext, state: AgentContextState, turn_index: int) -> None:
         with self.database.transaction() as conn:
@@ -130,12 +138,13 @@ class LocalStateStore:
         recent = json.dumps(messages_to_dict(state.recent_messages), ensure_ascii=False, default=str)
         cur = conn.execute(
             """
-            UPDATE sessions SET recent_messages=?, turn_index=?,
+            UPDATE sessions SET recent_messages=?, context_tokens=?, turn_index=?,
                 version=version + 1, updated_at=CURRENT_TIMESTAMP
             WHERE workspace_id=? AND session_id=?
             """,
             (
                 recent,
+                state.context_tokens,
                 turn_index,
                 str(session.workspace.workspace_id),
                 str(session.session_id),
@@ -143,6 +152,52 @@ class LocalStateStore:
         )
         if cur.rowcount != 1:
             raise RuntimeError("Fast Session context update did not affect exactly one row.")
+
+    def rebuild_recent_messages_from_archive(self, session: SessionContext) -> int:
+        """Rebuild ``recent_messages`` from archived message history.
+
+        Loads the most recent ``RECENT_MESSAGE_LIMIT`` messages from the
+        ``messages`` table, deserialises their ``raw`` JSON via
+        ``messages_from_dict``, and writes them back into the session row.
+        ``context_tokens`` is reset to 0 so the next compression decision is
+        based on fresh token estimates.
+
+        Returns the number of recovered messages.
+        """
+        with self.database.connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT raw FROM messages
+                WHERE workspace_id=? AND session_id=?
+                ORDER BY created_at DESC, message_id DESC
+                LIMIT ?
+                """,
+                (
+                    str(session.workspace.workspace_id),
+                    str(session.session_id),
+                    RECENT_MESSAGE_LIMIT,
+                ),
+            ).fetchall()
+        recovered = messages_from_dict(
+            [json.loads(row["raw"]) for row in reversed(rows)]
+        )
+        with self.database.transaction() as conn:
+            recent = json.dumps(
+                messages_to_dict(recovered), ensure_ascii=False, default=str
+            )
+            conn.execute(
+                """
+                UPDATE sessions SET recent_messages=?, context_tokens=0,
+                    version=version + 1, updated_at=CURRENT_TIMESTAMP
+                WHERE workspace_id=? AND session_id=?
+                """,
+                (
+                    recent,
+                    str(session.workspace.workspace_id),
+                    str(session.session_id),
+                ),
+            )
+        return len(recovered)
 
     def load_turn_messages(self, session: SessionContext, turn_index: int) -> tuple[list, list[str]]:
         """Load one committed Turn for a durable maintenance handler."""
@@ -443,13 +498,14 @@ class LocalStateStore:
         recent = json.dumps(messages_to_dict(state.recent_messages), ensure_ascii=False, default=str)
         cur = conn.execute(
             """
-            UPDATE sessions SET summary = ?, recent_messages = ?, turn_index = ?,
-                version = version + 1, updated_at = CURRENT_TIMESTAMP
+            UPDATE sessions SET summary = ?, recent_messages = ?, context_tokens = ?,
+                turn_index = ?, version = version + 1, updated_at = CURRENT_TIMESTAMP
             WHERE workspace_id = ? AND session_id = ?
             """,
             (
                 state.summary,
                 recent,
+                state.context_tokens,
                 turn_index,
                 str(session.workspace.workspace_id),
                 str(session.session_id),

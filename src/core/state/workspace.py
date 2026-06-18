@@ -47,12 +47,17 @@ class LocalWorkspaceRepository:
         with self.database.transaction() as conn:
             row = conn.execute(
                 """
-                SELECT session_id, turn_index FROM sessions
+                SELECT session_id, turn_index, archived_at FROM sessions
                 WHERE workspace_id = ? AND session_name = ?
                 """,
                 (str(workspace.workspace_id), normalized),
             ).fetchone()
             if row:
+                if row["archived_at"]:
+                    raise RuntimeError(
+                        f"Session '{normalized}' is archived. Use a different session name "
+                        "or hard-delete it before recreating it."
+                    )
                 session_id = row["session_id"]
                 turn_index = int(row["turn_index"])
             else:
@@ -74,6 +79,72 @@ class LocalWorkspaceRepository:
                 )
                 turn_index = 0
         return SessionContext(UUID(session_id), normalized, workspace), turn_index == 0
+
+    def get_session_by_name(
+        self,
+        workspace: WorkspaceContext,
+        session_name: str,
+        *,
+        include_archived: bool = False,
+    ) -> tuple[SessionContext, bool] | None:
+        """Return an existing Workspace-local Session without creating it."""
+        normalized = session_name.strip()
+        if not normalized:
+            raise ValueError("session_name must not be empty")
+        with self.database.connect() as conn:
+            row = conn.execute(
+                """
+                SELECT session_id, archived_at FROM sessions
+                WHERE workspace_id = ? AND session_name = ?
+                """,
+                (str(workspace.workspace_id), normalized),
+            ).fetchone()
+        if not row:
+            return None
+        archived = bool(row["archived_at"])
+        if archived and not include_archived:
+            return None
+        return SessionContext(UUID(row["session_id"]), normalized, workspace), archived
+
+    def archive_session(self, session: SessionContext) -> bool:
+        """Mark a Session unavailable while retaining its audit history."""
+        with self.database.transaction() as conn:
+            cur = conn.execute(
+                """
+                UPDATE sessions
+                SET archived_at = COALESCE(archived_at, CURRENT_TIMESTAMP),
+                    pending_execution_id = NULL,
+                    updated_at = CURRENT_TIMESTAMP
+                WHERE workspace_id = ? AND session_id = ?
+                  AND archived_at IS NULL
+                """,
+                (str(session.workspace.workspace_id), str(session.session_id)),
+            )
+        return cur.rowcount == 1
+
+    def delete_session(self, session: SessionContext) -> bool:
+        """Permanently delete a Session and rows covered by local foreign keys."""
+        with self.database.transaction() as conn:
+            cur = conn.execute(
+                """
+                DELETE FROM sessions
+                WHERE workspace_id = ? AND session_id = ?
+                """,
+                (str(session.workspace.workspace_id), str(session.session_id)),
+            )
+        return cur.rowcount == 1
+
+    def checkpoint_threads_for_session(self, session: SessionContext) -> list[str]:
+        """Return checkpoint thread IDs owned by one Session."""
+        with self.database.connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT checkpoint_thread_id FROM executions
+                WHERE workspace_id = ? AND session_id = ?
+                """,
+                (str(session.workspace.workspace_id), str(session.session_id)),
+            ).fetchall()
+        return [row["checkpoint_thread_id"] for row in rows]
 
     def pending_execution(self, session: SessionContext):
         """Return the Session's recoverable execution, if one exists."""

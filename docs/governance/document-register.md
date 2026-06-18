@@ -16,6 +16,7 @@
 | 已知限制与路线图 | `/docs/product/roadmap-and-known-limitations.md` |
 | 系统整体结构 | `/docs/architecture/system-overview.md` |
 | CLI 内部架构 | `/docs/architecture/cli-architecture.md` |
+| TUI 内部架构 | `/docs/architecture/tui-architecture.md` |
 | Agent 执行调用链 | `/docs/architecture/agent-execution-architecture.md` |
 | 本地状态与数据库一致性 | `/docs/architecture/database-state-and-consistency.md` |
 | 私有任务规划 | `/docs/architecture/private-task-planning.md` |

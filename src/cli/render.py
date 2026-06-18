@@ -170,6 +170,10 @@ class AgentEventRenderer:
             elif status == "ok" and (self.goal_mode or data.get("goal_mode")):
                 print("\n[goal_completed]", flush=True)
                 self.done_announced = True
+            elif status == "terminated" and data.get("auto_recovered"):
+                # The user-facing explanation is streamed as token text. The
+                # done payload keeps structured fields for TUI/debug clients.
+                self.done_announced = True
         elif event == "error":
             # The final JSON-RPC response carries the same failure. Record it
             # here but render once from chat_once to avoid duplicate terminal

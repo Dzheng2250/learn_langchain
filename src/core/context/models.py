@@ -9,3 +9,5 @@ class AgentContextState:
 
     summary: str = ""
     recent_messages: list = field(default_factory=list)
+    context_tokens: int = 0
+    """Estimated token count of the current context (summary + recent + system)."""
