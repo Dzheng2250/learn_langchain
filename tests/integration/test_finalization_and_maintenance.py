@@ -9,6 +9,7 @@ from langchain_core.messages import AIMessage, HumanMessage
 
 from src.core.context.manager import AgentContextManager
 from src.core.context.models import AgentContextState
+from src.core.adapters.sqlite import SQLiteStateUnitOfWorkFactory
 from src.core.finalization import CompletedTurnCommitter, TurnFinalizer
 from src.core.finalization.models import CompletedTurn
 from src.core.maintenance import (
@@ -19,7 +20,7 @@ from src.core.maintenance import (
 )
 from src.core.maintenance.handlers import ContextSummaryHandler
 from src.core.state import ExecutionRepository, LocalStateDatabase, LocalStateStore
-from src.core.state.migrations import apply_local_migrations
+from src.core.state.migrations import LATEST_SCHEMA_VERSION, apply_local_migrations
 from src.core.state.workspace import LocalWorkspaceRepository
 from src.core.agent.service import AgentTurnService
 
@@ -45,9 +46,11 @@ class FinalizationTest(unittest.TestCase):
         self.maintenance = MaintenanceRepository(self.database)
         self.scheduler = WakeOnlyScheduler()
         self.committer = CompletedTurnCommitter(
-            self.database,
-            self.executions,
-            self.maintenance,
+            SQLiteStateUnitOfWorkFactory(
+                self.database,
+                self.executions,
+                self.maintenance,
+            ),
         )
         self.finalizer = TurnFinalizer(
             AgentContextManager(),
@@ -117,9 +120,11 @@ class FinalizationTest(unittest.TestCase):
                 raise RuntimeError("injected enqueue failure")
 
         committer = CompletedTurnCommitter(
-            self.database,
-            self.executions,
-            FailingMaintenanceRepository(self.database),
+            SQLiteStateUnitOfWorkFactory(
+                self.database,
+                self.executions,
+                FailingMaintenanceRepository(self.database),
+            ),
         )
         completed = CompletedTurn(
             self.session,
@@ -690,7 +695,8 @@ class LocalSchemaMigrationTest(unittest.TestCase):
         database.initialize()
         with database.transaction() as conn:
             conn.execute(
-                "INSERT INTO local_schema_migrations(version, name) VALUES (6, 'future')"
+                "INSERT INTO local_schema_migrations(version, name) VALUES (?, 'future')",
+                (LATEST_SCHEMA_VERSION + 1,),
             )
 
         with self.assertRaisesRegex(RuntimeError, "newer"):
@@ -725,7 +731,7 @@ class LocalSchemaMigrationTest(unittest.TestCase):
         workspace = workspaces.resolve(str(Path("tests/fixtures/workspace_a").resolve()))
         session, _ = workspaces.resolve_session(workspace, "migration")
         with database.transaction() as conn:
-            conn.execute("DELETE FROM local_schema_migrations WHERE version IN (2, 3, 4, 5)")
+            conn.execute("DELETE FROM local_schema_migrations WHERE version > 1")
             conn.execute(
                 "UPDATE sessions SET turn_index=1 WHERE session_id=?",
                 (str(session.session_id),),

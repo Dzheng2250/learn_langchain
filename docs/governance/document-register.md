@@ -18,6 +18,7 @@
 | CLI 内部架构 | `/docs/architecture/cli-architecture.md` |
 | TUI 内部架构 | `/docs/architecture/tui-architecture.md` |
 | Agent 执行调用链 | `/docs/architecture/agent-execution-architecture.md` |
+| Core 内部接口与 IoC 边界 | `/docs/architecture/interface-driven-core.md` |
 | 本地状态与数据库一致性 | `/docs/architecture/database-state-and-consistency.md` |
 | 私有任务规划 | `/docs/architecture/private-task-planning.md` |
 | 外部 RPC | `/docs/api/rpc-reference.md` |

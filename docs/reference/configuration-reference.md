@@ -86,6 +86,20 @@ telemetry/      默认 JSONL 观测事件
 
 当前普通对话只依赖本地 SQLite。PostgreSQL 是可选迁移来源、可选 Telemetry Sink 和未来投影目标。
 
+### 后端选择
+
+这些变量是面向接口重构后的实现选择开关。当前版本只提供生产级 `sqlite` 适配器，
+因此它们主要用于固定架构边界和后续扩展，不建议改成其他值。
+
+| 环境变量 | 默认值 | 含义与影响 |
+|---|---:|---|
+| `LEARN_AGENT_CONVERSATION_HISTORY_BACKEND` | `sqlite` | 会话历史后端。未来可接入 JSONL 文件或 PostgreSQL。 |
+| `LEARN_AGENT_MEMORY_BACKEND` | `sqlite` | 长期记忆后端。当前权威数据仍在本地 SQLite。 |
+| `LEARN_AGENT_TASK_BACKEND` | `sqlite` | goal 模式私有任务计划后端。 |
+| `LEARN_AGENT_CHECKPOINT_BACKEND` | `sqlite` | 可恢复执行 checkpoint 后端。 |
+
+### PostgreSQL
+
 | 环境变量 | 默认值 | 含义与影响 |
 |---|---:|---|
 | `LEARN_AGENT_POSTGRES_PROJECTION_ENABLED` | `false` | 是否为未来 PostgreSQL 投影写入本地 outbox。当前没有完整投影消费者，默认必须关闭。 |

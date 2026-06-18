@@ -9,6 +9,7 @@ from src.core.agent.contracts import ManagedAgentService
 from src.core.agent.service import AgentTurnService
 from src.core.agent.models import RunLimits
 from src.config.maintenance import MaintenanceSettings
+from src.core.adapters.sqlite import SQLiteStateUnitOfWorkFactory
 from src.core.bus.router import RpcRouter
 from src.core.config.models import CoreConfig
 from src.core.handlers import AgentHandlers, CoreHandlers
@@ -171,9 +172,11 @@ class CoreApp:
             turn_finalizer = TurnFinalizer(
                 context_manager,
                 CompletedTurnCommitter(
-                    self._state_database,
-                    execution_repository,
-                    maintenance_repository,
+                    SQLiteStateUnitOfWorkFactory(
+                        self._state_database,
+                        execution_repository,
+                        maintenance_repository,
+                    ),
                 ),
                 maintenance_scheduler,
             )

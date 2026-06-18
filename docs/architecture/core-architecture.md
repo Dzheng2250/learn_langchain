@@ -23,6 +23,8 @@
 > [`/docs/architecture/response-finalization-and-checkpoint-consistency.md`](/docs/architecture/response-finalization-and-checkpoint-consistency.md)。
 > 模型服务商错误解析、可重试判断和 Execution 处置策略见
 > [`/docs/architecture/provider-error-handling.md`](/docs/architecture/provider-error-handling.md)。
+> Core 内部面向接口、Unit of Work 和 IoC 组合根边界见
+> [`/docs/architecture/interface-driven-core.md`](/docs/architecture/interface-driven-core.md)。
 > 数据库表、事务、Outbox、CAS、Saga 和恢复协调器的通俗说明见
 > [`/docs/architecture/database-state-and-consistency.md`](/docs/architecture/database-state-and-consistency.md)。
 > 端到端请求路径见其中的[完整数据流动示意图](/docs/architecture/agent-execution-architecture.md#完整数据流动示意图)，
@@ -91,6 +93,13 @@ src/core/
     committer.py
     models.py
     service.py
+
+  ports/
+    state.py
+
+  adapters/
+    sqlite/
+      unit_of_work.py
 
   maintenance/
     handlers.py

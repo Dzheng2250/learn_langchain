@@ -52,7 +52,7 @@ PostgreSQL 和 Telemetry 都不是普通对话状态的权威来源。
 
 Unit of Work，中文可理解为“工作单元”，用于把一次业务操作涉及的多个数据库修改放进同一个事务。
 
-本项目中的 `CompletedTurnCommitter` 就是一次成功 Turn 的 Unit of Work：
+本项目中的 `CompletedTurnCommitter` 通过 `StateUnitOfWorkFactory` 执行一次成功 Turn 的 Unit of Work：
 
 ```text
 CompletedTurnCommitter.commit()
@@ -62,6 +62,9 @@ CompletedTurnCommitter.commit()
   -> 写入后台维护任务
   -> 一次性提交
 ```
+
+`CompletedTurnCommitter` 只依赖 `src/core/ports/` 中的端口，不直接依赖 SQLite。当前 SQLite
+实现位于 `src/core/adapters/sqlite/`。这样后续可以替换会话历史或维护队列实现，而不改 Turn 提交流程。
 
 ### 1.5 Transactional Outbox
 

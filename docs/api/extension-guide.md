@@ -111,7 +111,32 @@ ProviderErrorParser.parse(...)
 5. 确保任务失败不会撤销已经提交的用户回答。
 6. 增加重启恢复、租约、重试和并发测试。
 
-## 8. 完成定义
+## 8. 新增内部存储接口或后端
+
+内部存储扩展面向 Core 代码，不是公开 RPC。详细设计见
+[面向接口的 Core 设计](/docs/architecture/interface-driven-core.md)。
+
+新增存储能力时遵循以下规则：
+
+1. 先在 `src/core/ports/` 定义业务能力 Protocol，不要暴露 SQL、表名、连接对象或文件句柄。
+2. 在 `src/core/adapters/<backend>/` 实现具体后端。
+3. 只允许 `CoreApp` 或专门 factory 根据配置选择后端。
+4. 应用服务只能依赖 ports，不能直接 import `sqlite3` 或 `src.core.adapters.*`。
+5. 对每个端口增加 contract test，用同一组测试验证 SQLite、Fake 或未来 File 后端。
+6. 如果后端不能提供事务一致性，不能替换权威 `StateUnitOfWork`，只能作为副本、导出或缓存。
+
+当前可用的后端选择变量是：
+
+```text
+LEARN_AGENT_CONVERSATION_HISTORY_BACKEND=sqlite
+LEARN_AGENT_MEMORY_BACKEND=sqlite
+LEARN_AGENT_TASK_BACKEND=sqlite
+LEARN_AGENT_CHECKPOINT_BACKEND=sqlite
+```
+
+当前版本只支持生产级 `sqlite`。其他值必须在实现 adapter、组合根选择逻辑和契约测试后才能开放。
+
+## 9. 完成定义
 
 扩展完成必须同时满足：
 

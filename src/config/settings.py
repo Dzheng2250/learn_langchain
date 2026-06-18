@@ -74,6 +74,12 @@ SESSION_SUMMARY_MAX_CHARS = 4000
 SUMMARY_SOURCE_CHAR_LIMIT = 12000
 
 MEMORY_ENABLED = True
+# Storage backend selectors. The first implementation keeps SQLite as the only
+# production adapter, while these names reserve the dependency-inversion seam.
+CONVERSATION_HISTORY_BACKEND = env_str("LEARN_AGENT_CONVERSATION_HISTORY_BACKEND", "sqlite")
+MEMORY_BACKEND = env_str("LEARN_AGENT_MEMORY_BACKEND", "sqlite")
+TASK_BACKEND = env_str("LEARN_AGENT_TASK_BACKEND", "sqlite")
+CHECKPOINT_BACKEND = env_str("LEARN_AGENT_CHECKPOINT_BACKEND", "sqlite")
 # Optional future PostgreSQL business projection. Disabled means local SQLite
 # remains authoritative without accumulating an unconsumed projection outbox.
 POSTGRES_PROJECTION_ENABLED = env_bool("LEARN_AGENT_POSTGRES_PROJECTION_ENABLED", False)
