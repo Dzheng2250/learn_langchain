@@ -16,6 +16,7 @@ from src.core.llm.provider import LlmConfigurationStatus
 from src.core.maintenance.repository import MaintenanceRepository
 from src.config.settings import CORE_AGENT_WORKERS
 from src.core.agent.service import AgentTurnService, SessionLockRegistry
+from src.core.agent.worker import TurnWorkerExecutor
 from src.core.session import SessionLifecycleService
 from src.core.state import ExecutionRepository, LocalStateDatabase, LocalStateStore
 from src.core.state.workspace import LocalWorkspaceRepository
@@ -75,11 +76,15 @@ class SessionLockRegistryTest(unittest.TestCase):
 
 class AgentTurnExecutorTest(unittest.IsolatedAsyncioTestCase):
     def _service(self, executor=None, max_concurrent_turns=CORE_AGENT_WORKERS):
+        worker = TurnWorkerExecutor(
+            executor=executor,
+            max_workers=max_concurrent_turns,
+        )
         return AgentTurnService(
             workspace_repository=Mock(),
             runtime_registry=Mock(),
             state_store_factory=Mock(),
-            turn_executor=executor,
+            turn_worker=worker,
             max_concurrent_turns=max_concurrent_turns,
         )
 
@@ -121,7 +126,7 @@ class AgentTurnExecutorTest(unittest.IsolatedAsyncioTestCase):
     async def test_default_executor_uses_configured_worker_limit(self):
         service = self._service()
         try:
-            self.assertEqual(CORE_AGENT_WORKERS, service._turn_executor._max_workers)
+            self.assertEqual(CORE_AGENT_WORKERS, service.turn_worker._executor._max_workers)
         finally:
             service.close()
 
@@ -207,7 +212,7 @@ class DiagnosticTurnTest(unittest.TestCase):
             model_configuration=MissingConfiguration(),
         )
         try:
-            with patch("src.core.agent.service.emit_event") as emit:
+            with patch("src.core.diagnostics.turn.emit_event") as emit:
                 first = list(service.stream_turn(".", "default", "检查连接", run_id="run-1"))
                 second = list(service.stream_turn(".", "default", "再次检查", run_id="run-2"))
         finally:

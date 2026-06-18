@@ -215,7 +215,9 @@ LEARN_AGENT_CHECKPOINT_BACKEND=sqlite
 - `ConversationContextLoader` 已接管 session context、长期记忆召回和 graph 输入消息构建。
 - `ExecutionLifecycleService` 已接管 Execution begin、resume、pending 判断和执行准备失败时的 pause。
 - `TurnResultBuilder` 已接管 `run_turn/resume_execution` 的最终 result 聚合逻辑。
-- `AgentTurnService` 仍然偏大，后续应继续拆出 provider failure 处理和 Slice 循环执行器。
+- `ProviderFailureService` 已接管非重试 provider error 的 Session 释放、checkpoint cleanup 入队和终止响应。
+- `DiagnosticTurnService` now owns the no-LLM diagnostic turn response.
+- `AgentTurnService` 仍然偏大，后续应继续拆出 Slice 循环执行器。
 - 记忆、任务和 Workspace 也应逐步补充更细的端口契约。
 - 文件历史后端暂未实现；当前只是让接口层为它留出位置。
 
@@ -328,11 +330,12 @@ class MemoryStore(Protocol):
    `PreparedTurn`。
 3. `ExecutionLifecycleService`：接管 Execution 创建、恢复、pending 判断和准备失败 pause。
 4. `TurnResultBuilder`：接管流式事件到 RPC result 的聚合。
+5. `ProviderFailureService`：接管非重试 provider error 的自动恢复与用户可见终止事件。
 
 推荐继续拆分顺序：
 
-1. `ProviderFailureService`：接管服务商错误解析后的用户说明和 Execution 处置。
-2. `SliceExecutionService`：接管 LangGraph Slice 循环、预算暂停和 trace 记录。
+1. Completed: `SliceExecutionService` owns one bounded LangGraph Slice execution.
+2. Completed: `DiagnosticTurnService` owns the no-LLM diagnostic turn response.
 
 拆分后 `AgentTurnService` 应只保留：
 
@@ -345,3 +348,42 @@ class MemoryStore(Protocol):
 
 这个收缩必须分阶段做。每拆出一个 service，都要先用 Fake Store 或 Fake Port 写单元测试，
 再接回 `CoreApp`。
+
+## 12. DI 框架选择与扩展规则
+
+当前项目使用 `dependency-injector` 作为 Core daemon 的依赖注入容器。它解决的是“对象由谁创建、具体实现在哪里选择”的问题：
+
+```text
+业务服务
+  -> 只声明构造函数依赖
+CoreContainer
+  -> 选择 SQLite / ModelProvider / Scheduler / Transport 等具体实现
+CoreApp
+  -> 安装容器、启动和关闭生命周期
+```
+
+不选择 FastAPI `Depends` 的原因：
+
+- 当前 Core 是本地 TCP + NDJSON + JSON-RPC daemon，不是 HTTP/ASGI 服务。
+- FastAPI 的 DI 与 HTTP request lifecycle、route handler 和 ASGI app 强绑定；为了使用它而引入 HTTP 框架，会让 transport 决策反过来污染 Core 设计。
+- 当前项目已经有 CLI、TUI 和自定义 transport，依赖注入应服务于 Core 内部对象图，而不是绑定到某一种前端协议。
+- `dependency-injector` 支持 `Singleton`、`Factory`、`Object` 和测试 override，足够表达当前组合根需求。
+
+新增依赖时遵守以下规则：
+
+1. 业务服务不得直接 `new` 生产级基础设施，例如数据库连接、模型 provider、scheduler、runtime registry、trace writer。
+2. 业务服务通过构造函数声明依赖，依赖类型优先是 `Protocol` 或小接口。
+3. 具体实现只在 `CoreContainer` 或明确的 adapter factory 中选择。
+4. 单元测试优先注入 fake / in-memory 实现，而不是启动真实数据库或 daemon。
+5. 如果新增第三方框架，必须说明它解决的问题、为什么现有依赖不能解决、以及它是否会改变 Core 的协议边界。
+
+本轮进一步拆分了 foreground Agent 执行链：
+
+```text
+AgentTurnService
+  -> TurnWorkerExecutor          # bounded worker / async bridge
+  -> AgentRequestStreamService   # workspace/session/graph request streaming
+  -> TurnResultBuilder           # stream event -> final RPC result
+```
+
+`AgentRequestStreamService` 由 DI 容器注入，负责 `stream_turn` 与 `stream_resume` 的请求身份解析、Session 锁、配置检查、Execution 生命周期和 runtime graph 选择。`AgentTurnService` 保留兼容包装方法，但不再直接持有这段编排逻辑。

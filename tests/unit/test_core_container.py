@@ -4,8 +4,14 @@ import unittest
 from dependency_injector import providers
 
 from src.core.agent.service import AgentTurnService
+from src.core.agent.loop import TurnExecutionLoop
+from src.core.agent.request_stream import AgentRequestStreamService
+from src.core.agent.runtime_graph import RuntimeGraphResolver
+from src.core.agent.slices import SliceExecutionService
+from src.core.agent.worker import TurnWorkerExecutor
 from src.core.config.models import CoreConfig
 from src.core.container import CoreContainer
+from src.core.diagnostics import DiagnosticTurnService
 from src.core.execution import ExecutionLifecycleService
 from src.core.session import SessionLifecycleService
 from src.core.state import LocalStateStore
@@ -31,8 +37,37 @@ class CoreContainerTest(unittest.TestCase):
         self.assertIsInstance(agent_service, AgentTurnService)
         self.assertIsInstance(session_service, SessionLifecycleService)
         self.assertIsInstance(execution_service, ExecutionLifecycleService)
+        self.assertIsInstance(
+            agent_service.runtime_graph_resolver,
+            RuntimeGraphResolver,
+        )
+        self.assertIsInstance(agent_service.turn_worker, TurnWorkerExecutor)
         self.assertIs(agent_service.execution_lifecycle.execution_repository, execution_service.execution_repository)
         self.assertIs(agent_service.lock_registry, session_service.lock_registry)
+        self.assertIsInstance(
+            agent_service.diagnostic_turn_service,
+            DiagnosticTurnService,
+        )
+        self.assertIsInstance(
+            agent_service.slice_execution_service,
+            SliceExecutionService,
+        )
+        self.assertIsInstance(
+            agent_service.turn_execution_loop,
+            TurnExecutionLoop,
+        )
+        self.assertIsInstance(
+            agent_service.request_stream_service,
+            AgentRequestStreamService,
+        )
+        self.assertIs(
+            agent_service.request_stream_service.turn_execution_loop,
+            agent_service.turn_execution_loop,
+        )
+        self.assertIsInstance(
+            agent_service.turn_execution_loop.slice_execution_service,
+            SliceExecutionService,
+        )
         self.assertIsInstance(container.transport(), SocketServer)
 
     def test_state_store_factory_creates_short_lived_store_instances(self):

@@ -6,16 +6,28 @@ from typing import Protocol
 from dependency_injector import containers, providers
 
 from src.config.maintenance import MaintenanceSettings
-from src.config.settings import MEMORY_ENABLED
+from src.config.settings import (
+    CORE_AGENT_WORKERS,
+    MAX_AUTO_SLICES_PER_GRANT,
+    MEMORY_ENABLED,
+)
 from src.core.adapters.sqlite import SQLiteStateUnitOfWorkFactory
+from src.core.agent.coordinator import TurnCoordinator
+from src.core.agent.loop import TurnExecutionLoop
 from src.core.agent.models import RunLimits
+from src.core.agent.request_stream import AgentRequestStreamService
+from src.core.agent.runtime_graph import RuntimeGraphResolver
 from src.core.agent.service import AgentTurnService, SessionLockRegistry
+from src.core.agent.slices import SliceExecutionService
+from src.core.agent.worker import TurnWorkerExecutor
 from src.core.bus.router import RpcRouter
 from src.core.config.models import CoreConfig
 from src.core.context.loader import ConversationContextLoader
 from src.core.context.manager import AgentContextManager
+from src.core.diagnostics import DiagnosticTurnService
 from src.core.database.connection import create_pool
 from src.core.errors import ProviderErrorHandler
+from src.core.errors.provider_failure import ProviderFailureService
 from src.core.execution import ExecutionLifecycleService
 from src.core.finalization import CompletedTurnCommitter, TurnFinalizer
 from src.core.handlers import AgentHandlers, CoreHandlers
@@ -139,6 +151,10 @@ class CoreContainer(containers.DeclarativeContainer):
     maintenance_settings = providers.Singleton(MaintenanceSettings.load)
     provider_error_handler = providers.Factory(ProviderErrorHandler)
     session_lock_registry = providers.Singleton(SessionLockRegistry)
+    turn_worker = providers.Factory(
+        TurnWorkerExecutor,
+        max_workers=CORE_AGENT_WORKERS,
+    )
 
     workspace_repository = providers.Singleton(
         LocalWorkspaceRepository,
@@ -208,7 +224,22 @@ class CoreContainer(containers.DeclarativeContainer):
         handlers=maintenance_handlers,
         settings=maintenance_settings,
     )
-
+    provider_failure_service = providers.Factory(
+        ProviderFailureService,
+        execution_repository=execution_repository,
+        maintenance_repository=maintenance_repository,
+        maintenance_scheduler=maintenance_scheduler,
+    )
+    diagnostic_turn_service = providers.Factory(
+        DiagnosticTurnService,
+        state_store_factory=state_store_factory.provider,
+        run_limits=run_limits,
+    )
+    slice_execution_service = providers.Factory(
+        SliceExecutionService,
+        execution_repository=execution_repository,
+        provider_error_handler=provider_error_handler,
+    )
     unit_of_work_factory = providers.Factory(
         SQLiteStateUnitOfWorkFactory,
         database=state_database,
@@ -224,6 +255,21 @@ class CoreContainer(containers.DeclarativeContainer):
         context_manager=context_manager,
         committer=completed_turn_committer,
         maintenance_scheduler=maintenance_scheduler,
+    )
+    turn_coordinator = providers.Factory(
+        TurnCoordinator,
+        context_loader=context_loader,
+        turn_finalizer=turn_finalizer,
+    )
+    turn_execution_loop = providers.Singleton(
+        TurnExecutionLoop,
+        state_store_factory=state_store_factory.provider,
+        turn_coordinator=turn_coordinator,
+        run_limits=run_limits,
+        execution_repository=execution_repository,
+        slice_execution_service=slice_execution_service,
+        provider_failure_service=provider_failure_service,
+        max_auto_slices=MAX_AUTO_SLICES_PER_GRANT,
     )
     recovery_coordinator = providers.Factory(
         ExecutionRecoveryCoordinator,
@@ -243,6 +289,21 @@ class CoreContainer(containers.DeclarativeContainer):
         WorkspaceRuntimeRegistry,
         factory=workspace_runtime_factory,
     )
+    runtime_graph_resolver = providers.Factory(
+        RuntimeGraphResolver,
+        runtime_registry=runtime_registry,
+    )
+    request_stream_service = providers.Factory(
+        AgentRequestStreamService,
+        workspace_repository=workspace_repository,
+        lock_registry=session_lock_registry,
+        model_configuration=model_provider,
+        diagnostic_turn_service=diagnostic_turn_service,
+        execution_lifecycle=execution_lifecycle_service,
+        runtime_graph_resolver=runtime_graph_resolver,
+        turn_execution_loop=turn_execution_loop,
+        execution_repository=execution_repository,
+    )
     agent_service = providers.Factory(
         AgentTurnService,
         workspace_repository=workspace_repository,
@@ -252,11 +313,19 @@ class CoreContainer(containers.DeclarativeContainer):
         context_loader=context_loader,
         model_configuration=model_provider,
         lock_registry=session_lock_registry,
+        turn_worker=turn_worker,
         run_limits=run_limits,
+        turn_coordinator=turn_coordinator,
         execution_repository=execution_repository,
         checkpoint_manager=checkpoint_manager,
         turn_finalizer=turn_finalizer,
         execution_lifecycle=execution_lifecycle_service,
+        provider_failure_service=provider_failure_service,
+        diagnostic_turn_service=diagnostic_turn_service,
+        slice_execution_service=slice_execution_service,
+        turn_execution_loop=turn_execution_loop,
+        runtime_graph_resolver=runtime_graph_resolver,
+        request_stream_service=request_stream_service,
         maintenance_repository=maintenance_repository,
         maintenance_scheduler=maintenance_scheduler,
         recovery_coordinator=recovery_coordinator,

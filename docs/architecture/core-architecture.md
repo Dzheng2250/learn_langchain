@@ -47,9 +47,15 @@ main
   -> CoreApp
       -> Handlers
       -> AgentTurnService
+      -> TurnWorkerExecutor
+      -> AgentRequestStreamService
+      -> RuntimeGraphResolver
       -> SessionLifecycleService
       -> ConversationContextLoader
       -> ExecutionLifecycleService
+      -> DiagnosticTurnService
+      -> TurnExecutionLoop
+      -> SliceExecutionService
       -> RpcRouter
       -> Transport
 ```
@@ -72,7 +78,7 @@ Core 使用 `dependency-injector` 描述进程级依赖图。`CoreApp` 仍然是
 CoreApp
   -> 创建/接收 CoreContainer
   -> 注入 CoreConfig、auth_token、shutdown_event、trace_recorder
-  -> 从容器取得 AgentTurnService、SessionLifecycleService、ConversationContextLoader、ExecutionLifecycleService、Router、Handlers、Transport
+  -> 从容器取得 AgentTurnService、AgentRequestStreamService、SessionLifecycleService、ConversationContextLoader、ExecutionLifecycleService、Router、Handlers、Transport
   -> 按固定顺序 start / close
 ```
 
@@ -268,10 +274,14 @@ daemon PID/token 管理
 - `SocketServer` 只处理传输。
 - `RpcRouter` 只处理验证和分发。
 - Handlers 只适配协议与业务。
-- `AgentTurnService` 编排 Slice 循环与暂停恢复。
+- `AgentTurnService` 负责 async worker bridge 和流式事件到最终 RPC result 的聚合。
+- `AgentRequestStreamService` 负责 workspace/session 解析、Session 锁、模型配置检查、Execution 准备、runtime graph 选择和 resume 请求流。
 - `SessionLifecycleService` 负责 status、discard、reset、archive 和 hard delete。
 - `ConversationContextLoader` 负责加载上下文、召回记忆并构造 graph 输入。
 - `ExecutionLifecycleService` 负责 Execution begin、resume、pending 判断和准备失败 pause。
+- `ProviderFailureService` 负责非重试 provider error 的 Session 释放、cleanup 入队和终止响应。
+- `DiagnosticTurnService` handles the no-LLM diagnostic turn and does not mutate conversation history or increment `turn_index`.
+- `SliceExecutionService` starts, streams, finishes, and traces one bounded LangGraph Slice.
 - `TurnResultBuilder` 负责把流式事件聚合为最终 JSON-RPC result。
 - `TurnCoordinator` 负责 Turn 准备和最终提交协调。
 - `CompletedTurnCommitter` 只负责最小业务事务。
