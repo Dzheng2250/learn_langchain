@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from typing import Any
 
 from textual.binding import Binding
@@ -68,6 +69,8 @@ class ChatScreen(Screen):
         self._auth_token = ""
         self._workspace_root = ""
         self._streamed_response_active = False
+        self._inflight_task: asyncio.Task[Any] | None = None
+        self._inflight_client: AsyncCoreClient | None = None
 
     def compose(self):
         yield StatusBar()
@@ -259,6 +262,7 @@ class ChatScreen(Screen):
             return
 
         self._busy = True
+        current_task = asyncio.current_task()
         log = self.query_one(ChatLog)
         status_bar = self.query_one(StatusBar)
         mode_tag = " [bold cyan]goal[/bold cyan]" if goal_mode else ""
@@ -270,11 +274,13 @@ class ChatScreen(Screen):
             self._config.core_port,
             timeout=self._config.request_timeout,
         )
+        self._inflight_task = current_task
+        self._inflight_client = client
         try:
             await client.connect()
         except CoreUnavailableError:
             status_bar.set_disconnected("daemon not running")
-            self._busy = False
+            self._clear_inflight(current_task, client)
             return
 
         try:
@@ -295,13 +301,15 @@ class ChatScreen(Screen):
             log.write_event("[red]Connection lost mid-stream.[/red]")
         except CoreRequestError as exc:
             log.write_event(f"[red]Request failed: {exc}[/red]")
+        except asyncio.CancelledError:
+            pass
         except Exception as exc:
             log.write_event(f"[red]Unexpected error: {exc}[/red]")
         else:
             self._handle_result(result)
         finally:
             await client.close()
-            self._busy = False
+            self._clear_inflight(current_task, client)
 
     async def _resume_execution(self, instruction: str = "") -> None:
         """Resume a paused execution."""
@@ -310,6 +318,7 @@ class ChatScreen(Screen):
             return
 
         self._busy = True
+        current_task = asyncio.current_task()
         log = self.query_one(ChatLog)
         log.write_event("[bold]▶ resuming execution[/bold]")
 
@@ -318,11 +327,13 @@ class ChatScreen(Screen):
             self._config.core_port,
             timeout=self._config.request_timeout,
         )
+        self._inflight_task = current_task
+        self._inflight_client = client
         try:
             await client.connect()
         except CoreUnavailableError:
             self.query_one(StatusBar).set_disconnected("daemon not running")
-            self._busy = False
+            self._clear_inflight(current_task, client)
             return
 
         try:
@@ -342,13 +353,15 @@ class ChatScreen(Screen):
             log.write_event("[red]Connection lost mid-stream.[/red]")
         except CoreRequestError as exc:
             log.write_event(f"[red]Resume failed: {exc}[/red]")
+        except asyncio.CancelledError:
+            pass
         except Exception as exc:
             log.write_event(f"[red]Unexpected error: {exc}[/red]")
         else:
             self._handle_result(result)
         finally:
             await client.close()
-            self._busy = False
+            self._clear_inflight(current_task, client)
 
     async def _discard_execution(self) -> None:
         """Discard a paused execution."""
@@ -458,11 +471,42 @@ class ChatScreen(Screen):
     def _log_note(self, message: str) -> None:
         self.query_one(ChatLog).write_event(f"[dim]{message}[/dim]")
 
+    def _clear_inflight(
+        self,
+        task: asyncio.Task[Any] | None,
+        client: AsyncCoreClient,
+    ) -> None:
+        """Clear request state only if it still belongs to this request."""
+        if self._inflight_task is task and self._inflight_client is client:
+            self._inflight_task = None
+            self._inflight_client = None
+            self._busy = False
+            self._streamed_response_active = False
+
     # ── key actions ─────────────────────────────────────────────────
 
     def action_cancel(self) -> None:
         """Cancel the current operation (Ctrl+C)."""
-        self._log_note("Cancelled.")
+        if not self._busy:
+            self._log_note("Nothing to cancel.")
+            return
+
+        task = self._inflight_task
+        client = self._inflight_client
+        self._inflight_task = None
+        self._inflight_client = None
+        self._busy = False
+        self._streamed_response_active = False
+
+        if task is not None and not task.done():
+            task.cancel()
+        if client is not None:
+            self.run_worker(client.close(), exclusive=False, name="cancel-rpc")
+
+        self._log_note(
+            "Cancelled current request. The Core turn may continue briefly after "
+            "the RPC connection is closed."
+        )
 
     def action_quit(self) -> None:
         """Quit the TUI (Ctrl+D)."""

@@ -100,6 +100,52 @@ class TuiChatLogTest(unittest.TestCase):
 
         self.assertIsNone(rendered)
 
+    def test_cancel_cancels_inflight_task_closes_client_and_releases_busy(self):
+        class FakeTask:
+            def __init__(self):
+                self.cancelled = False
+
+            def done(self):
+                return False
+
+            def cancel(self):
+                self.cancelled = True
+
+        class FakeClient:
+            def __init__(self):
+                self.closed = False
+
+            async def close(self):
+                self.closed = True
+
+        log = self._fake_log()
+        task = FakeTask()
+        client = FakeClient()
+        screen = ChatScreen.__new__(ChatScreen)
+        screen._busy = True
+        screen._inflight_task = task
+        screen._inflight_client = client
+        screen._streamed_response_active = True
+
+        def query_one(_self, _widget_type):
+            return log
+
+        def run_worker(_self, awaitable, **_kwargs):
+            asyncio.run(awaitable)
+
+        screen.query_one = MethodType(query_one, screen)
+        screen.run_worker = MethodType(run_worker, screen)
+
+        ChatScreen.action_cancel(screen)
+
+        self.assertTrue(task.cancelled)
+        self.assertTrue(client.closed)
+        self.assertFalse(screen._busy)
+        self.assertIsNone(screen._inflight_task)
+        self.assertIsNone(screen._inflight_client)
+        self.assertFalse(screen._streamed_response_active)
+        self.assertTrue(any("Cancelled current request" in line for line in log.lines))
+
 
 if __name__ == "__main__":
     unittest.main()
