@@ -28,6 +28,11 @@ CoreApp
   -> AgentHandlers
       -> AgentTurnService
           -> AgentRunContext + RunLimits
+          -> TurnExecutionLoop
+              -> SliceExecutionService
+              -> TurnLoopErrorHandler
+              -> TurnLoopPauseHandler
+              -> TurnRunObserver
           -> WorkspaceRuntimeRegistry
               -> ModelProvider
               -> ToolRegistry
@@ -43,6 +48,11 @@ CoreApp
 
 - LangGraph：决定 Agent 节点和工具节点何时继续或停止。
 - `AgentTurnService`：编排一次完整 turn 的加载、执行和保存。
+- `TurnExecutionLoop`：执行一个 foreground turn 内的 Slice 循环、预算判断和继续/停止分支。
+- `SliceExecutionService`：执行单个 Slice，并把 LangGraph 输出转换为稳定的内部流事件。
+- `TurnLoopErrorHandler`：处理 Slice 错误、服务商终止错误和兜底异常，负责相应 Execution 状态更新和用户可见错误事件。
+- `TurnLoopPauseHandler`：处理预算耗尽后的暂停摘要、Execution 状态更新和暂停事件。
+- `TurnRunObserver`：集中发送 foreground run 的 Telemetry 和 Trace，不参与业务决策。
 - `AgentRunContext`：描述一次运行的身份与限制。
 - `ModelProvider`：集中创建不同用途的 LLM。
 - `ToolRegistry`：集中声明工具能力、受众和风险等级。
@@ -90,11 +100,15 @@ CLI 识别 Workspace
 | 7 | `AgentTurnService._run_turn_sync()` | `agent-turn` worker | 消费内部事件流，形成最终结果 |
 | 8 | `AgentTurnService.stream_turn()` | `agent-turn` worker | 解析 Workspace/Session，获取 Session UUID 锁 |
 | 9 | `AgentTurnService._stream_locked_turn()` | `agent-turn` worker | 加载上下文、执行 Graph、委托最小持久化提交 |
-| 10 | `stream_graph_events()` | `agent-turn` worker | 将 LangGraph stream 转换为稳定事件协议 |
-| 11 | `agent_node()` / `ObservedToolNode` | `agent-turn` worker | 调用 LLM，或执行模型请求的工具 |
-| 12 | `on_event()` | `agent-turn` worker | 将流事件投递回 Core asyncio loop |
-| 13 | `SocketRequestContext.send_notification()` | Core asyncio loop | 将 `agent.event` 通知写入 TCP |
-| 14 | `CoreClient.request()` | CLI 主线程 | 匹配 `request_id`，渲染流事件，读取最终响应 |
+| 10 | `TurnExecutionLoop.run()` | `agent-turn` worker | 控制 Slice 循环、预算和继续/停止判断 |
+| 11 | `SliceExecutionService.run_slice()` | `agent-turn` worker | 调用 LangGraph，并生成稳定事件协议 |
+| 12 | `stream_graph_events()` | `agent-turn` worker | 将 LangGraph stream 转换为稳定事件协议 |
+| 13 | `agent_node()` / `ObservedToolNode` | `agent-turn` worker | 调用 LLM，或执行模型请求的工具 |
+| 14 | `TurnLoopErrorHandler` / `TurnLoopPauseHandler` | `agent-turn` worker | 处理错误或暂停分支的状态更新和事件构造 |
+| 15 | `TurnRunObserver` | `agent-turn` worker | 发送 run/slice 成功、暂停或失败的观测事件 |
+| 16 | `on_event()` | `agent-turn` worker | 将流事件投递回 Core asyncio loop |
+| 17 | `SocketRequestContext.send_notification()` | Core asyncio loop | 将 `agent.event` 通知写入 TCP |
+| 18 | `CoreClient.request()` | CLI 主线程 | 匹配 `request_id`，渲染流事件，读取最终响应 |
 
 ### 第一阶段：CLI 构造请求
 
@@ -921,7 +935,7 @@ flowchart LR
 | Turn 编排、线程池与 Session 锁 | `src/core/agent/service.py` |
 | Workspace runtime 构建与缓存 | `src/core/workspace/runtime.py` |
 | Parent Agent graph | `src/core/agent/graph.py` |
-| 流式事件适配与运行限制 | `src/core/streaming/events.py` |
+| 流式事件适配与运行限制 | `src/core/streaming/events.py`、`message_events.py`、`failures.py` |
 | 工具注册、筛选与边界观测 | `src/core/tools/registry.py`、`src/core/tools/observed.py` |
 | 非递归 Sub-agent | `src/core/subagent/graph.py` |
 | 短期上下文与压缩 | `src/core/context/manager.py` |

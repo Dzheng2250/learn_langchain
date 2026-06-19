@@ -69,7 +69,7 @@ class FakeUnitOfWorkFactory:
     def __init__(self):
         self.last = None
 
-    def begin(self, _store):
+    def begin(self):
         self.last = FakeUnitOfWork()
         return self.last
 
@@ -87,7 +87,7 @@ class CompletedTurnCommitterPortTest(unittest.TestCase):
             jobs=("job-spec",),
         )
 
-        message_ids = committer.commit(object(), completed)
+        message_ids = committer.commit(completed)
 
         self.assertEqual(["message-1", "message-2"], message_ids)
         self.assertTrue(factory.last.committed)

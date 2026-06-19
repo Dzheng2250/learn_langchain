@@ -20,24 +20,6 @@ class StateStore(Protocol):
 
     def build_memory_message(self, memories: list): ...
 
-    def append_messages_in_transaction(
-        self,
-        conn,
-        session: SessionContext,
-        turn_index: int,
-        messages: list,
-        *,
-        execution_id: str | None = None,
-    ) -> list[str]: ...
-
-    def save_fast_session_in_transaction(
-        self,
-        conn,
-        session: SessionContext,
-        state: AgentContextState,
-        turn_index: int,
-    ) -> None: ...
-
 
 class MaintenanceStateStore(Protocol):
     """Derived-state capabilities required only by background handlers."""

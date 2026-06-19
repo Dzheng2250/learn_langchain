@@ -15,6 +15,8 @@ from src.core.tasks import (
     ToolExecutionContext,
     create_task_tools,
 )
+from src.core.tasks.models import TaskPlanItem
+from src.core.tasks.validation import TaskPlanValidator
 from src.core.tools.catalog import ToolAudience, ToolRisk
 from src.core.tools.registry import create_workspace_toolset
 
@@ -51,6 +53,21 @@ class PrivateTaskTest(unittest.TestCase):
         settings = TaskSettings(max_tasks_per_execution=4)
         self.repository = TaskRepository(self.database, settings)
         self.service = TaskPlanningService(self.repository, settings)
+
+    def test_task_validator_rejects_invalid_keys_and_cycles(self):
+        validator = TaskPlanValidator(TaskSettings(max_tasks_per_execution=4))
+
+        with self.assertRaisesRegex(ValueError, "task_key"):
+            validator.validate_plan_item(TaskPlanItem("BadKey", "Bad"))
+        with self.assertRaisesRegex(ValueError, "duplicate"):
+            validator.validate_unique_keys(
+                [
+                    TaskPlanItem("inspect", "Inspect"),
+                    TaskPlanItem("inspect", "Duplicate"),
+                ]
+            )
+        with self.assertRaisesRegex(ValueError, "cycle"):
+            validator.assert_acyclic({"first": {"second"}, "second": {"first"}})
 
     def test_schema_version_four_creates_task_tables(self):
         with self.database.connect() as conn:

@@ -1,28 +1,24 @@
-"""SQLite-backed Session context, message archive, and long-term memory store."""
+"""Compatibility facade for SQLite-backed local state stores."""
 
-import json
-import re
-from uuid import UUID, uuid4
+from uuid import UUID
 
-from langchain_core.messages import SystemMessage, messages_from_dict, messages_to_dict
+from langchain_core.messages import SystemMessage
 
 from src.config.settings import (
     MEMORY_BOOTSTRAP_LIMIT,
-    MEMORY_CONTEXT_CHAR_LIMIT,
-    MEMORY_EXTRACTION_ENABLED,
     MEMORY_MIN_IMPORTANCE,
     MEMORY_RETRIEVAL_LIMIT,
     POSTGRES_PROJECTION_ENABLED,
-    RECENT_MESSAGE_LIMIT,
 )
 from src.core.context.models import AgentContextState
 from src.core.adapters.sqlite.conversation_history import SQLiteConversationHistoryStore
 from src.core.adapters.sqlite.memory_store import SQLiteMemoryRetrievalStore
+from src.core.adapters.sqlite.memory_write_store import SQLiteMemoryWriteStore
 from src.core.adapters.sqlite.session_store import SQLiteSessionStore
+from src.core.adapters.sqlite.summary_store import SQLiteSummaryStore
 from src.core.memory.extractor import MemoryCandidateExtractor
 from src.core.memory.models import RetrievedMemory
 from src.core.state.database import LocalStateDatabase
-from src.core.telemetry import emit_event, record_error, record_memory_saved
 from src.core.workspace.models import SessionContext
 
 
@@ -42,16 +38,20 @@ class LocalStateStore:
         projection_enabled: bool = POSTGRES_PROJECTION_ENABLED,
     ) -> None:
         self.database = database
-        self.retrieval_limit = retrieval_limit
-        self.min_importance = min_importance
         self.extractor = MemoryCandidateExtractor(model_provider)
-        self.projection_enabled = projection_enabled
         self.history = SQLiteConversationHistoryStore(database)
         self.sessions = SQLiteSessionStore(database)
         self.memory_retrieval = SQLiteMemoryRetrievalStore(
             database,
             retrieval_limit=retrieval_limit,
         )
+        self.memory_writer = SQLiteMemoryWriteStore(
+            database,
+            extractor=self.extractor,
+            min_importance=min_importance,
+            projection_enabled=projection_enabled,
+        )
+        self.summaries = SQLiteSummaryStore(database)
 
     def initialize(self) -> None:
         self.database.initialize()
@@ -64,31 +64,11 @@ class LocalStateStore:
 
     def save_session(self, session: SessionContext, state: AgentContextState, turn_index: int) -> None:
         with self.database.transaction() as conn:
-            self._save_session(conn, session, state, turn_index)
+            self.save_session_in_transaction(conn, session, state, turn_index)
 
     def archive_turn_messages(self, session: SessionContext, turn_index: int, messages: list) -> list[str]:
         with self.database.transaction() as conn:
-            return self._append_messages(conn, session, turn_index, messages)
-
-    def commit_turn(
-        self,
-        session: SessionContext,
-        turn_index: int,
-        messages: list,
-        state: AgentContextState,
-    ) -> list[str]:
-        """Atomically append one completed Turn and update compact Session state."""
-        with self.database.transaction() as conn:
-            ids = self.append_messages_in_transaction(conn, session, turn_index, messages)
-            self.save_session_in_transaction(conn, session, state, turn_index)
-            self._enqueue_outbox(
-                conn,
-                "turn_committed",
-                "session",
-                str(session.session_id),
-                {"workspace_id": str(session.workspace.workspace_id), "turn_index": turn_index},
-            )
-            return ids
+            return self.append_messages_in_transaction(conn, session, turn_index, messages)
 
     def append_messages_in_transaction(
         self,
@@ -100,8 +80,10 @@ class LocalStateStore:
         execution_id: str | None = None,
     ) -> list[str]:
         """Append messages using a caller-owned Unit of Work transaction."""
-        return self._append_messages(
-            conn,
+        return SQLiteConversationHistoryStore(
+            self.database,
+            transaction_conn=conn,
+        ).append_messages(
             session,
             turn_index,
             messages,
@@ -116,7 +98,10 @@ class LocalStateStore:
         turn_index: int,
     ) -> None:
         """Update compact Session state using a caller-owned transaction."""
-        self._save_session(conn, session, state, turn_index)
+        SQLiteSessionStore(
+            self.database,
+            transaction_conn=conn,
+        ).save_context(session, state, turn_index)
 
     def save_fast_session_in_transaction(
         self,
@@ -126,23 +111,10 @@ class LocalStateStore:
         turn_index: int,
     ) -> None:
         """Commit recent messages without overwriting a concurrent derived summary."""
-        recent = json.dumps(messages_to_dict(state.recent_messages), ensure_ascii=False, default=str)
-        cur = conn.execute(
-            """
-            UPDATE sessions SET recent_messages=?, context_tokens=?, turn_index=?,
-                version=version + 1, updated_at=CURRENT_TIMESTAMP
-            WHERE workspace_id=? AND session_id=?
-            """,
-            (
-                recent,
-                state.context_tokens,
-                turn_index,
-                str(session.workspace.workspace_id),
-                str(session.session_id),
-            ),
-        )
-        if cur.rowcount != 1:
-            raise RuntimeError("Fast Session context update did not affect exactly one row.")
+        SQLiteSessionStore(
+            self.database,
+            transaction_conn=conn,
+        ).save_fast_context_values(session, state, turn_index)
 
     def rebuild_recent_messages_from_archive(self, session: SessionContext) -> int:
         """Rebuild ``recent_messages`` from archived message history.
@@ -167,42 +139,7 @@ class LocalStateStore:
         target_turn: int,
     ) -> tuple[str, int, list[tuple[int, object]]]:
         """Load unsummarized committed messages up to a target Turn."""
-        with self.database.connect() as conn:
-            session_row = conn.execute(
-                """
-                SELECT summary, summary_through_turn FROM sessions
-                WHERE workspace_id=? AND session_id=?
-                """,
-                (str(session.workspace.workspace_id), str(session.session_id)),
-            ).fetchone()
-            if not session_row:
-                raise RuntimeError("Session disappeared before context summary maintenance.")
-            rows = conn.execute(
-                """
-                SELECT turn_index, raw FROM messages
-                WHERE workspace_id=? AND session_id=?
-                  AND turn_index > ? AND turn_index <= ?
-                ORDER BY turn_index, created_at, message_id
-                """,
-                (
-                    str(session.workspace.workspace_id),
-                    str(session.session_id),
-                    int(session_row["summary_through_turn"]),
-                    target_turn,
-                ),
-            ).fetchall()
-        return (
-            session_row["summary"] or "",
-            int(session_row["summary_through_turn"]),
-            [
-                (int(row["turn_index"]), message)
-                for row, message in zip(
-                    rows,
-                    messages_from_dict([json.loads(row["raw"]) for row in rows]),
-                    strict=True,
-                )
-            ],
-        )
+        return self.summaries.load_summary_source(session, target_turn)
 
     def update_summary_cas(
         self,
@@ -213,23 +150,12 @@ class LocalStateStore:
         summary: str,
     ) -> bool:
         """Write a derived summary only when no newer summary won the race."""
-        with self.database.transaction() as conn:
-            cur = conn.execute(
-                """
-                UPDATE sessions
-                SET summary=?, summary_through_turn=?, version=version + 1,
-                    updated_at=CURRENT_TIMESTAMP
-                WHERE workspace_id=? AND session_id=? AND summary_through_turn=?
-                """,
-                (
-                    summary,
-                    summary_through_turn,
-                    str(session.workspace.workspace_id),
-                    str(session.session_id),
-                    expected_summary_through_turn,
-                ),
-            )
-        return cur.rowcount == 1
+        return self.summaries.update_summary_cas(
+            session,
+            expected_summary_through_turn=expected_summary_through_turn,
+            summary_through_turn=summary_through_turn,
+            summary=summary,
+        )
 
     def retrieve_relevant(self, workspace_id: UUID, query: str, limit: int | None = None) -> list[RetrievedMemory]:
         return self.memory_retrieval.retrieve_relevant(workspace_id, query, limit)
@@ -251,230 +177,15 @@ class LocalStateStore:
         messages: list,
         source_message_ids: list[str],
     ) -> list[str]:
-        if not MEMORY_EXTRACTION_ENABLED:
-            return []
-        source = self.extractor.format_messages(messages)
-        if not source.strip():
-            return []
-        try:
-            candidates = self.extractor.extract(source)
-        except Exception as exc:
-            record_error("agent_memory", "memory", exc, "Long-term memory extraction failed.")
-            raise
-        saved, events = [], []
-        try:
-            with self.database.transaction() as conn:
-                for candidate in candidates:
-                    content = str(candidate.get("content", "")).strip()
-                    importance = int(candidate.get("importance", 3))
-                    if not content or importance < self.min_importance or self.extractor.looks_sensitive(content):
-                        continue
-                    kind = str(candidate.get("kind", "project_fact")).strip() or "project_fact"
-                    tags = candidate.get("tags") if isinstance(candidate.get("tags"), list) else []
-                    confidence = float(candidate.get("confidence", 0.8))
-                    existing = conn.execute(
-                        """
-                        SELECT memory_id FROM memories
-                        WHERE workspace_id = ? AND archived_at IS NULL AND kind = ?
-                          AND (content = ? OR substr(content, 1, 160) = ?)
-                        LIMIT 1
-                        """,
-                        (str(session.workspace.workspace_id), kind, content, content[:160]),
-                    ).fetchone()
-                    memory_id = existing["memory_id"] if existing else str(uuid4())
-                    action = "updated" if existing else "created"
-                    conn.execute(
-                        """
-                        INSERT INTO memories(memory_id, workspace_id, kind, content, tags, importance, confidence)
-                        VALUES (?, ?, ?, ?, ?, ?, ?)
-                        ON CONFLICT(memory_id) DO UPDATE SET
-                            content=excluded.content,
-                            tags=excluded.tags,
-                            importance=max(memories.importance, excluded.importance),
-                            confidence=max(memories.confidence, excluded.confidence),
-                            updated_at=CURRENT_TIMESTAMP
-                        """,
-                        (
-                            memory_id,
-                            str(session.workspace.workspace_id),
-                            kind,
-                            content,
-                            json.dumps(tags, ensure_ascii=False),
-                            importance,
-                            confidence,
-                        ),
-                    )
-                    for message_id in source_message_ids:
-                        conn.execute(
-                            """
-                            INSERT INTO memory_sources(workspace_id, memory_id, message_id)
-                            VALUES (?, ?, ?)
-                            ON CONFLICT DO NOTHING
-                            """,
-                            (str(session.workspace.workspace_id), memory_id, message_id),
-                        )
-                    self._enqueue_outbox(conn, "memory_saved", "memory", memory_id, {"action": action})
-                    saved.append(f"{action} {memory_id}: {kind}: {content[:120]}")
-                    events.append((memory_id, action, kind, importance, content))
-        except Exception as exc:
-            record_error("agent_memory", "memory_save", exc, "Long-term memory local transaction failed.")
-            raise
-        for memory_id, action, kind, importance, content in events:
-            record_memory_saved(
-                "agent_memory",
-                memory_id=memory_id,
-                action=action,
-                kind=kind,
-                importance=importance,
-                content=content,
-                message=f"{action.title()} long-term memory.",
-            )
-        return saved
+        return self.memory_writer.extract_and_save(
+            session,
+            turn_index,
+            messages,
+            source_message_ids,
+        )
 
     def build_memory_message(self, memories: list[RetrievedMemory]) -> SystemMessage | None:
         return self.memory_retrieval.build_memory_message(memories)
 
     def format_memories(self, memories: list[RetrievedMemory]) -> str:
         return self.memory_retrieval.format_memories(memories)
-
-    def _append_messages(
-        self,
-        conn,
-        session: SessionContext,
-        turn_index: int,
-        messages: list,
-        *,
-        execution_id: str | None = None,
-    ) -> list[str]:
-        session_row = conn.execute(
-            "SELECT active_branch_id FROM sessions WHERE session_id = ?",
-            (str(session.session_id),),
-        ).fetchone()
-        branch_id = session_row["active_branch_id"] if session_row else None
-        head = None
-        if branch_id:
-            branch = conn.execute(
-                "SELECT head_message_id FROM branches WHERE branch_id = ?",
-                (branch_id,),
-            ).fetchone()
-            head = branch["head_message_id"] if branch else None
-        ids = []
-        for message in messages:
-            message_id = str(uuid4())
-            raw = messages_to_dict([message])[0]
-            conn.execute(
-                """
-                INSERT INTO messages(
-                    message_id, workspace_id, session_id, branch_id, parent_message_id,
-                    execution_id, role, content, message_type, raw, turn_index
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """,
-                (
-                    message_id,
-                    str(session.workspace.workspace_id),
-                    str(session.session_id),
-                    branch_id,
-                    head,
-                    execution_id,
-                    self._message_role(message),
-                    self._message_content(message),
-                    message.__class__.__name__,
-                    json.dumps(raw, ensure_ascii=False, default=str),
-                    turn_index,
-                ),
-            )
-            ids.append(message_id)
-            head = message_id
-        if branch_id and head:
-            conn.execute(
-                """
-                UPDATE branches SET head_message_id = ?, version = version + 1,
-                    updated_at = CURRENT_TIMESTAMP WHERE branch_id = ?
-                """,
-                (head, branch_id),
-            )
-        return ids
-
-    def _save_session(self, conn, session: SessionContext, state: AgentContextState, turn_index: int) -> None:
-        recent = json.dumps(messages_to_dict(state.recent_messages), ensure_ascii=False, default=str)
-        cur = conn.execute(
-            """
-            UPDATE sessions SET summary = ?, recent_messages = ?, context_tokens = ?,
-                turn_index = ?, version = version + 1, updated_at = CURRENT_TIMESTAMP
-            WHERE workspace_id = ? AND session_id = ?
-            """,
-            (
-                state.summary,
-                recent,
-                state.context_tokens,
-                turn_index,
-                str(session.workspace.workspace_id),
-                str(session.session_id),
-            ),
-        )
-        if cur.rowcount != 1:
-            raise RuntimeError("Session context update did not affect exactly one row.")
-
-    def _enqueue_outbox(self, conn, event_type: str, aggregate_type: str, aggregate_id: str, payload: dict) -> None:
-        if not self.projection_enabled:
-            return
-        conn.execute(
-            """
-            INSERT INTO projection_outbox(event_type, aggregate_type, aggregate_id, payload)
-            VALUES (?, ?, ?, ?)
-            """,
-            (event_type, aggregate_type, aggregate_id, json.dumps(payload, ensure_ascii=False)),
-        )
-
-    def _memory_from_row(self, row) -> RetrievedMemory:
-        return RetrievedMemory(
-            id=row["memory_id"],
-            kind=row["kind"],
-            content=row["content"],
-            tags=json.loads(row["tags"] or "[]"),
-            importance=int(row["importance"]),
-            confidence=float(row["confidence"]),
-        )
-
-    def _message_role(self, message) -> str:
-        role = {
-            "HumanMessage": "user",
-            "AIMessage": "assistant",
-            "ToolMessage": "tool",
-            "SystemMessage": "system",
-        }.get(message.__class__.__name__)
-        if role is None:
-            emit_event(
-                "unknown_message_role",
-                "local_state_store",
-                "Archived a message type without a known conversation role.",
-                {"message_type": message.__class__.__name__},
-                level="warning",
-            )
-            return "unknown"
-        return role
-
-    def _message_content(self, message) -> str:
-        content = getattr(message, "content", "")
-        return content if isinstance(content, str) else json.dumps(content, ensure_ascii=False, default=str)
-
-    def _normalize_search_query(self, query: str) -> str:
-        return " ".join(re.findall(r"[\w\u4e00-\u9fff]+", query)[:20])
-
-    def _is_memory_recall_query(self, query: str) -> bool:
-        lowered = query.casefold()
-        return any(term in lowered for term in ("记得", "记忆", "之前", "以前", "remember", "memory"))
-
-    def _record_retrieval(self, workspace_id: UUID, query: str, memories: list[RetrievedMemory], kind: str) -> None:
-        emit_event(
-            "memory_retrieved",
-            "agent_memory",
-            "Retrieved workspace long-term memories.",
-            {
-                "workspace_id": str(workspace_id),
-                "query": query,
-                "retrieval_type": kind,
-                "memory_count": len(memories),
-                "memory_ids": [memory.id for memory in memories],
-            },
-        )

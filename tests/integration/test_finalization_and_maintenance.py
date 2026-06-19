@@ -146,7 +146,7 @@ class FinalizationTest(unittest.TestCase):
         )
 
         with self.assertRaisesRegex(RuntimeError, "injected enqueue failure"):
-            committer.commit(self.store, completed)
+            committer.commit(completed)
 
         with self.database.connect() as conn:
             self.assertEqual(0, conn.execute("SELECT count(*) FROM messages").fetchone()[0])
@@ -199,7 +199,7 @@ class FinalizationTest(unittest.TestCase):
 
     def test_minimal_commit_remains_a_required_durability_barrier(self):
         class SlowCommitter:
-            def commit(self, _store, _completed):
+            def commit(self, _completed):
                 time.sleep(0.08)
                 return []
 

@@ -5,98 +5,11 @@ from langchain_core.messages import HumanMessage
 from langgraph.errors import GraphRecursionError
 
 from src.core.agent.models import AgentRunContext, RunLimits, StopReason
-from src.core.errors import ErrorCategory, ProviderErrorHandler
-from src.core.telemetry import emit_event, record_error
+from src.core.errors import ProviderErrorHandler
+from src.core.streaming.failures import graph_failure_event
+from src.core.streaming.message_events import step_events_from_message
+from src.core.telemetry import emit_event
 from src.core.agent.budget import ToolBudgetExceeded
-
-TOOL_RESULT_PREVIEW_LIMIT = 600
-PLANNING_TOOL_PREVIEW_LIMIT = 8000
-DELEGATION_RESULT_PREVIEW_LIMIT = 6000
-VERBOSE_RESULT_TOOLS = {"task_plan", "task_update", "task_list", "task_get"}
-
-
-def _message_text(message) -> str:
-    """Return message content as text for event payloads."""
-    content = getattr(message, "content", "")
-    if isinstance(content, str):
-        return content
-    return repr(content)
-
-
-def _message_preview(message, limit: int = 600) -> str:
-    """Return a short content preview for step events."""
-    text = _message_text(message)
-    if len(text) > limit:
-        return text[:limit] + "\n... truncated ..."
-    return text
-
-
-def _tool_result_limit(message) -> int:
-    """Return a safe preview limit for one tool result event."""
-    tool_name = getattr(message, "name", None)
-    if tool_name in VERBOSE_RESULT_TOOLS:
-        return PLANNING_TOOL_PREVIEW_LIMIT
-    if tool_name == "delegate_to_subagent":
-        return DELEGATION_RESULT_PREVIEW_LIMIT
-    return TOOL_RESULT_PREVIEW_LIMIT
-
-
-def _provider_failure_stage(resolution) -> str:
-    """Return the foreground stage that best matches a parsed graph exception."""
-    if resolution.category != ErrorCategory.UNKNOWN:
-        return "parent_model_provider"
-    if resolution.provider != "unknown" or resolution.provider_code or resolution.http_status:
-        return "parent_model_provider"
-    return "parent_graph"
-
-
-def _step_events_from_message(message) -> list[dict]:
-    """Convert completed graph messages into step-level events."""
-    message_type = message.__class__.__name__
-
-    tool_calls = getattr(message, "tool_calls", None)
-    if tool_calls:
-        return [
-            {
-                "event": "step",
-                "data": {
-                    "type": "tool_call_start",
-                    "tool": tool_call.get("name"),
-                    "args": tool_call.get("args"),
-                    "id": tool_call.get("id"),
-                },
-            }
-            for tool_call in tool_calls
-        ]
-
-    if message_type == "ToolMessage":
-        return [
-            {
-                "event": "step",
-                "data": {
-                    "type": "tool_call_result",
-                    "tool": getattr(message, "name", None),
-                    "tool_call_id": getattr(message, "tool_call_id", None),
-                    "content": _message_preview(message, _tool_result_limit(message)),
-                },
-            }
-        ]
-
-    if message_type == "AIMessage":
-        return [
-            {
-                "event": "step",
-                "data": {
-                    "type": "agent_message",
-                    # This event is the terminal fallback when a provider does
-                    # not emit token chunks. It must carry the full assistant
-                    # answer; only tool results use preview truncation.
-                    "content": _message_text(message),
-                },
-            }
-        ]
-
-    return []
 
 
 def stream_graph_events(
@@ -185,7 +98,7 @@ def stream_graph_events(
                             },
                         }
                         return
-                    yield from _step_events_from_message(message)
+                    yield from step_events_from_message(message)
     except GraphRecursionError:
         emit_event(
             "recursion_limit",
@@ -224,36 +137,11 @@ def stream_graph_events(
         }
         return
     except Exception as exc:
-        resolution = (provider_error_handler or ProviderErrorHandler()).resolve(exc)
-        failure_context = {
-            "failure_source": "agent_turn",
-            "failure_stage": _provider_failure_stage(resolution),
-            "failure_scope": "current_turn",
-            "user_action": (
-                "revise_input_and_retry"
-                if resolution.action.value == "terminate"
-                else "resume_later"
-            ),
-        }
-        record_error(
-            "agent_stream",
-            "llm_or_graph",
-            RuntimeError(resolution.public_message),
-            "Graph execution failed.",
-            {**resolution.event_data(), **failure_context},
-            event_type="llm_or_graph_failed",
+        yield graph_failure_event(
+            exc,
+            graph_steps_used=graph_steps_used,
+            provider_error_handler=provider_error_handler,
         )
-        yield {
-            "event": "error",
-            "data": {
-                "type": "provider_error",
-                "stop_reason": StopReason.GRAPH_ERROR.value,
-                "message": resolution.public_message,
-                "graph_steps_used": graph_steps_used,
-                **resolution.event_data(),
-                **failure_context,
-            },
-        }
         return
 
     yield {

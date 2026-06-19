@@ -55,12 +55,10 @@ class SQLiteStateUnitOfWork:
     def __init__(
         self,
         database: LocalStateDatabase,
-        store,
         execution_repository: ExecutionRepository,
         maintenance_repository: MaintenanceRepository,
     ) -> None:
         self._database = database
-        self._store = store
         self._execution_repository = execution_repository
         self._maintenance_repository = maintenance_repository
         self._connect_context = None
@@ -74,12 +72,10 @@ class SQLiteStateUnitOfWork:
         self.history = SQLiteConversationHistoryStore(
             self._database,
             transaction_conn=self._conn,
-            write_delegate=self._store,
         )
         self.sessions = SQLiteSessionStore(
             self._database,
             transaction_conn=self._conn,
-            write_delegate=self._store,
         )
         self.executions = SQLiteExecutionStore(self._conn, self._execution_repository)
         self.maintenance = SQLiteMaintenanceQueue(self._conn, self._maintenance_repository)
@@ -115,10 +111,9 @@ class SQLiteStateUnitOfWorkFactory:
         self.execution_repository = execution_repository
         self.maintenance_repository = maintenance_repository
 
-    def begin(self, store) -> SQLiteStateUnitOfWork:
+    def begin(self) -> SQLiteStateUnitOfWork:
         return SQLiteStateUnitOfWork(
             self.database,
-            store,
             self.execution_repository,
             self.maintenance_repository,
         )

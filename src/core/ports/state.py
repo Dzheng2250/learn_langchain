@@ -60,6 +60,19 @@ class MaintenanceQueue(Protocol):
         """Enqueue one idempotent maintenance job."""
 
 
+class ProjectionOutboxStore(Protocol):
+    """Record optional external projection events without exposing SQL details."""
+
+    def enqueue(
+        self,
+        event_type: str,
+        aggregate_type: str,
+        aggregate_id: str,
+        payload: dict,
+    ) -> None:
+        """Append one projection event when projection is enabled."""
+
+
 class StateUnitOfWork(Protocol):
     """One atomic state transaction for foreground business facts."""
 
@@ -82,5 +95,5 @@ class StateUnitOfWork(Protocol):
 class StateUnitOfWorkFactory(Protocol):
     """Create Unit of Work instances for a concrete persistence backend."""
 
-    def begin(self, store) -> StateUnitOfWork:
-        """Start a new state transaction using the provided store adapter."""
+    def begin(self) -> StateUnitOfWork:
+        """Start a new state transaction."""

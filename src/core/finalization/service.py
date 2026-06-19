@@ -106,7 +106,7 @@ class TurnFinalizer:
                 "maintenance_job_count": len(jobs),
             },
         ):
-            message_ids = self.committer.commit(store, completed)
+            message_ids = self.committer.commit(completed)
         try:
             self.maintenance_scheduler.wake()
         except Exception as exc:

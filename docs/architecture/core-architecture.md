@@ -56,6 +56,7 @@ main
       -> DiagnosticTurnService
       -> TurnExecutionLoop
       -> SliceExecutionService
+      -> TurnRunObserver
       -> RpcRouter
       -> Transport
 ```
@@ -68,6 +69,10 @@ Handlers  -> RequestContext + Application Service
 CoreApp   -> 组装所有组件并管理生命周期
 Agent     -> 不依赖 RPC、Transport 或 CLI
 ```
+
+`TurnRunObserver` 是 Agent 执行子系统内部的观测适配层。它负责把 foreground run 的
+started、paused、finished、failed 等状态转换成 Telemetry 和 Trace。这样
+`TurnExecutionLoop` 只保留“什么时候继续、暂停或结束”的控制逻辑，不直接拼装观测 payload。
 
 ## DI 组合方式
 
@@ -82,6 +87,10 @@ CoreApp
   -> 按固定顺序 start / close
 ```
 
+`src/core/container_factories.py` 保存无状态构造辅助函数，例如默认 Socket transport、可选
+PostgreSQL pool、EventBus 和 maintenance handler map。它们被拆出是为了让
+`CoreContainer` 只描述 provider 图，不再混入大量普通 helper 函数。
+
 选择 `dependency-injector` 的原因：
 
 - 它是成熟的 Python DI 容器，支持 `Singleton`、`Factory`、`Object` 和测试 override。
@@ -91,6 +100,7 @@ CoreApp
 约束：业务模块不能把容器当 service locator 使用。`AgentTurnService`、
 `SessionLifecycleService`、`TurnFinalizer`、handlers 等应用层代码不得 import
 `CoreContainer` 或 `dependency_injector`；这些边界由契约测试保护。
+同样，业务模块也不应依赖 `container_factories.py`；该模块只属于组合根。
 
 
 ## 当前结构

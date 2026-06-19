@@ -84,7 +84,7 @@ run_validation
 
 ### Repository
 
-`TaskRepository` 只负责 SQLite 读写、事务和约束校验。它不关心工具输出格式。
+`TaskRepository` 只负责 SQLite 写入事务、Execution 身份校验和 plan/update 编排。`TaskQueryStore` 负责读取任务行、依赖关系和装配 `ExecutionTask`。`TaskPlanValidator` 负责不依赖数据库的规则校验，例如 `task_key` 格式、字段长度、重复 key、依赖 key 和依赖图环路。这样后续新增任务存储后端时可以复用同一套校验规则，并避免把查询映射和写入编排继续塞进同一个类。
 
 ### Application Service
 

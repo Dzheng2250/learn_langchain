@@ -292,7 +292,7 @@ LLM Response
     在 done 事件中携带 context_tokens snapshot
   → TurnFinalizer.finalize()
     build_fast_state() 后更新 context_tokens
-  → LocalStateStore._save_session()
+  → SQLiteSessionStore.save_fast_context()
     持久化 context_tokens 到 state.db sessions 表
   → AsyncCoreClient.on_event 回调
   → ChatScreen._handle_done()
@@ -309,7 +309,7 @@ LLM Response
 | `src/core/context/models.py` | `AgentContextState` 新增 `context_tokens` 字段 |
 | `src/core/finalization/service.py` | `TurnFinalizer.finalize()` 更新 `fast_state.context_tokens` |
 | `src/core/state/migrations.py` | Schema v5：sessions 表新增 `context_tokens` 列 |
-| `src/core/state/store.py` | `save_fast_session_in_transaction()` 写入 `context_tokens` |
+| `src/core/adapters/sqlite/session_store.py` | `save_fast_context()` 写入 `context_tokens` |
 | `src/config/settings.py` | 新增 `MODEL_CONTEXT_LIMIT`（默认 128_000） |
 
 ### 3.3 认证错误

@@ -81,6 +81,8 @@
 - 文档链接使用 `/docs/...` 或仓库根路径。
 - 新文档使用[文档模板](/docs/governance/document-template.md)。
 - 重要跨模块取舍使用[设计决策记录模板](/docs/governance/decision-record-template.md)。
+- 中文 Markdown 必须保存为 UTF-8。Windows PowerShell 读取中文文档时应显式使用
+  `-Encoding UTF8`，否则可能按系统 ANSI/GBK 解码并显示为乱码；这不代表文件内容损坏。
 
 ## 7. 自动治理
 

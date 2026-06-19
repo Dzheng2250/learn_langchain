@@ -1,8 +1,5 @@
 """Dependency-injector container for Core service composition."""
 
-from collections.abc import Callable
-from typing import Protocol
-
 from dependency_injector import containers, providers
 
 from src.config.maintenance import MaintenanceSettings
@@ -22,10 +19,16 @@ from src.core.agent.slices import SliceExecutionService
 from src.core.agent.worker import TurnWorkerExecutor
 from src.core.bus.router import RpcRouter
 from src.core.config.models import CoreConfig
+from src.core.container_factories import (
+    create_default_event_bus,
+    create_optional_postgres_pool,
+    create_socket_transport,
+    create_transport,
+    maintenance_handlers,
+)
 from src.core.context.loader import ConversationContextLoader
 from src.core.context.manager import AgentContextManager
 from src.core.diagnostics import DiagnosticTurnService
-from src.core.database.connection import create_pool
 from src.core.errors import ProviderErrorHandler
 from src.core.errors.provider_failure import ProviderFailureService
 from src.core.execution import ExecutionLifecycleService
@@ -34,7 +37,6 @@ from src.core.handlers import AgentHandlers, CoreHandlers
 from src.core.llm.provider import OpenAICompatibleProvider
 from src.core.maintenance import (
     ExecutionRecoveryCoordinator,
-    MaintenanceJobType,
     MaintenanceRepository,
     MaintenanceScheduler,
 )
@@ -52,70 +54,8 @@ from src.core.state import (
     LocalWorkspaceRepository,
 )
 from src.core.tasks import TaskPlanningService, TaskRepository
-from src.core.telemetry import create_event_bus
-from src.core.transport.socket_server import SocketServer
 from src.core.workspace.runtime import WorkspaceRuntimeFactory, WorkspaceRuntimeRegistry
 from src.core.tracing import TracingModelProvider
-
-
-class CoreTransport(Protocol):
-    """Transport lifecycle required by the Core composition root."""
-
-    async def start(self) -> int:
-        """Start accepting requests and return the bound port."""
-
-    async def close(self, timeout_seconds: float) -> None:
-        """Stop accepting requests and close transport resources."""
-
-
-TransportFactory = Callable[[CoreConfig, RpcRouter], CoreTransport]
-
-
-def create_socket_transport(config: CoreConfig, router: RpcRouter) -> SocketServer:
-    """Create the default TCP/NDJSON transport from validated Core config."""
-    return SocketServer(
-        config.host,
-        config.port,
-        router,
-        max_message_bytes=config.max_message_bytes,
-    )
-
-
-def _create_optional_postgres_pool():
-    """Open PostgreSQL only when optional event/projection features need it."""
-    from src.config.settings import AGENT_EVENTS_POSTGRES_ENABLED
-
-    return create_pool() if AGENT_EVENTS_POSTGRES_ENABLED else None
-
-
-def _create_default_event_bus(pool, trace_recorder):
-    """Build the default event bus with optional trace mirroring."""
-    return create_event_bus(
-        pool,
-        include_trace_sink=trace_recorder is not None,
-    )
-
-
-def _create_transport(
-    config: CoreConfig,
-    router: RpcRouter,
-    transport_factory: TransportFactory,
-) -> CoreTransport:
-    """Invoke the configured transport factory from the DI container."""
-    return transport_factory(config, router)
-
-
-def _maintenance_handlers(
-    context_summary_handler,
-    memory_extraction_handler,
-    checkpoint_cleanup_handler,
-) -> dict:
-    """Return the scheduler handler map keyed by stable maintenance enum values."""
-    return {
-        MaintenanceJobType.CONTEXT_SUMMARY: context_summary_handler,
-        MaintenanceJobType.MEMORY_EXTRACT: memory_extraction_handler,
-        MaintenanceJobType.CHECKPOINT_CLEANUP: checkpoint_cleanup_handler,
-    }
 
 
 class CoreContainer(containers.DeclarativeContainer):
@@ -134,9 +74,9 @@ class CoreContainer(containers.DeclarativeContainer):
 
     state_database = providers.Singleton(LocalStateDatabase)
     checkpoint_manager = providers.Singleton(CheckpointManager)
-    postgres_pool = providers.Singleton(_create_optional_postgres_pool)
+    postgres_pool = providers.Singleton(create_optional_postgres_pool)
     event_bus = providers.Singleton(
-        _create_default_event_bus,
+        create_default_event_bus,
         pool=postgres_pool,
         trace_recorder=trace_recorder,
     )
@@ -213,7 +153,7 @@ class CoreContainer(containers.DeclarativeContainer):
         execution_repository=execution_repository,
     )
     maintenance_handlers = providers.Callable(
-        _maintenance_handlers,
+        maintenance_handlers,
         context_summary_handler=context_summary_handler,
         memory_extraction_handler=memory_extraction_handler,
         checkpoint_cleanup_handler=checkpoint_cleanup_handler,
@@ -356,7 +296,7 @@ class CoreContainer(containers.DeclarativeContainer):
         session_service=session_lifecycle_service,
     )
     transport = providers.Factory(
-        _create_transport,
+        create_transport,
         config=config,
         router=router,
         transport_factory=transport_factory,

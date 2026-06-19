@@ -14,9 +14,9 @@ from src.core.agent.coordinator import TurnCoordinator
 from src.core.agent.loop import TurnExecutionLoop
 from src.core.agent.models import RunLimits
 from src.core.agent.request_stream import AgentRequestStreamService
-from src.core.agent.result import TurnResultBuilder
 from src.core.agent.runtime_graph import RuntimeGraphResolver
 from src.core.agent.slices import SliceExecutionService
+from src.core.agent.sync_runner import AgentSyncTurnRunner
 from src.core.agent.worker import TurnWorkerExecutor
 from src.core.state.contracts import StateStore
 from src.core.context.loader import ConversationContextLoader
@@ -79,6 +79,7 @@ class AgentTurnService:
         turn_execution_loop: TurnExecutionLoop | None = None,
         runtime_graph_resolver: RuntimeGraphResolver | None = None,
         request_stream_service: AgentRequestStreamService | None = None,
+        sync_turn_runner: AgentSyncTurnRunner | None = None,
         max_auto_slices: int = MAX_AUTO_SLICES_PER_GRANT,
         provider_error_handler: ProviderErrorHandler | None = None,
     ) -> None:
@@ -145,6 +146,9 @@ class AgentTurnService:
             runtime_graph_resolver=self.runtime_graph_resolver,
             turn_execution_loop=self.turn_execution_loop,
             execution_repository=self.execution_repository,
+        )
+        self.sync_turn_runner = sync_turn_runner or AgentSyncTurnRunner(
+            self.request_stream_service,
         )
 
     def initialize(self) -> None:
@@ -221,19 +225,15 @@ class AgentTurnService:
         goal_mode: bool = False,
     ) -> dict:
         """Consume one synchronous event stream and aggregate its final result."""
-        result = TurnResultBuilder(run_id=run_id, default_error="Agent turn failed.")
-        for item in self.request_stream_service.stream_turn(
+        return self.sync_turn_runner.run_turn(
             workspace_root,
             session_name,
             user_input,
-            run_id=result.run_id,
+            on_event,
+            run_id=run_id,
             control=control,
             goal_mode=goal_mode,
-        ):
-            if on_event:
-                on_event(item)
-            result.observe(item)
-        return result.build()
+        )
 
     def _run_resume_sync(
         self,
@@ -246,18 +246,14 @@ class AgentTurnService:
         control: ExecutionControl | None = None,
     ) -> dict:
         """Consume one resumed execution stream and aggregate its final result."""
-        result = TurnResultBuilder(run_id=run_id, default_error="Agent resume failed.")
-        for item in self.request_stream_service.stream_resume(
+        return self.sync_turn_runner.resume(
             workspace_root,
             session_name,
             instruction=instruction,
-            run_id=result.run_id,
+            on_event=on_event,
+            run_id=run_id,
             control=control,
-        ):
-            if on_event:
-                on_event(item)
-            result.observe(item)
-        return result.build()
+        )
 
     def stream_turn(
         self,

@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 from typing import TYPE_CHECKING
 
-from langchain_core.messages import messages_from_dict
+from langchain_core.messages import messages_from_dict, messages_to_dict
 
 from src.core.context.models import AgentContextState
 
@@ -22,11 +22,9 @@ class SQLiteSessionStore:
         database: LocalStateDatabase,
         *,
         transaction_conn=None,
-        write_delegate=None,
     ) -> None:
         self.database = database
         self._transaction_conn = transaction_conn
-        self._write_delegate = write_delegate
 
     def load_context(self, session) -> tuple[AgentContextState, int]:
         """Return compact context and latest committed Turn index."""
@@ -50,13 +48,68 @@ class SQLiteSessionStore:
             int(row["turn_index"]),
         )
 
+    def save_context(
+        self,
+        session,
+        state: AgentContextState,
+        turn_index: int,
+    ) -> None:
+        """Update full compact Session context, including the derived summary."""
+        conn = self._require_transaction()
+        recent = json.dumps(messages_to_dict(state.recent_messages), ensure_ascii=False, default=str)
+        cur = conn.execute(
+            """
+            UPDATE sessions SET summary = ?, recent_messages = ?, context_tokens = ?,
+                turn_index = ?, version = version + 1, updated_at = CURRENT_TIMESTAMP
+            WHERE workspace_id = ? AND session_id = ?
+            """,
+            (
+                state.summary,
+                recent,
+                state.context_tokens,
+                turn_index,
+                str(session.workspace.workspace_id),
+                str(session.session_id),
+            ),
+        )
+        if cur.rowcount != 1:
+            raise RuntimeError("Session context update did not affect exactly one row.")
+
+    def save_fast_context_values(
+        self,
+        session,
+        state: AgentContextState,
+        turn_index: int,
+    ) -> None:
+        """Update recent context without overwriting a newer background summary."""
+        conn = self._require_transaction()
+        recent = json.dumps(messages_to_dict(state.recent_messages), ensure_ascii=False, default=str)
+        cur = conn.execute(
+            """
+            UPDATE sessions SET recent_messages=?, context_tokens=?, turn_index=?,
+                version=version + 1, updated_at=CURRENT_TIMESTAMP
+            WHERE workspace_id=? AND session_id=?
+            """,
+            (
+                recent,
+                state.context_tokens,
+                turn_index,
+                str(session.workspace.workspace_id),
+                str(session.session_id),
+            ),
+        )
+        if cur.rowcount != 1:
+            raise RuntimeError("Fast Session context update did not affect exactly one row.")
+
     def save_fast_context(self, completed: CompletedTurn) -> None:
-        """Update compact context through the existing transaction-safe path."""
-        if self._transaction_conn is None or self._write_delegate is None:
-            raise RuntimeError("Session fast update requires an active Unit of Work.")
-        self._write_delegate.save_fast_session_in_transaction(
-            self._transaction_conn,
+        """Update compact context inside the active Unit of Work transaction."""
+        self.save_fast_context_values(
             completed.session,
             completed.state,
             completed.turn_index,
         )
+
+    def _require_transaction(self):
+        if self._transaction_conn is None:
+            raise RuntimeError("Session update requires an active Unit of Work.")
+        return self._transaction_conn

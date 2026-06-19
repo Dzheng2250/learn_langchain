@@ -5,8 +5,8 @@ import os
 
 from src.core.agent.contracts import ManagedAgentService
 from src.core.bus.router import RpcRouter
-from src.core.container import (
-    CoreContainer,
+from src.core.container import CoreContainer
+from src.core.container_factories import (
     TransportFactory,
     create_socket_transport,
 )

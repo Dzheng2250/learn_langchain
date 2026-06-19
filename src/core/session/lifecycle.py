@@ -9,8 +9,18 @@ from collections.abc import Callable
 from threading import RLock
 from uuid import UUID
 
-from src.core.maintenance.models import MaintenanceJobSpec
-from src.core.maintenance.types import MaintenanceJobType, MaintenancePriority
+from src.core.session.checkpoint_cleanup import SessionCheckpointCleanupQueue
+from src.core.session.responses import (
+    active_status_response,
+    archive_response,
+    archived_discard_response,
+    archived_reset_response,
+    archived_status_response,
+    hard_delete_response,
+    idle_discard_response,
+    not_found_delete_response,
+    reset_response,
+)
 from src.core.state.contracts import StateStore
 from src.core.workspace.contracts import WorkspaceIdentityRepository
 from src.core.workspace.models import SessionContext
@@ -41,30 +51,17 @@ class SessionLifecycleService:
         self.execution_repository = execution_repository
         self.checkpoint_manager = checkpoint_manager
         self.maintenance_repository = maintenance_repository
-        self.maintenance_scheduler = maintenance_scheduler
+        self.checkpoint_cleanup = SessionCheckpointCleanupQueue(
+            maintenance_repository,
+            maintenance_scheduler,
+        )
 
     def session_status(self, workspace_root: str, session_name: str) -> dict:
         """Return compact pending-execution state without running the graph."""
         workspace = self.workspace_repository.resolve(workspace_root)
         existing = self._get_existing_session_by_name(workspace, session_name)
         if existing is not None and existing[1]:
-            session = existing[0]
-            return {
-                "status": "archived",
-                "workspace_id": str(workspace.workspace_id),
-                "session_id": str(session.session_id),
-                "session_name": session.session_name,
-                "context_tokens": 0,
-                "pending_execution": None,
-                "execution_recoverable": False,
-                "checkpoint_state": None,
-                "maintenance": {
-                    "pending": 0,
-                    "running": 0,
-                    "failed": 0,
-                    "recent_failures": [],
-                },
-            }
+            return archived_status_response(workspace, existing[0])
         session, _ = self.workspace_repository.resolve_session(workspace, session_name)
         store = self.state_store_factory()
         try:
@@ -91,16 +88,13 @@ class SessionLifecycleService:
             )
         else:
             maintenance["recent_failures"] = []
-        return {
-            "workspace_id": str(workspace.workspace_id),
-            "session_id": str(session.session_id),
-            "session_name": session.session_name,
-            "context_tokens": context_state.context_tokens if context_state else 0,
-            "pending_execution": pending.__dict__ if pending else None,
-            "execution_recoverable": pending.recoverable if pending else False,
-            "checkpoint_state": pending.checkpoint_state if pending else None,
-            "maintenance": maintenance,
-        }
+        return active_status_response(
+            workspace,
+            session,
+            context_state,
+            pending,
+            maintenance,
+        )
 
     def discard_pending(self, workspace_root: str, session_name: str) -> dict:
         """Discard the pending execution while retaining its audit rows."""
@@ -109,28 +103,13 @@ class SessionLifecycleService:
         workspace = self.workspace_repository.resolve(workspace_root)
         existing = self._get_existing_session_by_name(workspace, session_name)
         if existing is not None and existing[1]:
-            session = existing[0]
-            return {
-                "status": "archived",
-                "workspace_id": str(session.workspace.workspace_id),
-                "session_id": str(session.session_id),
-                "session_name": session.session_name,
-                "message": "Session is archived and has no active execution to discard.",
-            }
+            return archived_discard_response(existing[0])
         session, _ = self.workspace_repository.resolve_session(workspace, session_name)
         with self._lock_for(session.session_id):
             if self.execution_repository.get_attached(session) is None:
-                return {
-                    "status": "idle",
-                    "workspace_id": str(session.workspace.workspace_id),
-                    "session_id": str(session.session_id),
-                    "session_name": session.session_name,
-                    "message": "Session has no pending execution to discard.",
-                }
+                return idle_discard_response(session)
             pending = self.execution_repository.discard(session)
-            cleanup_enqueued = self._enqueue_checkpoint_cleanup(session, pending)
-            if cleanup_enqueued and self.maintenance_scheduler is not None:
-                self.maintenance_scheduler.wake()
+            self.checkpoint_cleanup.enqueue(session, pending)
         return {"status": "discarded", "execution_id": pending.execution_id}
 
     def delete_session(
@@ -144,12 +123,11 @@ class SessionLifecycleService:
         workspace = self.workspace_repository.resolve(workspace_root)
         found = self._get_existing_session_by_name(workspace, session_name)
         if found is None:
-            return {
-                "status": "not_found",
-                "mode": "hard_delete" if hard_delete else "archive",
-                "workspace_id": str(workspace.workspace_id),
-                "session_name": session_name,
-            }
+            return not_found_delete_response(
+                workspace,
+                session_name,
+                hard_delete=hard_delete,
+            )
         session, archived = found
         with self._lock_for(session.session_id):
             if hard_delete:
@@ -165,48 +143,33 @@ class SessionLifecycleService:
                             # checkpoint row was already missing.
                             pass
                 deleted = self.workspace_repository.delete_session(session)
-                return {
-                    "status": "deleted" if deleted else "not_found",
-                    "mode": "hard_delete",
-                    "workspace_id": str(workspace.workspace_id),
-                    "session_id": str(session.session_id),
-                    "session_name": session.session_name,
-                    "checkpoint_threads_deleted": len(checkpoint_threads),
-                }
+                return hard_delete_response(
+                    session,
+                    deleted=deleted,
+                    checkpoint_threads_deleted=len(checkpoint_threads),
+                )
 
             cleanup_enqueued = False
             if not archived and self.execution_repository is not None:
                 pending = self.execution_repository.get_attached(session)
                 if pending is not None:
                     self.execution_repository.discard(session)
-                    cleanup_enqueued = self._enqueue_checkpoint_cleanup(session, pending)
+                    cleanup_enqueued = self.checkpoint_cleanup.enqueue(session, pending)
             archived_now = (
                 False if archived else self.workspace_repository.archive_session(session)
             )
-            if cleanup_enqueued and self.maintenance_scheduler is not None:
-                self.maintenance_scheduler.wake()
-            return {
-                "status": "archived" if archived_now else "already_archived",
-                "mode": "archive",
-                "workspace_id": str(workspace.workspace_id),
-                "session_id": str(session.session_id),
-                "session_name": session.session_name,
-                "cleanup_enqueued": cleanup_enqueued,
-            }
+            return archive_response(
+                session,
+                archived_now=archived_now,
+                cleanup_enqueued=cleanup_enqueued,
+            )
 
     def reset_session(self, workspace_root: str, session_name: str) -> dict:
         """Rebuild recent_messages from archived messages and reset context_tokens."""
         workspace = self.workspace_repository.resolve(workspace_root)
         found = self._get_existing_session_by_name(workspace, session_name)
         if found is not None and found[1]:
-            session = found[0]
-            return {
-                "status": "archived",
-                "workspace_id": str(workspace.workspace_id),
-                "session_id": str(session.session_id),
-                "session_name": session.session_name,
-                "recovered_messages": 0,
-            }
+            return archived_reset_response(workspace, found[0])
         session, _ = self.workspace_repository.resolve_session(workspace, session_name)
         with self._lock_for(session.session_id):
             store = self.state_store_factory()
@@ -214,13 +177,7 @@ class SessionLifecycleService:
                 count = store.rebuild_recent_messages_from_archive(session)
             finally:
                 store.close()
-        return {
-            "status": "ok",
-            "workspace_id": str(workspace.workspace_id),
-            "session_id": str(session.session_id),
-            "session_name": session.session_name,
-            "recovered_messages": count,
-        }
+        return reset_response(session, count)
 
     def _get_existing_session_by_name(
         self,
@@ -236,20 +193,3 @@ class SessionLifecycleService:
     def _lock_for(self, session_id: UUID) -> RLock:
         """Return the shared Session lock from the injected registry."""
         return self.lock_registry.get(session_id)
-
-    def _enqueue_checkpoint_cleanup(self, session: SessionContext, pending) -> bool:
-        """Queue checkpoint cleanup for a discarded pending execution."""
-        if self.maintenance_repository is None:
-            return False
-        self.maintenance_repository.enqueue(
-            MaintenanceJobSpec(
-                MaintenanceJobType.CHECKPOINT_CLEANUP,
-                f"checkpoint_cleanup:{pending.execution_id}",
-                str(session.workspace.workspace_id),
-                str(session.session_id),
-                {"checkpoint_thread_id": pending.checkpoint_thread_id},
-                execution_id=pending.execution_id,
-                priority=MaintenancePriority.CHECKPOINT_CLEANUP,
-            )
-        )
-        return True

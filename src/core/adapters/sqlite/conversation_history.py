@@ -4,10 +4,12 @@ from __future__ import annotations
 
 import json
 from typing import TYPE_CHECKING
+from uuid import uuid4
 
 from langchain_core.messages import messages_from_dict, messages_to_dict
 
 from src.config.settings import RECENT_MESSAGE_LIMIT
+from src.core.telemetry import emit_event
 
 if TYPE_CHECKING:
     from src.core.finalization.models import CompletedTurn
@@ -22,23 +24,79 @@ class SQLiteConversationHistoryStore:
         database: LocalStateDatabase,
         *,
         transaction_conn=None,
-        write_delegate=None,
     ) -> None:
         self.database = database
         self._transaction_conn = transaction_conn
-        self._write_delegate = write_delegate
 
     def append_turn(self, completed: CompletedTurn) -> list[str]:
-        """Append messages through the existing transaction-safe write path."""
-        if self._transaction_conn is None or self._write_delegate is None:
+        """Append all messages from one completed Turn inside an active UoW."""
+        if self._transaction_conn is None:
             raise RuntimeError("Conversation append requires an active Unit of Work.")
-        return self._write_delegate.append_messages_in_transaction(
-            self._transaction_conn,
+        return self.append_messages(
             completed.session,
             completed.turn_index,
             completed.messages,
             execution_id=completed.execution_id,
         )
+
+    def append_messages(
+        self,
+        session,
+        turn_index: int,
+        messages: list,
+        *,
+        execution_id: str | None = None,
+    ) -> list[str]:
+        """Append messages and advance the active branch head in one transaction."""
+        conn = self._require_transaction()
+        session_row = conn.execute(
+            "SELECT active_branch_id FROM sessions WHERE session_id = ?",
+            (str(session.session_id),),
+        ).fetchone()
+        branch_id = session_row["active_branch_id"] if session_row else None
+        head = None
+        if branch_id:
+            branch = conn.execute(
+                "SELECT head_message_id FROM branches WHERE branch_id = ?",
+                (branch_id,),
+            ).fetchone()
+            head = branch["head_message_id"] if branch else None
+        ids = []
+        for message in messages:
+            message_id = str(uuid4())
+            raw = messages_to_dict([message])[0]
+            conn.execute(
+                """
+                INSERT INTO messages(
+                    message_id, workspace_id, session_id, branch_id, parent_message_id,
+                    execution_id, role, content, message_type, raw, turn_index
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    message_id,
+                    str(session.workspace.workspace_id),
+                    str(session.session_id),
+                    branch_id,
+                    head,
+                    execution_id,
+                    self._message_role(message),
+                    self._message_content(message),
+                    message.__class__.__name__,
+                    json.dumps(raw, ensure_ascii=False, default=str),
+                    turn_index,
+                ),
+            )
+            ids.append(message_id)
+            head = message_id
+        if branch_id and head:
+            conn.execute(
+                """
+                UPDATE branches SET head_message_id = ?, version = version + 1,
+                    updated_at = CURRENT_TIMESTAMP WHERE branch_id = ?
+                """,
+                (head, branch_id),
+            )
+        return ids
 
     def load_turn(self, session, turn_index: int) -> tuple[list, list[str]]:
         """Load one committed Turn while preserving message order."""
@@ -94,3 +152,34 @@ class SQLiteConversationHistoryStore:
                 ),
             )
         return len(recovered)
+
+    def _require_transaction(self):
+        if self._transaction_conn is None:
+            raise RuntimeError("Conversation append requires an active Unit of Work.")
+        return self._transaction_conn
+
+    def _message_role(self, message) -> str:
+        role = {
+            "HumanMessage": "user",
+            "AIMessage": "assistant",
+            "ToolMessage": "tool",
+            "SystemMessage": "system",
+        }.get(message.__class__.__name__)
+        if role is None:
+            emit_event(
+                "unknown_message_role",
+                "sqlite_conversation_history",
+                "Archived a message type without a known conversation role.",
+                {"message_type": message.__class__.__name__},
+                level="warning",
+            )
+            return "unknown"
+        return role
+
+    def _message_content(self, message) -> str:
+        content = getattr(message, "content", "")
+        return (
+            content
+            if isinstance(content, str)
+            else json.dumps(content, ensure_ascii=False, default=str)
+        )

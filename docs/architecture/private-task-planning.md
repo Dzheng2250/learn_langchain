@@ -79,6 +79,24 @@ Repository 会拒绝：
 - 循环依赖。
 - 超过 `LEARN_AGENT_TASK_MAX_PER_EXECUTION` 的任务数量。
 
+实现上，任务模块拆成三层，避免 `TaskRepository` 继续膨胀：
+
+| 模块 | 职责 |
+|---|---|
+| `TaskRepository` | 负责 `task_plan` / `task_update` 的事务编排、Execution 身份校验和写入顺序 |
+| `TaskQueryStore` | 负责任务行读取、依赖关系读取、blocked/ready 计算和 `ExecutionTask` 装配 |
+| `TaskPlanValidator` | 负责不依赖数据库的纯规则校验 |
+
+`TaskPlanValidator` 当前覆盖：
+
+- `task_key` 格式校验。
+- subject / description / notes 长度限制。
+- 单次 plan 的重复 key 检查。
+- 依赖 key 校验。
+- 依赖图环路检查。
+
+这样后续如果新增文件或 PostgreSQL 任务后端，可以复用同一套任务计划校验和查询装配思路，而不是在每个 repository 中复制规则。
+
 ## 4. 工具设计
 
 goal 模式下父 Agent 可见四个普通 LangChain 工具：

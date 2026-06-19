@@ -498,7 +498,13 @@ flowchart LR
 | 加法迁移 | `src/core/state/migrations.py` |
 | Session、消息和记忆 | `src/core/state/store.py` |
 | Execution 状态 | `src/core/state/executions.py` |
+| Execution 只读查询 | `src/core/state/execution_queries.py` |
+| Execution checkpoint 恢复状态 | `src/core/state/execution_checkpoints.py` |
+| Execution Slice 与预算计数 | `src/core/state/execution_slices.py` |
 | LangGraph checkpoint | `src/core/state/checkpoints.py` |
+| PostgreSQL 到本地状态迁移编排 | `src/core/state/migration.py` |
+| 迁移前源库计数检查 | `src/core/state/migration_inspector.py` |
+| 迁移后源库清理 | `src/core/state/migration_pruner.py` |
 | 最小 Turn 提交 | `src/core/finalization/committer.py` |
 | 后台任务仓储与调度 | `src/core/maintenance/repository.py`、`scheduler.py` |
 | 恢复协调器 | `src/core/maintenance/recovery.py` |

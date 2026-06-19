@@ -1,10 +1,12 @@
-"""Transactional outbox repository for durable background maintenance."""
+﻿"""Transactional outbox repository for durable background maintenance."""
 
 import json
 from uuid import uuid4
 
 from src.config.maintenance import MaintenanceSettings
 from src.core.maintenance.models import MaintenanceJob, MaintenanceJobSpec
+from src.core.maintenance.inspection import MaintenanceInspectionStore
+from src.core.maintenance.records import maintenance_job_from_row
 from src.core.maintenance.types import MaintenanceStatus
 from src.core.state.database import LocalStateDatabase
 
@@ -20,6 +22,7 @@ class MaintenanceRepository:
         self.database = database
         self.settings = settings or MaintenanceSettings.load()
         self.settings.validate()
+        self.inspection = MaintenanceInspectionStore(database)
 
     def enqueue_in_transaction(self, conn, spec: MaintenanceJobSpec) -> str:
         """Insert one idempotent task inside an existing business transaction."""
@@ -99,7 +102,7 @@ class MaintenanceRepository:
                 "SELECT * FROM maintenance_jobs WHERE job_id=?",
                 (row["job_id"],),
             ).fetchone()
-        return self._from_row(claimed)
+        return maintenance_job_from_row(claimed)
 
     def succeed(self, job_id: str) -> None:
         """Mark one task complete."""
@@ -141,30 +144,7 @@ class MaintenanceRepository:
 
     def counts_for_session(self, workspace_id: str, session_id: str) -> dict[str, int]:
         """Return pending/running/failed counts for a Session control response."""
-        counts = {
-            MaintenanceStatus.PENDING.value: 0,
-            MaintenanceStatus.RUNNING.value: 0,
-            MaintenanceStatus.FAILED.value: 0,
-        }
-        with self.database.connect() as conn:
-            rows = conn.execute(
-                """
-                SELECT status, count(*) AS count FROM maintenance_jobs
-                WHERE workspace_id=? AND session_id=?
-                  AND status IN (?, ?, ?)
-                GROUP BY status
-                """,
-                (
-                    workspace_id,
-                    session_id,
-                    MaintenanceStatus.PENDING,
-                    MaintenanceStatus.RUNNING,
-                    MaintenanceStatus.FAILED,
-                ),
-            ).fetchall()
-        for row in rows:
-            counts[row["status"]] = int(row["count"])
-        return counts
+        return self.inspection.counts_for_session(workspace_id, session_id)
 
     def recent_failures_for_session(
         self,
@@ -180,45 +160,15 @@ class MaintenanceRepository:
         failed job type lets clients distinguish those failures from the active
         Agent turn.
         """
-        with self.database.connect() as conn:
-            rows = conn.execute(
-                """
-                SELECT job_id, execution_id, job_type, attempts, max_attempts,
-                       last_error, updated_at, finished_at
-                FROM maintenance_jobs
-                WHERE workspace_id=? AND session_id=? AND status=?
-                ORDER BY updated_at DESC, job_id DESC
-                LIMIT ?
-                """,
-                (
-                    workspace_id,
-                    session_id,
-                    MaintenanceStatus.FAILED,
-                    max(0, int(limit)),
-                ),
-            ).fetchall()
-        return [
-            {
-                "job_id": row["job_id"],
-                "execution_id": row["execution_id"],
-                "job_type": row["job_type"],
-                "attempts": int(row["attempts"]),
-                "max_attempts": int(row["max_attempts"]),
-                "last_error": row["last_error"],
-                "updated_at": row["updated_at"],
-                "finished_at": row["finished_at"],
-            }
-            for row in rows
-        ]
+        return self.inspection.recent_failures_for_session(
+            workspace_id,
+            session_id,
+            limit=limit,
+        )
 
     def get_by_dedupe_key(self, dedupe_key: str) -> MaintenanceJob | None:
         """Return one task for tests and diagnostics."""
-        with self.database.connect() as conn:
-            row = conn.execute(
-                "SELECT * FROM maintenance_jobs WHERE dedupe_key=?",
-                (dedupe_key,),
-            ).fetchone()
-        return self._from_row(row) if row else None
+        return self.inspection.get_by_dedupe_key(dedupe_key)
 
     def requeue_failed(self, dedupe_key: str) -> bool:
         """Allow recovery coordination to retry a terminal checkpoint cleanup."""
@@ -233,19 +183,3 @@ class MaintenanceRepository:
                 (MaintenanceStatus.PENDING, dedupe_key, MaintenanceStatus.FAILED),
             )
         return cur.rowcount == 1
-
-    @staticmethod
-    def _from_row(row) -> MaintenanceJob:
-        return MaintenanceJob(
-            job_id=row["job_id"],
-            workspace_id=row["workspace_id"],
-            session_id=row["session_id"],
-            execution_id=row["execution_id"],
-            job_type=row["job_type"],
-            dedupe_key=row["dedupe_key"],
-            priority=int(row["priority"]),
-            status=MaintenanceStatus(row["status"]),
-            payload=json.loads(row["payload"] or "{}"),
-            attempts=int(row["attempts"]),
-            max_attempts=int(row["max_attempts"]),
-        )

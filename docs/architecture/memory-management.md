@@ -324,10 +324,11 @@ commit
 | 单轮加载与执行编排 | `src/core/agent/service.py`、`coordinator.py` |
 | 最小原子提交 | `src/core/finalization/` |
 | 摘要与记忆后台任务 | `src/core/maintenance/` |
-| 短期上下文构造与压缩 | `src/core/context/manager.py` |
+| 短期上下文构造与压缩 | `src/core/context/manager.py`、`messages.py`、`summary_policy.py` |
 | Session、消息与长期记忆 facade | `src/core/state/store.py` |
 | 数据访问 Repository | `src/core/state/` |
 | 长期记忆提取策略 | `src/core/memory/policy.py`、`extractor.py` |
+| PostgreSQL 兼容记忆 facade | `src/core/memory/store.py`、`formatting.py`、`retrieval.py`、`writer.py` |
 | 数据库表和约束 | `src/core/state/schema.sql` |
 
 关键测试：

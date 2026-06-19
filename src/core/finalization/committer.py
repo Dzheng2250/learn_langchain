@@ -1,7 +1,6 @@
 """Unit of Work for one completed Agent Turn."""
 
 from src.core.finalization.models import CompletedTurn
-from src.core.state.contracts import StateStore
 from src.core.ports import StateUnitOfWorkFactory
 
 
@@ -11,9 +10,9 @@ class CompletedTurnCommitter:
     def __init__(self, unit_of_work_factory: StateUnitOfWorkFactory) -> None:
         self.unit_of_work_factory = unit_of_work_factory
 
-    def commit(self, store: StateStore, completed: CompletedTurn) -> list[str]:
+    def commit(self, completed: CompletedTurn) -> list[str]:
         """Commit messages, Session state, Execution state, and outbox jobs."""
-        with self.unit_of_work_factory.begin(store) as uow:
+        with self.unit_of_work_factory.begin() as uow:
             message_ids = uow.history.append_turn(completed)
             uow.sessions.save_fast_context(completed)
             uow.executions.finish_completed_turn(completed)
