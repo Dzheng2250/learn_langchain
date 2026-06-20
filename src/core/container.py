@@ -14,7 +14,8 @@ from src.core.agent.loop import TurnExecutionLoop
 from src.core.agent.models import RunLimits
 from src.core.agent.request_stream import AgentRequestStreamService
 from src.core.agent.runtime_graph import RuntimeGraphResolver
-from src.core.agent.service import AgentTurnService, SessionLockRegistry
+from src.core.agent.locking import SessionLockRegistry
+from src.core.agent.service import AgentTurnService
 from src.core.agent.slices import SliceExecutionService
 from src.core.agent.worker import TurnWorkerExecutor
 from src.core.bus.router import RpcRouter

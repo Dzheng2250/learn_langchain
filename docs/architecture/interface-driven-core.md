@@ -88,6 +88,10 @@ src/core/adapters/sqlite/
 | PostgreSQL 投影 outbox | `SQLiteProjectionOutboxStore.enqueue()` | 负责可选投影事件写入 |
 | 摘要读取与 CAS 写回 | `SQLiteSummaryStore` | 防止旧摘要覆盖新摘要 |
 | 成功 Turn 原子提交 | `SQLiteStateUnitOfWorkFactory` | 组合 history/session/execution/maintenance 端口 |
+| Agent 服务生命周期 | `AgentServiceLifecycle` | 初始化 state/checkpoint/recovery/maintenance，关闭 worker 和后台资源 |
+| Session 并发锁 | `SessionLockRegistry` | 独立保存 Session UUID 到 reentrant lock 的映射 |
+| Session 状态查询 | `SessionStatusReader` | 只读聚合 context、pending execution 和 maintenance 状态 |
+| Agent 循环配置 | `LoopConfig` | 收敛 `TurnExecutionLoop` 的标量配置，避免构造器随配置项膨胀 |
 
 这意味着响应关键路径中的消息追加和 Session fast context 更新已经不再由 `LocalStateStore` 自己执行 SQL，而是委托给 SQLite adapter。
 
@@ -161,11 +165,13 @@ CoreApp
 
 业务模块不应直接创建 trace/event bus、数据库连接、模型 provider 或 runtime registry。这些基础设施应由 `CoreApp` 和 `CoreContainer` 注入。
 
-Agent 执行链路也遵循同一原则：`TurnExecutionLoop` 负责控制 Slice 循环和继续/停止判断，
+Agent 执行链路也遵循同一原则：`AgentTurnService` 只保留面向 RPC 的 facade 和依赖组装，
+`AgentServiceLifecycle` 负责 durable resource 的启动/关闭，`TurnExecutionLoop` 负责控制 Slice 循环和继续/停止判断，
 `SliceExecutionService` 负责单次 LangGraph 执行，`TurnLoopErrorHandler` 负责错误分支的
 Execution 状态落库，`TurnLoopPauseHandler` 负责预算暂停的摘要、状态和事件构造，
-`TurnRunObserver` 负责把运行状态转换成 Telemetry/Trace，`AgentSyncTurnRunner` 负责在 worker
-线程中消费同步事件流并聚合最终 RPC result。执行逻辑不直接依赖具体 sink，观测逻辑也不决定业务是否继续。
+`TurnRunObserver` 负责把运行状态转换成 Telemetry/Trace，`AgentAsyncTurnRunner` 负责把阻塞式
+Agent 执行提交到有界 worker，`AgentSyncTurnRunner` 负责在 worker 线程中消费同步事件流并聚合最终 RPC result。
+执行逻辑不直接依赖具体 sink，观测逻辑也不决定业务是否继续。
 
 `container_factories.py` 是组合根的辅助模块，只保存无状态构造函数，例如 transport、EventBus
 和 maintenance handler map。它不是业务端口，也不应该被 Agent、Session、Memory 或 Tool 模块导入。
@@ -182,13 +188,17 @@ Execution 状态落库，`TurnLoopPauseHandler` 负责预算暂停的摘要、�
 
 它不应该继续承载新的业务能力。后续新增或迁移状态能力时，应优先新增端口和 adapter。
 
+投影 outbox 的写入也应统一经过 `SQLiteProjectionOutboxStore`。其它 adapter 不应重复编写
+`INSERT INTO projection_outbox` SQL，否则会让 outbox payload、开关语义和事务要求分散到多个地方。
+
 ## 7. 后续还需要接口化的部分
 
 后续优先级建议如下：
 
 1. **Workspace / Session Lifecycle**
    Workspace 注册、Session 归档、硬删除、重置等能力应继续收敛到明确的 lifecycle service 和 store 端口中。
-   当前 `SessionLifecycleService` 已经只保留会话解析、加锁和 repository 调用；RPC 返回字典由
+   当前 `SessionLifecycleService` 已经把状态查询拆给 `SessionStatusReader`，只读 status 不再混在归档、删除、重置等写路径里；
+   RPC 返回字典由
    `src/core/session/responses.py` 构造，checkpoint cleanup 入队由
    `src/core/session/checkpoint_cleanup.py` 负责。后续如果继续拆，应优先把 Session 读写能力抽成更小的
    `SessionLifecycleStore`，而不是让 lifecycle service 直接依赖具体 workspace repository 方法。
@@ -210,6 +220,8 @@ Execution 状态落库，`TurnLoopPauseHandler` 负责预算暂停的摘要、�
 4. **Migration Orchestration**
    PostgreSQL 到本地状态的迁移入口仍是 `LocalStateMigration`，但源库计数检查已经拆到
    `LocalStateMigrationInspector`，源库清理已经拆到 `LocalStateSourcePruner`。后续如果继续拆，应优先拆 `_copy()` 中的 workspace/session、messages、memories、events 四段复制逻辑。
+   旧 PostgreSQL workspace schema 迁移的 `WorkspaceMigration` 也不再包含 `pg_dump` / Docker 备份细节；
+   备份逻辑已经拆到 `src/core/database/backup.py`，迁移编排只依赖 `create_database_backup()`。
 
 5. **Memory Write / Read Contract Tests**
    本地 SQLite 记忆读取和写入已经拆出 adapter。兼容 PostgreSQL memory facade 也已经把格式化、检索辅助和写入事务拆到 `formatting.py`、`retrieval.py`、`writer.py`。

@@ -6,6 +6,7 @@ import json
 from uuid import uuid4
 
 from src.config.settings import MEMORY_EXTRACTION_ENABLED
+from src.core.adapters.sqlite.projection_outbox import SQLiteProjectionOutboxStore
 from src.core.memory.extractor import MemoryCandidateExtractor
 from src.core.telemetry import record_error, record_memory_saved
 
@@ -160,15 +161,13 @@ class SQLiteMemoryWriteStore:
     ) -> None:
         if not self.projection_enabled:
             return
-        conn.execute(
-            """
-            INSERT INTO projection_outbox(event_type, aggregate_type, aggregate_id, payload)
-            VALUES (?, ?, ?, ?)
-            """,
-            (
-                event_type,
-                aggregate_type,
-                aggregate_id,
-                json.dumps(payload, ensure_ascii=False),
-            ),
+        SQLiteProjectionOutboxStore(
+            self.database,
+            transaction_conn=conn,
+            enabled=self.projection_enabled,
+        ).enqueue(
+            event_type,
+            aggregate_type,
+            aggregate_id,
+            payload,
         )

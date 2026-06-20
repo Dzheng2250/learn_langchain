@@ -22,7 +22,7 @@ from src.core.maintenance.handlers import ContextSummaryHandler
 from src.core.state import ExecutionRepository, LocalStateDatabase, LocalStateStore
 from src.core.state.migrations import LATEST_SCHEMA_VERSION, apply_local_migrations
 from src.core.state.workspace import LocalWorkspaceRepository
-from src.core.agent.service import SessionLockRegistry
+from src.core.agent.locking import SessionLockRegistry
 from src.core.session import SessionLifecycleService
 
 

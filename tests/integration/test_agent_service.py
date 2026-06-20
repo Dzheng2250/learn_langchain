@@ -15,7 +15,8 @@ from src.core.errors import ErrorCategory
 from src.core.llm.provider import LlmConfigurationStatus
 from src.core.maintenance.repository import MaintenanceRepository
 from src.config.settings import CORE_AGENT_WORKERS
-from src.core.agent.service import AgentTurnService, SessionLockRegistry
+from src.core.agent.locking import SessionLockRegistry
+from src.core.agent.service import AgentTurnService
 from src.core.agent.worker import TurnWorkerExecutor
 from src.core.session import SessionLifecycleService
 from src.core.state import ExecutionRepository, LocalStateDatabase, LocalStateStore
@@ -75,7 +76,7 @@ class SessionLockRegistryTest(unittest.TestCase):
 
 
 class AgentTurnExecutorTest(unittest.IsolatedAsyncioTestCase):
-    def _service(self, executor=None, max_concurrent_turns=CORE_AGENT_WORKERS):
+    def _service(self, executor=None, max_concurrent_turns=CORE_AGENT_WORKERS, sync_runner=None):
         worker = TurnWorkerExecutor(
             executor=executor,
             max_workers=max_concurrent_turns,
@@ -86,6 +87,7 @@ class AgentTurnExecutorTest(unittest.IsolatedAsyncioTestCase):
             state_store_factory=Mock(),
             turn_worker=worker,
             max_concurrent_turns=max_concurrent_turns,
+            sync_turn_runner=sync_runner,
         )
 
     async def test_injected_executor_bounds_concurrent_turns(self):
@@ -105,7 +107,7 @@ class AgentTurnExecutorTest(unittest.IsolatedAsyncioTestCase):
                 active -= 1
             return {"status": "ok"}
 
-        service._run_turn_sync = run_sync
+        service.sync_turn_runner.run_turn = run_sync
         try:
             await asyncio.gather(*(service.run_turn(".", f"s-{index}", "hello") for index in range(5)))
         finally:
@@ -152,7 +154,7 @@ class AgentTurnExecutorTest(unittest.IsolatedAsyncioTestCase):
                 second_started.set()
             return {"status": "ok"}
 
-        service._run_turn_sync = run_sync
+        service.sync_turn_runner.run_turn = run_sync
         first = asyncio.create_task(service.run_turn(".", "first", "hello"))
         self.assertTrue(await asyncio.to_thread(first_started.wait, 1))
         first.cancel()

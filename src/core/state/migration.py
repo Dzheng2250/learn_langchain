@@ -6,7 +6,7 @@ from pathlib import Path
 from uuid import uuid4
 
 from src.config.paths import local_state_db
-from src.core.database.migration import create_database_backup
+from src.core.database.backup import create_database_backup
 from src.core.state.database import LocalStateDatabase
 from src.core.state.migration_copier import LocalStateMigrationCopier
 from src.core.state.migration_inspector import LocalStateMigrationInspector

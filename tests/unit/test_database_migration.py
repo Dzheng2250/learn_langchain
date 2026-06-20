@@ -169,9 +169,9 @@ class DatabaseMigrationTest(unittest.TestCase):
             Path(command[-1]).write_bytes(b"backup")
 
         with (
-            patch("src.core.database.migration.backup_dir", return_value=target_dir),
+            patch("src.core.database.backup.backup_dir", return_value=target_dir),
             patch(
-                "src.core.database.migration.connection_kwargs",
+                "src.core.database.backup.connection_kwargs",
                 return_value={
                     "host": "db.example",
                     "port": "5434",
@@ -179,8 +179,8 @@ class DatabaseMigrationTest(unittest.TestCase):
                     "dbname": "learn_agent",
                 },
             ),
-            patch("src.core.database.migration.shutil.which", return_value="pg_dump"),
-            patch("src.core.database.migration.subprocess.run", side_effect=fake_run),
+            patch("src.core.database.backup.shutil.which", return_value="pg_dump"),
+            patch("src.core.database.backup.subprocess.run", side_effect=fake_run),
         ):
             backup = create_database_backup()
 
@@ -192,11 +192,11 @@ class DatabaseMigrationTest(unittest.TestCase):
         self.addCleanup(shutil.rmtree, target_dir, True)
 
         with (
-            patch("src.core.database.migration.backup_dir", return_value=target_dir),
-            patch("src.core.database.migration.shutil.which", side_effect=[None, "docker"]),
+            patch("src.core.database.backup.backup_dir", return_value=target_dir),
+            patch("src.core.database.backup.shutil.which", side_effect=[None, "docker"]),
             patch("pathlib.Path.unlink") as unlink,
             patch(
-                "src.core.database.migration.subprocess.run",
+                "src.core.database.backup.subprocess.run",
                 side_effect=subprocess.CalledProcessError(
                     1,
                     ["docker", "exec"],

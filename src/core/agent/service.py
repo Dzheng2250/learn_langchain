@@ -1,20 +1,21 @@
 """Worker-backed facade for foreground Agent turn execution."""
 
 from collections.abc import Callable, Iterator
-from threading import Lock, RLock
-from uuid import UUID
 
 from src.config.settings import (
     CORE_AGENT_WORKERS,
     MAX_AUTO_SLICES_PER_GRANT,
     MEMORY_ENABLED,
 )
+from src.core.agent.async_runner import AgentAsyncTurnRunner
 from src.core.agent.contracts import EventCallback, ExecutionControl
 from src.core.agent.coordinator import TurnCoordinator
+from src.core.agent.locking import SessionLockRegistry
 from src.core.agent.loop import TurnExecutionLoop
 from src.core.agent.models import RunLimits
 from src.core.agent.request_stream import AgentRequestStreamService
 from src.core.agent.runtime_graph import RuntimeGraphResolver
+from src.core.agent.service_lifecycle import AgentServiceLifecycle
 from src.core.agent.slices import SliceExecutionService
 from src.core.agent.sync_runner import AgentSyncTurnRunner
 from src.core.agent.worker import TurnWorkerExecutor
@@ -28,19 +29,6 @@ from src.core.errors.provider_failure import ProviderFailureService
 from src.core.llm.provider import ModelConfiguration, OpenAICompatibleProvider
 from src.core.workspace.contracts import WorkspaceIdentityRepository
 from src.core.workspace.runtime import WorkspaceRuntimeRegistry
-
-
-class SessionLockRegistry:
-    """Create and retain one reentrant consistency lock per Session UUID."""
-
-    def __init__(self) -> None:
-        self._guard = Lock()
-        self._locks: dict[UUID, RLock] = {}
-
-    def get(self, session_id: UUID) -> RLock:
-        """Return the stable lock that serializes the given Session."""
-        with self._guard:
-            return self._locks.setdefault(session_id, RLock())
 
 
 class AgentTurnService:
@@ -80,6 +68,8 @@ class AgentTurnService:
         runtime_graph_resolver: RuntimeGraphResolver | None = None,
         request_stream_service: AgentRequestStreamService | None = None,
         sync_turn_runner: AgentSyncTurnRunner | None = None,
+        async_turn_runner: AgentAsyncTurnRunner | None = None,
+        service_lifecycle: AgentServiceLifecycle | None = None,
         max_auto_slices: int = MAX_AUTO_SLICES_PER_GRANT,
         provider_error_handler: ProviderErrorHandler | None = None,
     ) -> None:
@@ -150,20 +140,21 @@ class AgentTurnService:
         self.sync_turn_runner = sync_turn_runner or AgentSyncTurnRunner(
             self.request_stream_service,
         )
+        self.async_turn_runner = async_turn_runner or AgentAsyncTurnRunner(
+            turn_worker=self.turn_worker,
+            sync_runner=self.sync_turn_runner,
+        )
+        self.service_lifecycle = service_lifecycle or AgentServiceLifecycle(
+            state_store_factory=self.state_store_factory,
+            turn_worker=self.turn_worker,
+            checkpoint_manager=self.checkpoint_manager,
+            maintenance_scheduler=self.maintenance_scheduler,
+            recovery_coordinator=self.recovery_coordinator,
+        )
 
     def initialize(self) -> None:
         """Initialize durable schema dependencies before accepting requests."""
-        store = self.state_store_factory()
-        try:
-            store.initialize()
-            if self.checkpoint_manager is not None:
-                self.checkpoint_manager.initialize()
-            if self.recovery_coordinator is not None:
-                self.recovery_coordinator.reconcile()
-            if self.maintenance_scheduler is not None:
-                self.maintenance_scheduler.start()
-        finally:
-            store.close()
+        self.service_lifecycle.initialize()
 
     async def run_turn(
         self,
@@ -181,8 +172,7 @@ class AgentTurnService:
         ``on_event`` is invoked from the worker thread. RPC adapters must marshal
         socket writes back to their owning event loop.
         """
-        return await self.turn_worker.run(
-            self._run_turn_sync,
+        return await self.async_turn_runner.run_turn(
             workspace_root,
             session_name,
             user_input,
@@ -203,54 +193,11 @@ class AgentTurnService:
         control: ExecutionControl | None = None,
     ) -> dict:
         """Schedule a recoverable execution resume on the bounded executor."""
-        return await self.turn_worker.run(
-            self._run_resume_sync,
+        return await self.async_turn_runner.resume(
             workspace_root,
             session_name,
             instruction,
             on_event,
-            run_id=run_id,
-            control=control,
-        )
-
-    def _run_turn_sync(
-        self,
-        workspace_root: str,
-        session_name: str,
-        user_input: str,
-        on_event: EventCallback | None = None,
-        *,
-        run_id: str | None = None,
-        control: ExecutionControl | None = None,
-        goal_mode: bool = False,
-    ) -> dict:
-        """Consume one synchronous event stream and aggregate its final result."""
-        return self.sync_turn_runner.run_turn(
-            workspace_root,
-            session_name,
-            user_input,
-            on_event,
-            run_id=run_id,
-            control=control,
-            goal_mode=goal_mode,
-        )
-
-    def _run_resume_sync(
-        self,
-        workspace_root: str,
-        session_name: str,
-        instruction: str = "",
-        on_event: EventCallback | None = None,
-        *,
-        run_id: str | None = None,
-        control: ExecutionControl | None = None,
-    ) -> dict:
-        """Consume one resumed execution stream and aggregate its final result."""
-        return self.sync_turn_runner.resume(
-            workspace_root,
-            session_name,
-            instruction=instruction,
-            on_event=on_event,
             run_id=run_id,
             control=control,
         )
@@ -295,11 +242,4 @@ class AgentTurnService:
 
     def close(self) -> None:
         """Stop foreground Turn workers, then stop durable maintenance safely."""
-        self.turn_worker.close()
-        maintenance_stopped = (
-            self.maintenance_scheduler.close()
-            if self.maintenance_scheduler is not None
-            else True
-        )
-        if self.checkpoint_manager is not None and maintenance_stopped:
-            self.checkpoint_manager.close()
+        self.service_lifecycle.close()

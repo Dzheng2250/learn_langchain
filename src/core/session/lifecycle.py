@@ -11,16 +11,15 @@ from uuid import UUID
 
 from src.core.session.checkpoint_cleanup import SessionCheckpointCleanupQueue
 from src.core.session.responses import (
-    active_status_response,
     archive_response,
     archived_discard_response,
     archived_reset_response,
-    archived_status_response,
     hard_delete_response,
     idle_discard_response,
     not_found_delete_response,
     reset_response,
 )
+from src.core.session.status import SessionStatusReader
 from src.core.state.contracts import StateStore
 from src.core.workspace.contracts import WorkspaceIdentityRepository
 from src.core.workspace.models import SessionContext
@@ -44,6 +43,7 @@ class SessionLifecycleService:
         checkpoint_manager=None,
         maintenance_repository=None,
         maintenance_scheduler=None,
+        status_reader: SessionStatusReader | None = None,
     ) -> None:
         self.workspace_repository = workspace_repository
         self.state_store_factory = state_store_factory
@@ -55,46 +55,16 @@ class SessionLifecycleService:
             maintenance_repository,
             maintenance_scheduler,
         )
+        self.status_reader = status_reader or SessionStatusReader(
+            workspace_repository=workspace_repository,
+            state_store_factory=state_store_factory,
+            execution_repository=execution_repository,
+            maintenance_repository=maintenance_repository,
+        )
 
     def session_status(self, workspace_root: str, session_name: str) -> dict:
         """Return compact pending-execution state without running the graph."""
-        workspace = self.workspace_repository.resolve(workspace_root)
-        existing = self._get_existing_session_by_name(workspace, session_name)
-        if existing is not None and existing[1]:
-            return archived_status_response(workspace, existing[0])
-        session, _ = self.workspace_repository.resolve_session(workspace, session_name)
-        store = self.state_store_factory()
-        try:
-            context_state, _ = store.load_session(session)
-        except Exception:
-            context_state = None
-        finally:
-            store.close()
-        pending = self.execution_repository.get_attached(session) if self.execution_repository else None
-        maintenance = (
-            self.maintenance_repository.counts_for_session(
-                str(workspace.workspace_id),
-                str(session.session_id),
-            )
-            if self.maintenance_repository is not None
-            else {"pending": 0, "running": 0, "failed": 0}
-        )
-        if self.maintenance_repository is not None:
-            maintenance["recent_failures"] = (
-                self.maintenance_repository.recent_failures_for_session(
-                    str(workspace.workspace_id),
-                    str(session.session_id),
-                )
-            )
-        else:
-            maintenance["recent_failures"] = []
-        return active_status_response(
-            workspace,
-            session,
-            context_state,
-            pending,
-            maintenance,
-        )
+        return self.status_reader.get(workspace_root, session_name)
 
     def discard_pending(self, workspace_root: str, session_name: str) -> dict:
         """Discard the pending execution while retaining its audit rows."""

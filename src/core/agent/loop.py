@@ -1,6 +1,7 @@
 """Foreground execution loop for one Agent turn or resume grant."""
 
 from collections.abc import Callable, Iterator
+from dataclasses import dataclass
 
 from src.config.settings import MAX_AUTO_SLICES_PER_GRANT
 from src.core.agent.budget import (
@@ -34,6 +35,13 @@ from src.core.tracing import (
 from src.core.workspace.models import SessionContext
 
 
+@dataclass(frozen=True)
+class LoopConfig:
+    """Stable scalar configuration for the foreground Slice loop."""
+
+    max_auto_slices: int = MAX_AUTO_SLICES_PER_GRANT
+
+
 class TurnExecutionLoop:
     """Run the bounded Slice loop for a foreground Agent turn.
 
@@ -55,6 +63,7 @@ class TurnExecutionLoop:
         observer: TurnRunObserver | None = None,
         error_handler: TurnLoopErrorHandler | None = None,
         pause_handler: TurnLoopPauseHandler | None = None,
+        config: LoopConfig | None = None,
         max_auto_slices: int = MAX_AUTO_SLICES_PER_GRANT,
     ) -> None:
         self.state_store_factory = state_store_factory
@@ -73,7 +82,8 @@ class TurnExecutionLoop:
             execution_repository=execution_repository,
             observer=self.observer,
         )
-        self.max_auto_slices = max(1, int(max_auto_slices))
+        self.config = config or LoopConfig(max_auto_slices=max_auto_slices)
+        self.max_auto_slices = max(1, int(self.config.max_auto_slices))
 
     def stream_locked_turn(
         self,

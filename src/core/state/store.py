@@ -26,7 +26,12 @@ MEMORY_MESSAGE_PREFIX = "Relevant long-term memory for this workspace:"
 
 
 class LocalStateStore:
-    """Authoritative local facade matching the Agent service persistence contract."""
+    """Compatibility facade for legacy callers during the port migration.
+
+    New persistence capabilities should be added to focused ports/adapters or
+    `StateUnitOfWorkFactory`, not to this facade. It remains as a stable bridge
+    for older service paths that have not yet moved to the smaller interfaces.
+    """
 
     def __init__(
         self,

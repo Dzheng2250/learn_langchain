@@ -12,6 +12,7 @@ from src.core.adapters.sqlite import (
     SQLiteSummaryStore,
 )
 from src.core.context.models import AgentContextState
+from src.core.finalization.models import CompletedTurn
 from src.core.state import LocalStateDatabase, LocalStateStore
 from src.core.state.workspace import LocalWorkspaceRepository
 from src.core.telemetry import BaseEventSink, EventBus, install_event_bus
@@ -84,6 +85,17 @@ class SQLiteStateAdapterTest(unittest.TestCase):
         self.assertEqual(["first", "second", "third"], [message.content for message in messages])
         self.assertEqual(3, len(message_ids))
         self.assertEqual(len(set(message_ids)), len(message_ids))
+
+    def test_conversation_append_turn_requires_unit_of_work_transaction(self):
+        completed = CompletedTurn(
+            session=self.session,
+            turn_index=1,
+            messages=[HumanMessage(content="outside uow")],
+            state=AgentContextState(),
+        )
+
+        with self.assertRaisesRegex(RuntimeError, "active Unit of Work"):
+            SQLiteConversationHistoryStore(self.database).append_turn(completed)
 
     def test_conversation_history_rebuild_recent_uses_latest_committed_messages(self):
         for index in range(15):
