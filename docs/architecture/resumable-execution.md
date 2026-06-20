@@ -4,6 +4,16 @@
 > 权威范围：Execution、Grant、Slice、预算和 checkpoint 恢复
 > 维护触发：执行状态机、预算模型、暂停或恢复行为变化
 
+## 本文负责
+
+- Execution、Grant、Slice、预算、暂停、恢复和 checkpoint 的领域生命周期。
+
+## 本文不负责
+
+- 不维护 Session 消息历史或最终提交事务细节。
+- 不定义 CLI/RPC 参数。
+
+
 本文聚焦 Execution、Grant、Slice 和 checkpoint 如何支持大任务继续执行。`state.db` 与
 `checkpoints.db` 为什么分离、`checkpoint_state` 如何对账，以及 Saga/恢复协调器的含义，见
 [`/docs/architecture/database-state-and-consistency.md`](/docs/architecture/database-state-and-consistency.md)。

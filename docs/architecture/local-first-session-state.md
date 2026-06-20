@@ -4,6 +4,17 @@
 > 权威范围：本地优先 Session 状态、响应关键路径和后台派生处理
 > 维护触发：Session 权威状态、提交时机或后台维护边界变化
 
+## 本文负责
+
+- Session、Message、Branch 和本地权威状态之间的领域关系。
+- 普通 Turn 响应关键路径与后台派生状态的边界。
+
+## 本文不负责
+
+- 不维护完整 Schema 字段；见本地状态 Schema 参考。
+- 不解释跨库 Saga 细节；见数据库一致性文档。
+
+
 关于为什么从对话卡顿问题引出本地优先设计、SQLite 不能保证无卡顿、当前真实关键路径和设计原则审查，见
 [`/docs/decisions/local-first-rationale-and-review.md`](/docs/decisions/local-first-rationale-and-review.md)。
 

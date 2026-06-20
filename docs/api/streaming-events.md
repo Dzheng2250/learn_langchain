@@ -4,6 +4,17 @@
 > 权威范围：`agent.chat` 和 `session.resume` 的服务端流式通知契约
 > 维护触发：新增、删除或修改流式事件
 
+## 本文负责
+
+- `agent.chat` 与 `session.resume` 的 `agent.event` 通知类型、顺序和 payload。
+- 前端对 token、step、error 和 done 的处理要求。
+
+## 本文不负责
+
+- 不解释 Agent 为什么产生某个事件；见 Agent 架构。
+- 不定义 Telemetry Event 或 System Trace。
+
+
 `agent.chat` 和 `session.resume` 执行期间，Core 使用 JSON-RPC notification 推送事件：
 
 ```json

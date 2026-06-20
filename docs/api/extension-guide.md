@@ -4,6 +4,17 @@
 > 权威范围：新增 Tool、Skill、Provider、RPC、Telemetry Sink 的稳定扩展路径
 > 维护触发：扩展点接口或组合根变化
 
+## 本文负责
+
+- Tool、Skill、Provider、RPC 和 Telemetry Sink 的稳定扩展入口。
+- 扩展能力需要同步的测试和文档。
+
+## 本文不负责
+
+- 不说明内部存储 Port/Adapter 扩展；见 Development 内部扩展指南。
+- 不记录尚未实现的重构计划。
+
+
 ## 1. 通用原则
 
 新增能力应通过已有边界接入，而不是在多个业务函数中直接修改全局状态。

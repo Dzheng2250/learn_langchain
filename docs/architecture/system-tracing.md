@@ -4,6 +4,17 @@
 > 权威范围：跨 IPC、Agent、LLM、Tool 和 Telemetry 的系统 Trace
 > 维护触发：Trace 模型、埋点、存储、脱敏或查询能力变化
 
+## 本文负责
+
+- 跨 IPC、Agent、LLM、Tool 和 Telemetry 的诊断时间线。
+- TraceRecord、上下文传播、文件存储、脱敏和查询。
+
+## 本文不负责
+
+- 不把 Trace 作为业务事实、恢复或计费来源。
+- 不定义 Telemetry 领域事件或前端流式事件。
+
+
 ## 1. Trace 解决什么问题
 
 项目已经有两种记录机制：

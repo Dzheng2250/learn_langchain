@@ -27,7 +27,7 @@
 > [`/docs/architecture/interface-driven-core.md`](/docs/architecture/interface-driven-core.md)。
 > 数据库表、事务、Outbox、CAS、Saga 和恢复协调器的通俗说明见
 > [`/docs/architecture/database-state-and-consistency.md`](/docs/architecture/database-state-and-consistency.md)。
-> 端到端请求路径见其中的[完整数据流动示意图](/docs/architecture/agent-execution-architecture.md#完整数据流动示意图)，
+> 端到端请求路径见其中的[完整数据流动示意图](/docs/architecture/agent-execution-call-chain.md#完整数据流动示意图)，
 > Agent 内部执行与双事件通道见[调用链与事件通道图](/docs/architecture/agent-execution-architecture.md#agent-调用链与事件通道图)。
 >
 > PR #3 review 整改与可靠性决策见
@@ -36,32 +36,31 @@
 > PostgreSQL Compose 部署、用户级配置与环境覆盖规则见
 > [`/docs/operations/deployment.md`](/docs/operations/deployment.md)。
 
-## 重构目标
+## 本文负责
 
-Core daemon 负责 Agent、工具、上下文、记忆和 RPC 服务。重构前的 `CoreRpcServer` 同时承担 TCP 连接、JSON-RPC 路由、业务 handler、Agent 服务创建和 daemon 生命周期，违反单一职责原则，也使 Transport 无法独立测试或替换。
+本文只解释 Core daemon 的组合根、生命周期和依赖装配：
 
-本次重构将 Core 拆为：
+- `CoreApp` 如何启动、关闭和清理资源。
+- `CoreContainer` 如何装配服务、handlers、router 和 transport。
+- Transport、Router、Handler 与应用服务之间的依赖方向。
+- Core 进程级资源的关闭顺序，例如 transport、worker、maintenance、telemetry、trace 和数据库连接。
 
-```text
-main
-  -> CoreApp
-      -> Handlers
-      -> AgentTurnService
-      -> TurnWorkerExecutor
-      -> AgentRequestStreamService
-      -> RuntimeGraphResolver
-      -> SessionLifecycleService
-      -> ConversationContextLoader
-      -> ExecutionLifecycleService
-      -> DiagnosticTurnService
-      -> TurnExecutionLoop
-      -> SliceExecutionService
-      -> TurnRunObserver
-      -> RpcRouter
-      -> Transport
-```
+## 本文不负责
 
-核心依赖方向：
+以下内容由专项文档负责，本文只保留入口链接，不重复定义细节：
+
+- Agent turn、slice、工具调用和预算控制：见
+  [Agent 执行架构](/docs/architecture/agent-execution-architecture.md)。
+- `state.db`、`checkpoints.db`、事务、Outbox、CAS 和恢复协调：见
+  [本地数据库设计与一致性机制](/docs/architecture/database-state-and-consistency.md)。
+- Ports、Adapters、Unit of Work 和 DI 边界：见
+  [面向接口的 Core 设计](/docs/architecture/interface-driven-core.md)。
+- RPC 字段、流式事件和前端接入契约：见 `/docs/api/`。
+
+## Core 职责与依赖方向
+
+Core daemon 负责承载 RPC 服务、Agent 应用服务和进程级资源生命周期。它通过组合而不是继承把
+Transport、Router、Handlers 和 Application Services 连接起来。
 
 ```text
 Transport -> RpcRouter
@@ -70,9 +69,7 @@ CoreApp   -> 组装所有组件并管理生命周期
 Agent     -> 不依赖 RPC、Transport 或 CLI
 ```
 
-`TurnRunObserver` 是 Agent 执行子系统内部的观测适配层。它负责把 foreground run 的
-started、paused、finished、failed 等状态转换成 Telemetry 和 Trace。这样
-`TurnExecutionLoop` 只保留“什么时候继续、暂停或结束”的控制逻辑，不直接拼装观测 payload。
+Core 文档只描述这些进程级边界。Agent 内部协作者和事件语义由 Agent 架构文档负责。
 
 ## DI 组合方式
 
@@ -103,61 +100,20 @@ PostgreSQL pool、EventBus 和 maintenance handler map。它们被拆出是为�
 同样，业务模块也不应依赖 `container_factories.py`；该模块只属于组合根。
 
 
-## 当前结构
+## 当前组件
 
-```text
-src/core/
-  __main__.py
-  main.py
-  app.py
+| 模块 | 职责 |
+|---|---|
+| `main.py` | 解析 Core 命令、加载配置并启动事件循环 |
+| `app.py` / `container.py` | 组合根、依赖装配和进程生命周期 |
+| `transport/` | TCP 连接和 NDJSON frame |
+| `bus/` | JSON-RPC 验证、鉴权和路由 |
+| `handlers/` | 协议参数与应用服务之间的适配 |
+| `agent/`、`session/`、`finalization/` | 应用服务，由专项架构文档说明 |
+| `ports/`、`adapters/` | 内部接口与具体基础设施实现 |
 
-  config/
-    models.py
-
-  bus/
-    context.py
-    router.py
-
-  handlers/
-    core.py
-    agent.py
-
-  transport/
-    framing.py
-    socket_server.py
-
-  agent/
-    contracts.py
-    coordinator.py
-    graph.py
-    service.py
-
-  finalization/
-    committer.py
-    models.py
-    service.py
-
-  ports/
-    state.py
-
-  adapters/
-    sqlite/
-      unit_of_work.py
-
-  maintenance/
-    handlers.py
-    models.py
-    recovery.py
-    repository.py
-    scheduler.py
-
-  state/
-    contracts.py
-    database.py
-    executions.py
-    schema.sql
-    store.py
-```
+本表只列稳定模块职责，不复制完整文件树。具体文件位置以源码和
+[面向接口的 Core 设计](/docs/architecture/interface-driven-core.md)为准。
 
 ### `main.py`
 
@@ -175,8 +131,8 @@ src/core/
 
 `CoreApp` 是组合根和生命周期管理器，负责：
 
-- 创建 Router、handlers、Agent service 和 Transport。
-- 注册 `core.ping`、`core.shutdown` 和 `agent.chat`。
+- 从 `CoreContainer` 取得 Router、handlers、Agent services 和 Transport。
+- 注册 `core.*`、`agent.*` 和 `session.*` 公共 handler；方法清单由 RPC 参考维护。
 - 按顺序初始化服务并启动 Transport。
 - 写入和清理 PID 文件。
 - 等待 shutdown 事件。
@@ -277,107 +233,12 @@ Handlers
 daemon PID/token 管理
 ```
 
-## 使用的设计原则
+## 设计与能力边界
 
-### 单一职责原则
+Core 的 Ports、Adapters、Unit of Work、IoC、DI 和设计原则统一由
+[面向接口的 Core 设计](/docs/architecture/interface-driven-core.md)维护。
 
-- `SocketServer` 只处理传输。
-- `RpcRouter` 只处理验证和分发。
-- Handlers 只适配协议与业务。
-- `AgentTurnService` 负责 async worker bridge 和流式事件到最终 RPC result 的聚合。
-- `AgentRequestStreamService` 负责 workspace/session 解析、Session 锁、模型配置检查、Execution 准备、runtime graph 选择和 resume 请求流。
-- `SessionLifecycleService` 负责 status、discard、reset、archive 和 hard delete。
-- `ConversationContextLoader` 负责加载上下文、召回记忆并构造 graph 输入。
-- `ExecutionLifecycleService` 负责 Execution begin、resume、pending 判断和准备失败 pause。
-- `ProviderFailureService` 负责非重试 provider error 的 Session 释放、cleanup 入队和终止响应。
-- `DiagnosticTurnService` handles the no-LLM diagnostic turn and does not mutate conversation history or increment `turn_index`.
-- `SliceExecutionService` starts, streams, finishes, and traces one bounded LangGraph Slice.
-- `TurnResultBuilder` 负责把流式事件聚合为最终 JSON-RPC result。
-- `TurnCoordinator` 负责 Turn 准备和最终提交协调。
-- `CompletedTurnCommitter` 只负责最小业务事务。
-- `MaintenanceScheduler` 只负责持久化后台任务分发。
-- `ExecutionRecoveryCoordinator` 只负责两个 SQLite 数据库的恢复对账。
-- `CoreApp` 只负责组装和生命周期。
+当前公开 RPC、流式事件和协议限制统一由 `/docs/api/` 维护；未实现能力统一登记在
+[路线图与已知限制](/docs/product/roadmap-and-known-limitations.md)。
 
-### 依赖倒置原则
-
-`AgentHandlers` 依赖 `AgentTurnRunner` 协议，`CoreApp` 依赖 `ManagedAgentService` 和
-`CoreTransport` 协议。两个 Agent service 协议集中定义在 `core.agent.contracts`，
-测试和未来 Transport 可以注入替代实现。前台 Turn、后台维护和 checkpoint 分别依赖
-`StateStore`、`MaintenanceStateStore` 和 `CheckpointStore` 最小能力协议。
-
-### 开闭原则
-
-增加 RPC 方法时，新增 handler 并在组合根注册；Transport 不需要修改。增加新的 Transport 时，实现 `CoreTransport` 接口即可复用 Router 和 handlers。
-
-### 接口隔离原则
-
-Handler 只获得最小 `RequestContext`，不能访问底层 TCP writer。Agent service 不知道 RPC 或连接概念。
-后台维护 handler 不能通过前台 `StateStore` 协议调用不属于自己的能力。
-
-### 组合优于继承
-
-`CoreApp` 通过组合 Router、handlers、Transport 和 Agent service 建立应用，没有创建复杂继承树。
-
-## 优点
-
-- 各层职责明确，定位问题更直接。
-- TCP Transport 可独立测试和替换。
-- Handler 可以使用 fake context 做快速单元测试。
-- Agent 服务可脱离 daemon 独立测试。
-- 生命周期关闭顺序集中，降低资源泄漏风险。
-- 内部 handler 异常不会将详细信息返回客户端。
-- CLI 和 Core 入口形式一致：
-
-  ```text
-  python -m src.cli
-  python -m src.core
-  ```
-
-## 代价
-
-- 文件和接口数量增加，理解完整请求链需要跨多个模块。
-- 新 RPC 方法需要同时维护 IPC 模型、handler 注册和测试。
-- `CoreApp` 作为组合根会集中依赖许多组件，需要避免写入具体业务逻辑。
-- 当前仍只有 TCP Transport，Transport 抽象的收益主要体现在边界和测试性。
-
-## 当前功能边界
-
-当前已支持：
-
-- Core daemon 启动和正常 shutdown。
-- TCP + NDJSON + JSON-RPC。
-- 请求验证与 token 鉴权。
-- `core.ping`、`core.shutdown`、`agent.chat`。
-- Agent token/step/error/done 流式通知。
-- 同 session 串行、跨 session 并行。
-- 同步 Agent turn 通过专用有界 executor 执行，不占用 asyncio 默认线程池。
-- 最小 Turn 状态与后台维护任务通过同一 `state.db` 事务提交。
-- 摘要、记忆和 checkpoint 清理通过持久化任务后台执行。
-- 启动时对账 Execution 与 LangGraph checkpoint。
-- 启动失败反向清理资源。
-- shutdown 等待活跃请求并设置超时。
-
-当前不支持：
-
-- HTTP、WebSocket、Named Pipe 等其他 Transport。
-- RPC handler 插件自动发现。
-- 任务取消和断线事件续传。
-- 多 Core 实例协调。
-- 操作系统服务管理。
-- 协议版本协商。
-
-## 设计审查结论
-
-本次重构后，Core 主执行链符合单一职责、依赖倒置、接口隔离和组合优于继承原则。
-
-仍存在但不在本次重构范围内的问题：
-
-1. 顶层 Python 包仍命名为 `src`，长期应迁移为正式包名。
-2. `state/store.py` 仍然较大，未来可继续按消息、Session 与记忆查询职责拆分。
-3. 部署参数已支持用户级 `.env` 与进程环境覆盖。后台维护策略已使用类型化配置并由
-   `CoreApp` 注入；其他功能域仍通过兼容 `settings.py` 逐步迁移，当前不支持热更新。
-   配置、领域枚举和 Prompt 的边界见
-   [`/docs/decisions/configuration-and-domain-constants.md`](/docs/decisions/configuration-and-domain-constants.md)。
-4. Agent 流式事件内部 `data` 仍是通用字典，未来可增加严格事件模型。
-5. MaintenanceScheduler 当前只有一个 worker，且长任务租约尚未续租；未来多实例前必须加强协调。
+本篇不再复制设计优缺点、完整功能清单或阶段性 review 结论，避免这些内容在代码演进后失效。

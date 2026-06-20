@@ -4,6 +4,16 @@
 > 权威范围：Turn 最小提交、响应释放、后台维护与 checkpoint 清理
 > 维护触发：Finalization、Outbox、维护任务或 checkpoint 状态变化
 
+## 本文负责
+
+- Turn 最小提交、响应释放、维护任务入队和 checkpoint 清理的时间顺序。
+
+## 本文不负责
+
+- 不维护完整数据库 Schema；见 Schema 参考。
+- 不解释 Agent 如何生成回答；见 Agent 执行架构。
+
+
 本文按时间顺序说明：模型回答结束后，Core 为什么不能立即返回，哪些工作必须等待，哪些工作必须放到
 后台，以及两个 SQLite 数据库发生不一致时如何恢复。
 

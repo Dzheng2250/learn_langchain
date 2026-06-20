@@ -10,6 +10,25 @@
 
 这里的接口不是外部 RPC 接口，而是 Python 内部的 `Protocol` 或小型抽象。它描述某个模块需要什么能力，但不规定能力由 SQLite、文件、PostgreSQL 还是内存实现。
 
+## 本文负责
+
+本文只解释 Core 内部的依赖方向和可替换边界：
+
+- `ports/` 定义哪些内部能力接口。
+- `adapters/` 如何实现这些接口。
+- `CoreApp` / `CoreContainer` 如何通过 IoC 和 DI 装配具体实现。
+- 新增存储、Provider、队列或观测实现时应如何接入。
+
+## 本文不负责
+
+本文不展开具体业务流程或数据库 Schema：
+
+- Turn 执行流程属于 [Agent 执行架构](/docs/architecture/agent-execution-architecture.md)。
+- 数据库表、事务、Outbox 和 checkpoint 一致性属于
+  [本地数据库设计与一致性机制](/docs/architecture/database-state-and-consistency.md)。
+- 外部协议和前端接入属于 `/docs/api/`。
+- 为什么选择某个方案属于 `/docs/decisions/`。
+
 ## 1. 优化目标
 
 Agent 核心代码应该关心业务动作：
@@ -191,128 +210,16 @@ Agent 执行提交到有界 worker，`AgentSyncTurnRunner` 负责在 worker 线�
 投影 outbox 的写入也应统一经过 `SQLiteProjectionOutboxStore`。其它 adapter 不应重复编写
 `INSERT INTO projection_outbox` SQL，否则会让 outbox payload、开关语义和事务要求分散到多个地方。
 
-## 7. 后续还需要接口化的部分
+## 7. 扩展与技术债务
 
-后续优先级建议如下：
+新增内部 Port、Adapter、存储后端和 Contract Test 的操作步骤见
+[内部端口与 Adapter 扩展指南](/docs/development/internal-adapter-extension.md)。
 
-1. **Workspace / Session Lifecycle**
-   Workspace 注册、Session 归档、硬删除、重置等能力应继续收敛到明确的 lifecycle service 和 store 端口中。
-   当前 `SessionLifecycleService` 已经把状态查询拆给 `SessionStatusReader`，只读 status 不再混在归档、删除、重置等写路径里；
-   RPC 返回字典由
-   `src/core/session/responses.py` 构造，checkpoint cleanup 入队由
-   `src/core/session/checkpoint_cleanup.py` 负责。后续如果继续拆，应优先把 Session 读写能力抽成更小的
-   `SessionLifecycleStore`，而不是让 lifecycle service 直接依赖具体 workspace repository 方法。
+尚未完成的接口化工作统一登记在
+[接口化重构技术债务](/docs/development/interface-refactor-backlog.md)。
 
-2. **Task Store**
-   私有任务规划已经拆出 `TaskPlanValidator` 和 `TaskQueryStore`，分别承载纯规则校验与任务查询装配。
-   任务写入 SQL 已拆到 `TaskMutationStore`，Execution 身份校验已拆到 `TaskExecutionContextGuard`。
-   `TaskRepository` 现在主要负责事务编排：校验输入、读取当前图、调用 mutation helper、再验证依赖状态。
-   后续如果要支持文件或 PostgreSQL 任务后端，应继续抽出 `TaskStore` 端口，避免上层依赖具体 repository。
-
-3. **Execution Store**
-   `PendingExecution` 和 SQLite 行映射已经拆到 `src/core/state/execution_models.py`。
-   `get_pending()` 和 `get_attached()` 等只读查询已经拆到 `ExecutionQueryStore`。
-   checkpoint 清理、缺失和重启恢复对账已经拆到 `ExecutionCheckpointStore`。
-   Slice 创建、完成和预算计数已经拆到 `ExecutionSliceStore`。
-   complete/discard/terminate 这类“结束 Execution 并释放 Session”的写入已经拆到 `ExecutionReleaseStore`。
-   `ExecutionRepository` 仍保留 begin/resume/pause 等入口，后续可继续按“创建与恢复”“暂停状态更新”拆成更小 adapter 或 query helper。
-
-4. **Migration Orchestration**
-   PostgreSQL 到本地状态的迁移入口仍是 `LocalStateMigration`，但源库计数检查已经拆到
-   `LocalStateMigrationInspector`，源库清理已经拆到 `LocalStateSourcePruner`。后续如果继续拆，应优先拆 `_copy()` 中的 workspace/session、messages、memories、events 四段复制逻辑。
-   旧 PostgreSQL workspace schema 迁移的 `WorkspaceMigration` 也不再包含 `pg_dump` / Docker 备份细节；
-   备份逻辑已经拆到 `src/core/database/backup.py`，迁移编排只依赖 `create_database_backup()`。
-
-5. **Memory Write / Read Contract Tests**
-   本地 SQLite 记忆读取和写入已经拆出 adapter。兼容 PostgreSQL memory facade 也已经把格式化、检索辅助和写入事务拆到 `formatting.py`、`retrieval.py`、`writer.py`。
-   后续还需要更完整的 contract tests，方便未来替换为向量检索或混合后端。
-
-6. **File Conversation History 原型**
-   文件历史后端可以作为实验实现，但不能直接替代权威状态库，除非它能满足同等的事务和恢复语义。
-
-7. **Context Summary Execution**
-   `AgentContextManager` 仍负责上下文窗口、摘要触发判断和状态更新，但 LLM 摘要调用已经拆到
-   `ContextSummaryExecutor`。这让上下文状态算法不直接依赖 provider 创建、prompt 构造、token usage
-   解析和 telemetry span。后续如果更换摘要模型或加入无模型摘要策略，应优先扩展 executor，而不是继续扩大 manager。
-
-8. **Maintenance Queue**
-   `MaintenanceRepository` 仍是后台维护任务的兼容门面，但只读状态查询已经拆到
-   `MaintenanceInspectionStore`，SQLite row 到领域对象的转换也已经拆到 `src/core/maintenance/records.py`。
-   后续如果要替换维护队列后端，应继续把 enqueue、claim、succeed/fail/requeue 拆成明确的 `MaintenanceQueue`
-   和 `MaintenanceLeaseStore` 端口。
-
-## 8. 如何新增存储后端
-
-以后如果要把会话历史从 SQLite 扩展到 JSONL 文件，不能在 `AgentTurnService` 或 `CompletedTurnCommitter` 里写文件逻辑。
-
-正确路径是：
-
-```text
-新增 Adapter
-  -> 实现 ports 中的 Protocol
-  -> 在 CoreContainer / factory 中按配置选择 Adapter
-  -> 复用同一组 contract tests
-```
-
-以 `FileConversationHistoryStore` 为例：
-
-1. 在 `src/core/adapters/file/` 中实现 `ConversationHistoryStore`。
-2. 明确文件布局，例如按 Workspace、Session 和日期拆分 JSONL。
-3. 保证 `append_turn()` 至少不会产生半行 JSON。
-4. 实现 `load_turn()` 和 `rebuild_recent()`，返回与 SQLite 版本等价的 LangChain message。
-5. 不在业务服务里判断“当前是文件还是 SQLite”。
-6. 用同一份 contract test 跑 SQLite 和 File 两个实现。
-
-如果新后端无法提供原子事务，就不能直接实现完整 `StateUnitOfWork`，只能先作为历史副本、导出后端或调试后端。
-
-## 9. 如何新增端口
-
-新增端口前必须先确认它表达的是稳定业务能力，而不是某个数据库表的 CRUD。
-
-推荐流程：
-
-```text
-业务场景
-  -> 命名能力
-  -> 定义 Protocol
-  -> 写 Fake 实现测试业务服务
-  -> 写 SQLite Adapter
-  -> 在 CoreContainer 注入
-```
-
-端口应保持小而专。不要把前台召回、后台写入、运维查询全部塞进同一个接口。
-
-例如长期记忆可拆成：
-
-```text
-MemoryRetrievalStore     # 前台 Turn 只需要召回
-MemoryWriteStore         # 后台维护才需要提取和保存
-MemoryInspectionStore    # 调试或运维才需要查询失败状态
-```
-
-## 10. 测试要求
-
-接口化重构必须配套测试，否则只是移动代码。
-
-最低要求：
-
-- Adapter 单元测试：验证 SQLite 实现保持旧行为。
-- Contract Tests：同一组行为测试可套到 SQLite、InMemory、File 等实现。
-- 边界测试：application service 层不得 import `sqlite3` 或 `src.core.adapters.sqlite`。
-- 回归测试：finalization、agent service、local state、documentation tests 必须通过。
-
-新增 adapter 时，测试重点应覆盖：
-
-```text
-消息顺序
-message_id 稳定性
-raw 数据不丢失
-事务回滚
-摘要不被 fast context 覆盖
-后台任务与业务状态同事务入队
-```
-
-## 11. 当前设计边界
+本篇不再混合开发教程和未来计划。
+## 8. 当前设计边界
 
 当前实现仍以 SQLite 作为权威状态库。PostgreSQL 是可选投影，不是核心业务事实来源。Trace 是诊断时间线，不参与恢复。Telemetry 是观测事件，不作为任务状态。
 

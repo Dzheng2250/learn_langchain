@@ -4,6 +4,17 @@
 > 权威范围：Telemetry Event、EventBus、Recorder 和 Sink 设计
 > 维护触发：Telemetry 模型、订阅、缓冲或 Sink 生命周期变化
 
+## 本文负责
+
+- Telemetry Event、EventBus、Recorder、Sink 和缓冲写入的内部设计。
+- 领域事件的可靠性、脱敏和生命周期边界。
+
+## 本文不负责
+
+- 不定义 System Trace；见系统 Trace 文档。
+- 不定义业务状态或前端流式事件。
+
+
 > 本文解释领域 Telemetry Event。跨 IPC、Agent、LLM 和 Tool 的统一排障时间线见
 > [`/docs/architecture/system-tracing.md`](/docs/architecture/system-tracing.md)。Trace 不替代 Telemetry，Telemetry 也不是业务状态的
 > 权威来源。

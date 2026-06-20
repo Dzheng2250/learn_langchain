@@ -74,6 +74,7 @@
 ## 6. 写作规则
 
 - 当前事实、设计原因和未来计划必须分开描述。
+- 每篇 Current 文档必须有清晰职责边界：它负责回答什么、不负责回答什么。
 - 不在多篇文档复制字段清单；非权威文档使用链接。
 - 复杂术语首次出现时给出通俗解释。
 - 命令必须标明前置条件、风险和预期结果。
@@ -84,7 +85,41 @@
 - 中文 Markdown 必须保存为 UTF-8。Windows PowerShell 读取中文文档时应显式使用
   `-Encoding UTF8`，否则可能按系统 ANSI/GBK 解码并显示为乱码；这不代表文件内容损坏。
 
-## 7. 自动治理
+## 7. 文档设计原则
+
+文档结构应与代码结构一样遵守模块边界。新增或重写文档时，按以下原则判断内容是否放对位置：
+
+### 7.1 单一职责
+
+一篇文档只回答一类问题。
+
+- Agent 执行文档负责解释 turn、slice、tool、模型调用和暂停恢复。
+- State 文档负责解释数据库、事务、消息链、checkpoint 和后台维护。
+- API 文档负责解释外部调用者能发送什么、会收到什么。
+- Decision 文档负责解释为什么选择某方案，不作为当前实现的唯一事实来源。
+
+如果一段内容需要详细解释另一个模块，应改成摘要加链接，不应复制完整规则。
+
+### 7.2 依赖倒置
+
+高层架构文档应依赖抽象概念，不应直接依赖底层实现细节。
+
+例如，Agent 文档可以写“调用 `TurnFinalizer` 完成最小提交”，但不应展开
+`messages.raw`、SQLite 事务或 Outbox 表结构。那些细节属于 State 文档。
+
+### 7.3 接口优先
+
+当代码引入 `ports/`、adapter 或 DI 容器后，文档也应优先描述接口和职责，再链接到具体实现。
+
+例如，Core 组合根文档应说明 `CoreContainer` 装配 `ConversationHistoryStore`，而不是把
+`SQLiteConversationHistoryStore` 的 SQL 行为写入 Core 文档正文。
+
+### 7.4 当前事实与历史原因分离
+
+`architecture/` 写当前代码如何工作；`decisions/` 写为什么这么选；`history/` 写 PR review、
+旧方案和一次性整改。Current 文档不得把历史 review 过程写成当前运行机制。
+
+## 8. 自动治理
 
 `tests/contracts/test_documentation.py` 当前检查：
 
@@ -93,9 +128,13 @@
 - `learn-agent` 与 `learn-agent-core` 命令是否出现在 CLI 参考。
 - 本地 Markdown 根路径、相对路径和锚点链接是否有效。
 - 核心权威文档是否声明 `Current`，所有受治理文档是否声明状态。
+- 所有 Current API 文档是否声明“本文负责 / 本文不负责”。
+- 所有 Current Architecture 文档是否声明“本文负责 / 本文不负责”。
 - 测试目录是否符合分类规则。
 
 后续应继续增加：
 
 - 配置变量与配置参考同步检查。
 - 文档登记表覆盖检查。
+- 其余 Current Development、Operations、Product、Quality、Reference 和 Governance 文档必须声明“本文负责 / 本文不负责”。
+- 架构文档不得越界定义其他模块的权威细节，例如 Agent 文档不得定义数据库表结构。

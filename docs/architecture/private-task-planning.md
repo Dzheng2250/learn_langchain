@@ -4,6 +4,16 @@
 > 权威范围：goal 模式下父 Agent 私有任务系统的当前实现
 > 维护触发：任务工具、Execution、State Schema、Agent Prompt 或 goal 模式发生变化
 
+## 本文负责
+
+- goal 模式下父 Agent 私有任务计划的领域模型、工具和 Execution 绑定。
+
+## 本文不负责
+
+- 不提供用户可见任务 CRUD 契约。
+- 不解释通用 Agent Loop 或数据库 Schema。
+
+
 ## 1. 解决的问题
 
 普通 `learn-agent chat` 适合短问题和单步操作。复杂目标不同：它可能需要阅读多个文件、修改代码、运行测试、根据结果调整方案，并且可能因为步数预算暂停后再 `session resume`。

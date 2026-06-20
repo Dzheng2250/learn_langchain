@@ -4,6 +4,17 @@
 > 权威范围：客户端与 Core 的 TCP、NDJSON、鉴权和 JSON-RPC 通信契约
 > 维护触发：Transport、鉴权、分帧或 JSON-RPC envelope 变化
 
+## 本文负责
+
+- TCP、NDJSON、JSON-RPC envelope、鉴权和连接生命周期。
+- 客户端与 Core 共享的 Wire 身份字段和分帧规则。
+
+## 本文不负责
+
+- 不维护具体业务 RPC 的完整参数；见 RPC 参考。
+- 不解释 SocketServer 或 Router 内部实现；见 Core 架构。
+
+
 本文定义 CLI、TUI、GUI 等客户端与 Core daemon 之间的稳定通信边界。
 
 ## 传输与分帧

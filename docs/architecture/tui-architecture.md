@@ -1,8 +1,20 @@
-# TUI 架构文档
+# TUI 架构
 
 > 文档状态：Current
-> 权威范围：TUI 客户端的组件设计、数据流、问题处理与能力边界
+> 权威范围：TUI 客户端的组件设计、内部数据流、错误分层和扩展边界
 > 维护触发：新增 UI 组件、修改事件渲染逻辑、变更通信协议
+
+## 本文负责
+
+- Textual App、Screen、Widget、异步 client 和 renderer 的内部职责。
+- TUI 内部事件流、错误分层、测试边界和扩展规则。
+
+## 本文不负责
+
+- 不维护用户命令和当前能力清单；见 [TUI 使用与命令参考](/docs/api/tui-reference.md)。
+- 不定义 RPC 和流式事件字段；见 `/docs/api/`。
+- 不解释 Core 内部 Agent、状态库或恢复策略；见 `/docs/architecture/`。
+- 不记录历史修复过程；见 [TUI 实现问题与修复记录](/docs/history/tui-implementation-fixes.md)。
 
 ## 1. 概览
 
@@ -17,13 +29,6 @@ TUI（Terminal UI）是基于 [Textual 8.x](https://textual.textualize.io/) 构�
 | 暂停恢复 | 检测已暂停的 execution，支持 `/resume` 和 `/discard` |
 | Goal 模式 | 通过 `/goal` 发送任务规划请求，展示完成标记 |
 | 可维护性 | 复用 `src/cli/render.py` 的脱敏和截断语义，不重复实现 |
-
-### 不负责
-
-- 直接调用模型或工具（必须通过 Core daemon）。
-- 读取或修改 SQLite 数据库。
-- 管理 daemon 生命周期（由 CLI 的 `daemon.py` 负责）。
-- 决定上下文压缩、记忆提取或执行恢复策略。
 
 ## 2. 组件架构
 
@@ -235,183 +240,16 @@ Textual `TextArea` 子类，多行输入：
 - `command_name` — 提取命令名（如 `"resume"`）
 - `command_args` — 提取命令参数
 
-## 3. 关键问题与解决
+## 3. 用户接口与历史问题
 
-### 3.1 流式 token 换行问题
+TUI 的用户命令、快捷键、当前能力和限制统一维护在
+[TUI 使用与命令参考](/docs/api/tui-reference.md)。
 
-**症状**：每个 token chunk 在 RichLog 中变成独立的一行，导致 AI 回复被拆成几十行。
+流式 token 换行、认证参数遗漏和 Schema 迁移防御等历史修复记录已迁移到
+[TUI 实现问题与修复记录](/docs/history/tui-implementation-fixes.md)。
 
-**原因**：`RichLog.write()` 每次调用都会在 `self.lines` 中创建一条新的视觉条目。如果每个 token chunk 都调用一次 `write()`，每块都独占一行。
-
-**第一次修复（全量重绘）**：
-
-```python
-def _render_token_buffer(self) -> None:
-    self._redraw(include_token=True)
-
-def _redraw(self, *, include_token=False) -> None:
-    self.clear()
-    for entry in self._entries:
-        self.write(entry)
-    if include_token and self._token_buf:
-        self.write(self._token_buf)
-    self.refresh()
-```
-
-每次 token 到达都 **清空整屏 → 重写所有已提交条目 → 重写当前 token 缓冲**。正确解决了换行问题，但复杂度 O(N)。
-
-**第二次修复（原地替换）**（推荐，但用户选择了全量重绘方案）：
-
-```python
-def _render_token_buffer(self) -> None:
-    if self._token_line_start is None:
-        self._token_line_start = len(self.lines)
-    else:
-        del self.lines[self._token_line_start:]
-    self.write(self._token_buf)
-    self.refresh()
-```
-
-只删除上次 token 渲染的视觉行，再写入新的。复杂度 O(1)。缺点是需要谨慎处理 RichLog 的内部行拆分。
-
-**结论**：当前使用全量重绘方案（复杂度 O(N)，N=已提交条目数）。在典型会话中 N < 100，Textual 的虚拟终端操作足够快，不会造成卡顿。
-
-### 3.2 Context Token 用量展示
-
-**需求**：状态栏显示 `ctx: 3K/128K (2%)`，反映当前 session 的上下文 token 消耗。
-
-**数据链路**（跨 Core + TUI 多个层次）：
-
-```
-LLM Response
-  → _TokenTrackerCallback (src/core/llm/provider.py)
-    记录 input_tokens, output_tokens
-  → ExecutionBudget.input_tokens / output_tokens
-  → TracingModelProvider 代理调用
-  → AgentTurnService._stream_locked_turn
-    在 done 事件中携带 context_tokens snapshot
-  → TurnFinalizer.finalize()
-    build_fast_state() 后更新 context_tokens
-  → SQLiteSessionStore.save_fast_context()
-    持久化 context_tokens 到 state.db sessions 表
-  → AsyncCoreClient.on_event 回调
-  → ChatScreen._handle_done()
-    解析 context_tokens → StatusBar.set_usage()
-```
-
-**涉及的修改**：
-
-| 文件 | 改动 |
-|---|---|
-| `src/core/llm/provider.py` | 新增 `_TokenTrackerCallback`（BaseCallbackHandler）跟踪 LLM token 用量 |
-| `src/core/agent/budget.py` | `ExecutionBudget` 新增 `input_tokens` / `output_tokens` 字段 |
-| `src/core/agent/service.py` | `_stream_locked_turn` 的 done 事件携带 `context_tokens` |
-| `src/core/context/models.py` | `AgentContextState` 新增 `context_tokens` 字段 |
-| `src/core/finalization/service.py` | `TurnFinalizer.finalize()` 更新 `fast_state.context_tokens` |
-| `src/core/state/migrations.py` | Schema v5：sessions 表新增 `context_tokens` 列 |
-| `src/core/adapters/sqlite/session_store.py` | `save_fast_context()` 写入 `context_tokens` |
-| `src/config/settings.py` | 新增 `MODEL_CONTEXT_LIMIT`（默认 128_000） |
-
-### 3.3 认证错误
-
-**症状**：TUI 启动后状态栏显示 `error: [-32602] INVALID PARAMS`。
-
-**原因**：`core.ping` 在较新版本的 Core 中要求 `auth_token` 参数，而初始实现调用 `ping()` 时未传递 auth_token。
-
-**修复**：`AsyncCoreClient.ping(auth_token)` 改为接收并传递 auth_token：
-
-```python
-async def ping(self, auth_token: str = "") -> dict[str, Any]:
-    params: dict[str, Any] = {}
-    if auth_token:
-        params["auth_token"] = auth_token
-    return await self.request("core.ping", params)
-```
-
-### 3.4 Schema 迁移健壮性
-
-**问题**：添加 `context_tokens` 列的迁移在空数据库上运行时报错。
-
-**原因**：`PRAGMA table_info` 在表不存在时返回空结果，后续列检查逻辑未防御。
-
-**修复**：在 `migrations.py` 中增加 `if not columns: continue` 跳过不存在的表。
-
-## 4. 命令参考
-
-| 命令 | 用途 | 示例 |
-|---|---|---|
-| `/help` | 显示帮助 | `/help` |
-| `/goal <msg>` | 以目标模式发送消息 | `/goal 分析项目结构` |
-| `/resume` | 恢复暂停的 execution | `/resume` |
-| `/resume <指令>` | 带额外指令恢复 | `/resume 先只改测试` |
-| `/discard` | 丢弃暂停的 execution | `/discard` |
-| `/session <name>` | 切换 session | `/session feature-x` |
-| `/session` | 查看当前 session | `/session` |
-| `/clear` | 清空日志 | `/clear` |
-| `Ctrl+C` | 取消操作 | — |
-| `Ctrl+D` | 退出 TUI | — |
-
-## 5. 当前支持的能力
-
-### 连接与启动
-
-- 自动加载 `runtime_dir` 下的 auth token。
-- 启动时自动发现 workspace 根目录。
-- 自动 ping Core daemon 验证连接。
-- 启动时自动检查 session 是否有暂停的 execution。
-- 状态栏实时反映连接状态（绿/黄/红）。
-
-### 流式展示
-
-- 每个 token chunk 到达后立即展示，不等待完整回复。
-- 工具调用开始和结果按步骤渲染。
-- 敏感参数脱敏（`api_key`、`token`、`password` → `[REDACTED]`）。
-- 长内容截断（参数 240 字符/字段，列表 20 项，深度 20 层）。
-
-### Session 管理
-
-- 通过 `/session` 切换 session 名称。
-- 显示暂停 execution 的恢复提示。
-- `/resume` 恢复暂停 execution。
-- `/discard` 丢弃暂停 execution。
-
-### Goal 模式
-
-- 通过 `/goal` 进入目标模式，状态栏显示 `goal` 标记。
-- 目标完成后显示 `★ goal completed` 标记。
-
-### 状态展示
-
-- 连接状态、daemon 地址、session 名称。
-- 上下文使用额度 `ctx: XK/128K (X%)`。
-
-## 6. 当前不支持
-
-### 协议与通信
-
-- 执行中取消协议（无 `cancel` RPC）。
-- 断线后事件续传。
-- 同一连接并行请求。
-- 自动重连。
-- TLS 或远程连接。
-
-### UI 功能
-
-- Session 列表与历史查询。
-- 消息编辑或删除。
-- Markdown / 代码渲染。
-- 文件上传或图片展示。
-- 多窗口或分屏。
-- 搜索和过滤日志。
-- 配置页或设置界面。
-
-### Daemon 管理
-
-- 从 TUI 启动/停止 daemon。
-- 查看 daemon 日志。
-- Trace/Telemetry 查看。
-
-## 7. 错误处理策略
+本篇不再维护用户接口清单或历史修复过程。
+## 4. 错误处理策略
 
 TUI 遵循与 CLI 一致的错误分层：
 
@@ -430,7 +268,7 @@ TUI 遵循与 CLI 一致的错误分层：
 | 请求被拒 | `[red]Request failed: [-32001] ...[/red]` |
 | 请求中再次提交 | `Busy — wait for the current request to finish.` |
 
-## 8. 测试
+## 5. 测试
 
 TUI 测试位于 `tests/unit/test_tui_chat_log.py`，使用 `ChatLog.__new__()` + `MethodType` 模拟 widget 行为，避免依赖 Textual 的完整事件循环。
 
@@ -457,7 +295,7 @@ def _fake_log(self):
 - event 在 token 后追加 → 内容不重复。
 - agent_message 在 token 流后不重复显示。
 
-## 9. 扩展规则
+## 6. 扩展规则
 
 1. 新增 widget 放入 `src/tui/widgets/`，在 `widgets/__init__.py` 中导出。
 2. 新增 screen 放入 `src/tui/screens/`。

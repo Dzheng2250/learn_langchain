@@ -4,6 +4,17 @@
 > 权威范围：`learn-agent` 用户命令与 `learn-agent-core` 管理命令
 > 维护触发：新增或修改 CLI 命令、参数、输出行为
 
+## 本文负责
+
+- `learn-agent` 与 `learn-agent-core` 的命令、参数和用户可见行为。
+- 命令失败时的退出语义和使用示例。
+
+## 本文不负责
+
+- 不解释 CLI 内部模块和 daemon 管理实现；见 CLI 架构。
+- 不定义底层 RPC 字段；见 IPC 和 RPC 参考。
+
+
 ## 命令总览
 
 | 命令 | 用途 | 是否要求 daemon 运行 |
