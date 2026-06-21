@@ -26,7 +26,6 @@ class TurnFinalizer:
     def finalize(
         self,
         *,
-        store,
         session,
         turn_index: int,
         previous_state,

@@ -1,6 +1,6 @@
 """Stable service contracts shared by Core composition and RPC handlers."""
 
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from dataclasses import dataclass, field
 from threading import Event
 from typing import Protocol
@@ -14,6 +14,55 @@ class ExecutionControl:
     """Cross-thread cooperative control signals for one request Grant."""
 
     pause_after_slice: Event = field(default_factory=Event)
+
+
+class DiagnosticTurnStreamer(Protocol):
+    """Stream infrastructure diagnostics when no model is configured."""
+
+    def stream_unconfigured_turn(
+        self,
+        session,
+        run_id: str,
+        missing: tuple[str, ...],
+    ) -> Iterator[dict]: ...
+
+
+class ExecutionLifecycleController(Protocol):
+    """Execution state-machine operations required by request routing."""
+
+    def begin_turn(self, session, user_input: str, *, goal_mode: bool): ...
+
+    def has_attached_execution(self, session) -> bool: ...
+
+    def resume(self, session): ...
+
+    def pause_runtime_creation_failed(self, execution, exc: Exception) -> None: ...
+
+    def pause_resume_preparation_failed(self, execution, exc: Exception) -> None: ...
+
+
+class RuntimeGraphProvider(Protocol):
+    """Select a workspace graph for a new or resumed execution."""
+
+    def graph_for_turn(self, workspace, *, goal_mode: bool): ...
+
+    def graph_for_resume(self, workspace, pending, *, instruction: str = ""): ...
+
+
+class LockedTurnStreamer(Protocol):
+    """Run one already-locked foreground turn as a synchronous event stream."""
+
+    def stream_locked_turn(
+        self,
+        session,
+        graph,
+        user_input: str,
+        run_id: str,
+        *,
+        execution=None,
+        resume: bool = False,
+        control: ExecutionControl | None = None,
+    ) -> Iterator[dict]: ...
 
 
 class AgentTurnRunner(Protocol):

@@ -28,7 +28,7 @@ from src.core.memory.retrieval import (
     record_retrieval,
 )
 from src.core.memory.writer import PostgresMemoryWriter
-from src.core.llm.provider import ModelProvider
+from src.core.llm.contracts import ModelProvider
 from src.core.workspace.models import SessionContext
 
 
@@ -38,10 +38,10 @@ class PostgresMemoryStore:
     def __init__(
         self,
         *,
+        model_provider: ModelProvider,
         pool=None,
         retrieval_limit: int = MEMORY_RETRIEVAL_LIMIT,
         min_importance: int = MEMORY_MIN_IMPORTANCE,
-        model_provider: ModelProvider | None = None,
     ) -> None:
         self._pool = pool or create_pool()
         self._owns_pool = pool is None

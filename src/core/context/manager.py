@@ -18,7 +18,7 @@ from src.core.context.messages import (
 from src.core.context.models import AgentContextState
 from src.core.context.summary_executor import ContextSummaryExecutor
 from src.core.context.summary_policy import SummaryPolicy
-from src.core.llm.provider import ModelProvider
+from src.core.llm.contracts import ModelProvider
 
 
 class AgentContextManager:
@@ -26,13 +26,13 @@ class AgentContextManager:
 
     def __init__(
         self,
+        model_provider: ModelProvider,
         recent_message_limit: int = RECENT_MESSAGE_LIMIT,
         summary_trigger_message_limit: int = SUMMARY_TRIGGER_MESSAGE_LIMIT,
         summary_trigger_char_limit: int = SUMMARY_TRIGGER_CHAR_LIMIT,
         summary_trigger_token_limit: int = SUMMARY_TRIGGER_TOKEN_LIMIT,
         summary_max_chars: int = SESSION_SUMMARY_MAX_CHARS,
         summary_source_char_limit: int = SUMMARY_SOURCE_CHAR_LIMIT,
-        model_provider: ModelProvider | None = None,
     ) -> None:
         self.recent_message_limit = recent_message_limit
         self.summary_trigger_message_limit = summary_trigger_message_limit

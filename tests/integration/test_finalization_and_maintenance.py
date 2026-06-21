@@ -9,6 +9,7 @@ from langchain_core.messages import AIMessage, HumanMessage
 
 from src.core.context.manager import AgentContextManager
 from src.core.context.models import AgentContextState
+from tests.support.model_providers import UnusedModelProvider
 from src.core.adapters.sqlite import SQLiteStateUnitOfWorkFactory
 from src.core.finalization import CompletedTurnCommitter, TurnFinalizer
 from src.core.finalization.models import CompletedTurn
@@ -22,8 +23,7 @@ from src.core.maintenance.handlers import ContextSummaryHandler
 from src.core.state import ExecutionRepository, LocalStateDatabase, LocalStateStore
 from src.core.state.migrations import LATEST_SCHEMA_VERSION, apply_local_migrations
 from src.core.state.workspace import LocalWorkspaceRepository
-from src.core.agent.locking import SessionLockRegistry
-from src.core.session import SessionLifecycleService
+from tests.support.session_services import build_session_lifecycle_service
 
 
 class WakeOnlyScheduler:
@@ -42,7 +42,7 @@ class FinalizationTest(unittest.TestCase):
         self.workspaces = LocalWorkspaceRepository(self.database)
         self.workspace = self.workspaces.resolve(str(Path("tests/fixtures/workspace_a").resolve()))
         self.session, _ = self.workspaces.resolve_session(self.workspace, "default")
-        self.store = LocalStateStore(self.database)
+        self.store = LocalStateStore(self.database, UnusedModelProvider())
         self.executions = ExecutionRepository(self.database)
         self.maintenance = MaintenanceRepository(self.database)
         self.scheduler = WakeOnlyScheduler()
@@ -54,7 +54,7 @@ class FinalizationTest(unittest.TestCase):
             ),
         )
         self.finalizer = TurnFinalizer(
-            AgentContextManager(),
+            AgentContextManager(UnusedModelProvider()),
             self.committer,
             self.scheduler,
         )
@@ -69,7 +69,6 @@ class FinalizationTest(unittest.TestCase):
         ]
 
         result = self.finalizer.finalize(
-            store=self.store,
             session=self.session,
             turn_index=1,
             previous_state=state,
@@ -185,7 +184,6 @@ class FinalizationTest(unittest.TestCase):
             )
         )
         self.finalizer.finalize(
-            store=self.store,
             session=self.session,
             turn_index=2,
             previous_state=AgentContextState(summary="stale summary"),
@@ -204,13 +202,12 @@ class FinalizationTest(unittest.TestCase):
                 return []
 
         finalizer = TurnFinalizer(
-            AgentContextManager(),
+            AgentContextManager(UnusedModelProvider()),
             SlowCommitter(),
             self.scheduler,
         )
         started = time.perf_counter()
         finalizer.finalize(
-            store=self.store,
             session=self.session,
             turn_index=1,
             previous_state=AgentContextState(),
@@ -225,14 +222,13 @@ class FinalizationTest(unittest.TestCase):
                 raise RuntimeError("wake failed")
 
         finalizer = TurnFinalizer(
-            AgentContextManager(),
+            AgentContextManager(UnusedModelProvider()),
             self.committer,
             FailingWakeScheduler(),
             memory_enabled=False,
         )
         with patch("src.core.finalization.service.record_error") as record:
             result = finalizer.finalize(
-                store=self.store,
                 session=self.session,
                 turn_index=1,
                 previous_state=AgentContextState(),
@@ -262,7 +258,7 @@ class FinalizationTest(unittest.TestCase):
             poll_interval_seconds=0.01,
         )
         finalizer = TurnFinalizer(
-            AgentContextManager(),
+            AgentContextManager(UnusedModelProvider()),
             self.committer,
             scheduler,
             memory_enabled=False,
@@ -279,7 +275,6 @@ class FinalizationTest(unittest.TestCase):
                 ]
                 started = time.perf_counter()
                 finalizer.finalize(
-                    store=self.store,
                     session=self.session,
                     turn_index=turn_index,
                     previous_state=state,
@@ -582,10 +577,9 @@ class RecoveryCoordinatorTest(unittest.TestCase):
                 str(session.session_id),
             )
         )
-        service = SessionLifecycleService(
+        service = build_session_lifecycle_service(
+            database=self.database,
             workspace_repository=self.workspaces,
-            state_store_factory=lambda: LocalStateStore(self.database),
-            lock_registry=SessionLockRegistry(),
             execution_repository=self.executions,
             maintenance_repository=self.maintenance,
         )

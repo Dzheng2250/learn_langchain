@@ -3,6 +3,7 @@
 from dataclasses import dataclass
 
 from src.core.agent.models import AgentRunContext, RunLimits
+from src.core.ports import MemoryRetrievalStore, SessionStore
 
 
 @dataclass(frozen=True)
@@ -23,21 +24,29 @@ class ConversationContextLoader:
     whether memory came from SQLite, a file backend, or a future vector store.
     """
 
-    def __init__(self, context_manager, *, memory_enabled: bool = True) -> None:
+    def __init__(
+        self,
+        context_manager,
+        session_store: SessionStore,
+        memory_store: MemoryRetrievalStore,
+        *,
+        memory_enabled: bool = True,
+    ) -> None:
         self.context_manager = context_manager
+        self.session_store = session_store
+        self.memory_store = memory_store
         self.memory_enabled = memory_enabled
 
     def prepare(
         self,
         *,
-        store,
         session,
         user_input: str,
         run_id: str,
         limits: RunLimits,
     ) -> PreparedTurn:
         """Load bounded conversation context and workspace memory."""
-        state, completed_turn_index = store.load_session(session)
+        state, completed_turn_index = self.session_store.load_context(session)
         current_turn = completed_turn_index + 1
         run_context = AgentRunContext(
             run_id=run_id,
@@ -46,7 +55,7 @@ class ConversationContextLoader:
             limits=limits,
         )
         memories = (
-            store.retrieve_for_turn(
+            self.memory_store.retrieve_for_turn(
                 session.workspace.workspace_id,
                 user_input,
                 new_session=completed_turn_index == 0,
@@ -54,7 +63,7 @@ class ConversationContextLoader:
             if self.memory_enabled
             else []
         )
-        memory_message = store.build_memory_message(memories)
+        memory_message = self.memory_store.build_memory_message(memories)
         input_messages = self.context_manager.build_input_messages(
             state,
             user_input,

@@ -6,7 +6,7 @@ import re
 from src.core.common.debug import debug_print, format_message
 from src.config.settings import MEMORY_EXTRACT_SOURCE_CHAR_LIMIT
 from src.core.telemetry import event_span
-from src.core.llm.provider import LlmPurpose, ModelProvider, OpenAICompatibleProvider
+from src.core.llm.contracts import LlmPurpose, ModelProvider
 from src.core.prompts import build_memory_extraction_messages
 
 
@@ -16,8 +16,8 @@ MEMORY_SOURCE_MESSAGE_PREVIEW_CHARS = 1200
 class MemoryCandidateExtractor:
     """Extract durable memory candidates from completed conversation turns."""
 
-    def __init__(self, model_provider: ModelProvider | None = None) -> None:
-        self.model_provider = model_provider or OpenAICompatibleProvider()
+    def __init__(self, model_provider: ModelProvider) -> None:
+        self.model_provider = model_provider
 
     def format_messages(self, messages: list) -> str:
         """Format and bound source messages before sending them to the LLM."""

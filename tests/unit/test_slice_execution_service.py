@@ -6,6 +6,7 @@ from uuid import uuid4
 from src.core.agent.budget import ExecutionBudget
 from src.core.agent.models import AgentRunContext, RunLimits, StopReason
 from src.core.agent.slices import SliceExecutionService
+from src.core.errors import ProviderErrorHandler
 from src.core.state.types import ExecutionStatus
 from src.core.tasks.context import ToolExecutionContext
 from src.core.workspace.models import SessionContext, WorkspaceContext
@@ -60,7 +61,7 @@ class SliceExecutionServiceTest(unittest.TestCase):
         )
 
     def _stream(self, repository, events):
-        service = SliceExecutionService(execution_repository=repository)
+        service = SliceExecutionService(execution_store=repository, provider_error_handler=ProviderErrorHandler())
         with patch("src.core.agent.slices.stream_graph_events", return_value=iter(events)):
             return _consume(
                 service.stream_slice(

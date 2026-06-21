@@ -4,7 +4,7 @@ import time
 from threading import Lock
 from langchain_core.callbacks import BaseCallbackHandler
 
-from src.core.llm.provider import ModelProvider
+from src.core.llm.contracts import ModelProvider
 from src.core.tracing.models import TraceDirection, TraceLayer
 from src.core.tracing.recorder import record_trace
 

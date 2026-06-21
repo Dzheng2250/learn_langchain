@@ -59,6 +59,13 @@
 
 端口应保持小而专。不要把前台召回、后台写入、运维查询全部塞进同一个接口。
 
+Session 生命周期是一个现有示例：`SessionLifecycleService` 只依赖
+`SessionLifecycleStore`，SQLite 的 Workspace repository、消息历史和 checkpoint thread
+查询由 `SQLiteSessionLifecycleStore` 组合。Agent 执行则按用途拆成
+`ExecutionLifecycleStore`、`ExecutionPauseStore`、`ExecutionSliceStore` 和 `ExecutionFailureStore`，避免一个循环控制器
+依赖完整 repository。新增后端时应实现对应小端口，并在 `CoreContainer` 替换 provider，
+不能在 service 中加入 `if backend == ...`。
+
 例如长期记忆可拆成：
 
 ```text
@@ -77,6 +84,18 @@ MemoryInspectionStore    # 调试或运维才需要查询失败状态
 - Contract Tests：同一组行为测试可套到 SQLite、InMemory、File 等实现。
 - 边界测试：application service 层不得 import `sqlite3` 或 `src.core.adapters.sqlite`。
 - 回归测试：finalization、agent service、local state、documentation tests 必须通过。
+
+模型 Provider 扩展也遵循相同规则：业务模块只能导入 `src/core/llm/contracts.py`；新供应商实现
+放在实现模块中，并由 `CoreContainer` 选择。不得因为新增供应商而在 Agent、Memory 或 Tool 中
+加入供应商分支。
+
+应用服务构造器也属于依赖边界。类似 `AgentTurnService` 的 facade 只应接收已组装协作者，
+不能为了测试方便重新加入 provider、repository 或 worker 的可选 fallback。该规则也适用于
+`TurnExecutionLoop` 等内部编排器：observer、错误策略、暂停策略和配置必须由组合根注入，
+不能在编排器内部以 `dependency or ConcreteType()` 方式偷偷选择实现。跨模块请求编排应依赖
+`DiagnosticTurnStreamer`、`RuntimeGraphProvider` 这类行为 Protocol，而不是导入具体 service 类。
+测试需要替换依赖时，
+应在 `tests/support` 中建立显式 assembly helper，生产装配仍只保留在 `CoreContainer`。
 
 新增 adapter 时，测试重点应覆盖：
 

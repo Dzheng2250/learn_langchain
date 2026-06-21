@@ -10,20 +10,20 @@ from langgraph.prebuilt import InjectedState, tools_condition
 
 from src.config.settings import SUBAGENT_CONTEXT_MESSAGE_LIMIT, SUBAGENT_MAX_STEPS, SUBAGENT_RESULT_LIMIT
 from src.core.common.debug import format_message
-from src.core.llm.provider import LlmPurpose, ModelProvider, OpenAICompatibleProvider
+from src.core.llm.contracts import LlmPurpose, ModelProvider
 from src.core.prompts import SUBAGENT_SYSTEM_PROMPT, build_subagent_task_prompt
 from src.core.tools.observed import ObservedToolNode
 
 
 def create_delegate_tool(
     base_tools: list,
-    model_provider: ModelProvider | None = None,
+    model_provider: ModelProvider,
     *,
     max_steps: int = SUBAGENT_MAX_STEPS,
     risk_by_name=None,
 ):
     """Create a delegate tool whose sub-agent cannot recursively delegate."""
-    provider = model_provider or OpenAICompatibleProvider()
+    provider = model_provider
     llm = provider.create_chat_model(
         LlmPurpose.SUBAGENT,
         temperature=0,

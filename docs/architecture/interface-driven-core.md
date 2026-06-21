@@ -68,10 +68,17 @@ Application Service
 |---|---|
 | `ConversationHistoryStore` | 追加和读取会话消息历史 |
 | `SessionStore` | 读取和更新 Session 摘要、近期消息、`turn_index` |
-| `ExecutionStore` | 完成 Slice / Execution 等执行生命周期变更 |
+| `SessionLifecycleStore` | 解析 Session 身份并执行归档、删除、历史重建等生命周期持久化 |
+| `ExecutionStore` | 在成功 Turn 的 Unit of Work 中完成最终 Slice / Execution |
+| `ExecutionLifecycleStore` | 创建、查询、恢复和暂停前台 Execution |
+| `ExecutionPauseStore` | 只持久化暂停状态，供预算暂停等窄场景使用 |
+| `ExecutionSliceStore` | 创建和结束单个有界 Slice |
+| `ExecutionFailureStore` | 为错误处理组合暂停与 Slice 收尾能力 |
 | `MaintenanceQueue` | 将后台维护任务写入可靠队列 |
 | `StateUnitOfWork` | 把一次成功 Turn 的多项状态修改放进同一个原子提交 |
 | `StateUnitOfWorkFactory` | 为具体后端创建 Unit of Work |
+| `StateInitializer` | 在 daemon 启动时初始化权威状态 schema，不暴露完整 Store |
+| `ModelProvider / ModelConfiguration` | 定义在 `llm/contracts.py` 的供应商无关模型能力；具体 `ChatOpenAI` 构造留在 adapter 实现 |
 
 旧的 `src/core/state/contracts.py::StateStore` 也已经收缩为前台 Turn 真正需要的能力：加载 Session、召回长期记忆和构造记忆提示消息。它不再声明 `append_messages_in_transaction()` 或 `save_fast_session_in_transaction()` 这类带数据库事务细节的方法。
 
@@ -81,6 +88,7 @@ Application Service
 src/core/adapters/sqlite/
   conversation_history.py
   session_store.py
+  session_lifecycle.py
   memory_store.py
   memory_write_store.py
   projection_outbox.py
@@ -107,9 +115,16 @@ src/core/adapters/sqlite/
 | PostgreSQL 投影 outbox | `SQLiteProjectionOutboxStore.enqueue()` | 负责可选投影事件写入 |
 | 摘要读取与 CAS 写回 | `SQLiteSummaryStore` | 防止旧摘要覆盖新摘要 |
 | 成功 Turn 原子提交 | `SQLiteStateUnitOfWorkFactory` | 组合 history/session/execution/maintenance 端口 |
+| Agent facade | `AgentTurnService` | 仅委托异步执行、同步事件流和服务生命周期，不创建任何 provider、store、repository 或 worker |
+| Agent 请求路由 | `AgentRequestStreamService` | 只依赖诊断、Execution、Runtime Graph、锁和执行流的行为 Protocol，不导入具体服务类 |
+| Runtime Graph 解析 | `RuntimeGraphResolver` | 通过 `WorkspaceRuntimeProvider` 获取 runtime，不依赖具体 Registry 缓存实现 |
+| 前台上下文读取 | `ConversationContextLoader` | 通过 `SessionStore` 和 `MemoryRetrievalStore` 读取上下文，不创建兼容 State facade |
+| Agent 循环编排 | `TurnExecutionLoop` | 只执行 Slice 循环；不创建 Store，observer、错误/暂停处理器和 `LoopConfig` 均由组合根显式注入 |
 | Agent 服务生命周期 | `AgentServiceLifecycle` | 初始化 state/checkpoint/recovery/maintenance，关闭 worker 和后台资源 |
 | Session 并发锁 | `SessionLockRegistry` | 独立保存 Session UUID 到 reentrant lock 的映射 |
-| Session 状态查询 | `SessionStatusReader` | 只读聚合 context、pending execution 和 maintenance 状态 |
+| Session 状态查询 | `SessionStatusReader` | 通过 `SessionLifecycleStore` 与 `SessionStore` 聚合 context、pending execution 和 maintenance 状态 |
+| Session 生命周期持久化 | `SQLiteSessionLifecycleStore` | 隔离 Workspace repository、checkpoint thread 查询和历史重建的 SQLite 细节 |
+| Session 生命周期编排 | `SessionLifecycleService` | 只协调归档、删除、重置和 pending execution，不再创建或关闭具体 Store |
 | Agent 循环配置 | `LoopConfig` | 收敛 `TurnExecutionLoop` 的标量配置，避免构造器随配置项膨胀 |
 
 这意味着响应关键路径中的消息追加和 Session fast context 更新已经不再由 `LocalStateStore` 自己执行 SQL，而是委托给 SQLite adapter。
@@ -184,10 +199,27 @@ CoreApp
 
 业务模块不应直接创建 trace/event bus、数据库连接、模型 provider 或 runtime registry。这些基础设施应由 `CoreApp` 和 `CoreContainer` 注入。
 
-Agent 执行链路也遵循同一原则：`AgentTurnService` 只保留面向 RPC 的 facade 和依赖组装，
-`AgentServiceLifecycle` 负责 durable resource 的启动/关闭，`TurnExecutionLoop` 负责控制 Slice 循环和继续/停止判断，
-`SliceExecutionService` 负责单次 LangGraph 执行，`TurnLoopErrorHandler` 负责错误分支的
-Execution 状态落库，`TurnLoopPauseHandler` 负责预算暂停的摘要、状态和事件构造，
+Agent 执行链路也遵循同一原则：`AgentTurnService` 只保留面向 RPC 的 facade；构造器只接收 `AgentAsyncTurnRunner`、
+`AgentRequestStreamService` 和 `AgentServiceLifecycle`。具体 provider、store、Execution、
+maintenance、runtime graph 和 worker 的依赖组装全部由 `CoreContainer` 完成。
+`create_parent_graph()`、Workspace runtime、子 Agent、文件摘要、上下文摘要和记忆提取
+都要求显式传入 `ModelProvider`，并只从 `src/core/llm/contracts.py` 导入协议。
+`ChatOpenAI` 与 `OpenAICompatibleProvider` 留在 `llm/provider.py`，具体 provider 只允许由
+`CoreContainer` 创建，业务模块不再导入实现模块或提供隐式 fallback，
+`AgentRequestStreamService` 通过 `AgentSessionStore` 获取 Workspace/Session 身份，并通过
+`DiagnosticTurnStreamer`、`ExecutionLifecycleController`、`RuntimeGraphProvider` 和
+`LockedTurnStreamer` 协调请求，不再导入对应具体实现。`RuntimeGraphResolver` 自身也只依赖
+`WorkspaceRuntimeProvider`，Workspace runtime 的缓存与工厂实现仍留在组合根一侧。无模型配置的 `DiagnosticTurnService`
+也改为依赖 `SessionStore`，不再创建兼容 Store。`AgentServiceLifecycle` 通过 `StateInitializer` 初始化权威状态 schema，不再创建兼容 Store；它同时负责 durable resource 的启动/关闭，
+`ConversationContextLoader` 通过 `SessionStore` 和 `MemoryRetrievalStore` 加载前台输入，
+`TurnExecutionLoop` 不再创建或关闭 `LocalStateStore`。`TurnFinalizer` 也不再接收未使用的 Store，
+成功提交只经由 `CompletedTurnCommitter -> StateUnitOfWorkFactory` 完成。
+`TurnExecutionLoop` 负责控制 Slice 循环和继续/停止判断；它不再自行创建 observer、错误处理器、
+暂停处理器或配置，这些协作者统一由 `CoreContainer` 装配。`SliceExecutionService` 负责单次 LangGraph 执行，
+`TurnLoopErrorHandler` 负责错误分支的
+Execution 状态落库，`TurnLoopPauseHandler` 负责预算暂停的摘要、状态和事件构造。
+这些 Agent Core 组件按需依赖 `ExecutionFailureStore`、`ExecutionPauseStore`、
+`ExecutionLifecycleStore` 或 `ExecutionSliceStore`，不再暴露或命名具体 `ExecutionRepository`。
 `TurnRunObserver` 负责把运行状态转换成 Telemetry/Trace，`AgentAsyncTurnRunner` 负责把阻塞式
 Agent 执行提交到有界 worker，`AgentSyncTurnRunner` 负责在 worker 线程中消费同步事件流并聚合最终 RPC result。
 执行逻辑不直接依赖具体 sink，观测逻辑也不决定业务是否继续。

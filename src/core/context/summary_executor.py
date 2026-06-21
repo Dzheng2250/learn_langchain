@@ -3,7 +3,7 @@
 from src.config.settings import SESSION_SUMMARY_MAX_CHARS, SUMMARY_SOURCE_CHAR_LIMIT
 from src.core.common.debug import debug_print
 from src.core.context.messages import format_messages_for_summary
-from src.core.llm.provider import LlmPurpose, ModelProvider, OpenAICompatibleProvider
+from src.core.llm.contracts import LlmPurpose, ModelProvider
 from src.core.prompts import build_context_summary_messages
 from src.core.telemetry import emit_event, event_span
 
@@ -14,11 +14,11 @@ class ContextSummaryExecutor:
     def __init__(
         self,
         *,
-        model_provider: ModelProvider | None = None,
+        model_provider: ModelProvider,
         summary_max_chars: int = SESSION_SUMMARY_MAX_CHARS,
         summary_source_char_limit: int = SUMMARY_SOURCE_CHAR_LIMIT,
     ) -> None:
-        self.model_provider = model_provider or OpenAICompatibleProvider()
+        self.model_provider = model_provider
         self.summary_max_chars = summary_max_chars
         self.summary_source_char_limit = summary_source_char_limit
 

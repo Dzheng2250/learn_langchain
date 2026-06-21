@@ -11,13 +11,34 @@
 
 后续优先级建议如下：
 
-1. **Workspace / Session Lifecycle**
-   Workspace 注册、Session 归档、硬删除、重置等能力应继续收敛到明确的 lifecycle service 和 store 端口中。
-   当前 `SessionLifecycleService` 已经把状态查询拆给 `SessionStatusReader`，只读 status 不再混在归档、删除、重置等写路径里；
-   RPC 返回字典由
-   `src/core/session/responses.py` 构造，checkpoint cleanup 入队由
-   `src/core/session/checkpoint_cleanup.py` 负责。后续如果继续拆，应优先把 Session 读写能力抽成更小的
-   `SessionLifecycleStore`，而不是让 lifecycle service 直接依赖具体 workspace repository 方法。
+1. **Workspace / Session Lifecycle（本阶段已完成）**
+   `SessionLifecycleStore` 已落地，`SessionLifecycleService` 和 `SessionStatusReader` 不再直接依赖
+   `LocalWorkspaceRepository`、`LocalStateStore` 或 store factory。SQLite 细节集中在
+   `SQLiteSessionLifecycleStore`、`SQLiteSessionStore` 和 `SQLiteConversationHistoryStore`，
+   并由 `CoreContainer` 统一装配。RPC 返回字典仍由 `src/core/session/responses.py` 构造，
+   checkpoint cleanup 入队仍由 `src/core/session/checkpoint_cleanup.py` 负责。
+   后续工作不再扩张该端口；应转向为 Execution、checkpoint manager 和 maintenance inspection
+   定义更小的能力接口，进一步消除 lifecycle service 对兼容 repository 的依赖。
+
+   同期完成的 Agent facade 清理：`AgentTurnService` 已移除旧的 fallback 装配构造器，
+   当前只接收三个已经组装好的协作者。生产装配唯一位于 `CoreContainer`；集成测试的
+   自定义装配位于 `tests/support/agent_services.py`，不会回流到生产业务层。
+   与 Agent 直接协作的 parent graph、Workspace runtime、subagent、上下文摘要、记忆提取和
+   文件摘要也已移除 `OpenAICompatibleProvider` fallback；`ModelProvider`、`ModelConfiguration`
+   和 `LlmPurpose` 已移动到 `llm/contracts.py`。业务模块只导入契约，具体 provider 只在组合根创建。
+
+   Agent Core 的请求与循环边界也已收紧：`AgentRequestStreamService` 通过 `AgentSessionStore`
+   解析 Workspace/Session，不再直接查询具体 Workspace repository；`TurnExecutionLoop`
+   不再在内部创建 observer、错误处理器、暂停处理器或配置。上述协作者统一由
+   `CoreContainer` 组装，测试装配则集中在 `tests/support/agent_services.py`。
+   前台上下文读取也已改用 `SessionStore + MemoryRetrievalStore`；`TurnExecutionLoop` 不再创建
+   `LocalStateStore`，`TurnFinalizer` 不再接收无用 Store 参数。下一步应继续处理
+   请求路由已进一步改为依赖 `DiagnosticTurnStreamer`、`ExecutionLifecycleController`、
+   `RuntimeGraphProvider` 和 `LockedTurnStreamer`；诊断 Turn 也已使用 `SessionStore`。
+   `RuntimeGraphResolver` 通过 `WorkspaceRuntimeProvider` 获取 runtime，不再依赖具体 Registry。
+   `AgentServiceLifecycle` 也已改为依赖 `StateInitializer`，生产环境直接注入
+   `LocalStateDatabase`，不再创建兼容 Store。下一步主要处理诊断之外的后台 maintenance
+   中仍保留的兼容 store factory，但不能把进程初始化职责重新放回前台执行链路。
 
 2. **Task Store**
    私有任务规划已经拆出 `TaskPlanValidator` 和 `TaskQueryStore`，分别承载纯规则校验与任务查询装配。
@@ -31,7 +52,10 @@
    checkpoint 清理、缺失和重启恢复对账已经拆到 `ExecutionCheckpointStore`。
    Slice 创建、完成和预算计数已经拆到 `ExecutionSliceStore`。
    complete/discard/terminate 这类“结束 Execution 并释放 Session”的写入已经拆到 `ExecutionReleaseStore`。
-   `ExecutionRepository` 仍保留 begin/resume/pause 等入口，后续可继续按“创建与恢复”“暂停状态更新”拆成更小 adapter 或 query helper。
+   Agent Core 已通过 `ExecutionLifecycleStore`、`ExecutionPauseStore`、`ExecutionSliceStore` 和 `ExecutionFailureStore`
+   使用这些能力，构造器不再暴露 `execution_repository`。`ExecutionRepository` 目前作为 SQLite
+   兼容 adapter 同时满足这些结构化端口，仍保留 begin/resume/pause 等入口。后续应把具体实现
+   继续拆成“创建与恢复”“暂停状态更新”小 adapter，再由组合根分别注入，而不是扩张现有端口。
 
 4. **Migration Orchestration**
    PostgreSQL 到本地状态的迁移入口仍是 `LocalStateMigration`，但源库计数检查已经拆到

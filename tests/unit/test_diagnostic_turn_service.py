@@ -12,7 +12,7 @@ class FakeStore:
         self.fail = fail
         self.closed = False
 
-    def load_session(self, _session):
+    def load_context(self, _session):
         if self.fail:
             raise RuntimeError("load failed")
         return "state", 3
@@ -32,7 +32,7 @@ class DiagnosticTurnServiceTest(unittest.TestCase):
     def test_streams_diagnostic_token_and_done_without_mutating_turn(self):
         store = FakeStore()
         service = DiagnosticTurnService(
-            state_store_factory=lambda: store,
+            session_store=store,
             run_limits=RunLimits(),
         )
 
@@ -51,12 +51,12 @@ class DiagnosticTurnServiceTest(unittest.TestCase):
         self.assertEqual("ok", done["status"])
         self.assertEqual(StopReason.LLM_NOT_CONFIGURED.value, done["stop_reason"])
         self.assertEqual(0, done["tool_call_count"])
-        self.assertTrue(store.closed)
+        self.assertFalse(store.closed)
 
     def test_returns_error_event_when_state_load_fails(self):
         store = FakeStore(fail=True)
         service = DiagnosticTurnService(
-            state_store_factory=lambda: store,
+            session_store=store,
             run_limits=RunLimits(),
         )
 
@@ -72,7 +72,7 @@ class DiagnosticTurnServiceTest(unittest.TestCase):
         self.assertEqual("diagnostic_turn_failed", events[0]["data"]["type"])
         self.assertEqual(StopReason.TURN_ERROR.value, events[0]["data"]["stop_reason"])
         self.assertEqual("run-2", events[0]["data"]["run_id"])
-        self.assertTrue(store.closed)
+        self.assertFalse(store.closed)
 
 
 if __name__ == "__main__":

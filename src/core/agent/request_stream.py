@@ -1,21 +1,22 @@
 """Foreground chat and resume request streaming service."""
 
-from collections.abc import Callable, Iterator
+from collections.abc import Iterator
 from typing import Protocol
 
-from src.core.agent.contracts import ExecutionControl
-from src.core.agent.loop import TurnExecutionLoop
+from src.core.agent.contracts import (
+    DiagnosticTurnStreamer,
+    ExecutionControl,
+    ExecutionLifecycleController,
+    LockedTurnStreamer,
+    RuntimeGraphProvider,
+)
 from src.core.agent.responses import (
     archived_session_event,
     idle_resume_event,
     pending_execution_event,
 )
-from src.core.agent.runtime_graph import RuntimeGraphResolver
-from src.core.diagnostics import DiagnosticTurnService
-from src.core.execution import ExecutionLifecycleService
-from src.core.llm.provider import ModelConfiguration
-from src.core.workspace.models import SessionContext
-from src.core.workspace.contracts import WorkspaceIdentityRepository
+from src.core.ports.session import AgentSessionStore
+from src.core.llm.contracts import ModelConfiguration
 
 
 class SessionLockProvider(Protocol):
@@ -37,23 +38,21 @@ class AgentRequestStreamService:
     def __init__(
         self,
         *,
-        workspace_repository: WorkspaceIdentityRepository,
+        session_store: AgentSessionStore,
         lock_registry: SessionLockProvider,
         model_configuration: ModelConfiguration,
-        diagnostic_turn_service: DiagnosticTurnService,
-        execution_lifecycle: ExecutionLifecycleService,
-        runtime_graph_resolver: RuntimeGraphResolver,
-        turn_execution_loop: TurnExecutionLoop,
-        execution_repository=None,
+        diagnostic_turn_service: DiagnosticTurnStreamer,
+        execution_lifecycle: ExecutionLifecycleController,
+        runtime_graph_resolver: RuntimeGraphProvider,
+        turn_execution_loop: LockedTurnStreamer,
     ) -> None:
-        self.workspace_repository = workspace_repository
+        self.session_store = session_store
         self.lock_registry = lock_registry
         self.model_configuration = model_configuration
         self.diagnostic_turn_service = diagnostic_turn_service
         self.execution_lifecycle = execution_lifecycle
         self.runtime_graph_resolver = runtime_graph_resolver
         self.turn_execution_loop = turn_execution_loop
-        self.execution_repository = execution_repository
 
     def stream_turn(
         self,
@@ -69,12 +68,12 @@ class AgentRequestStreamService:
         normalized = user_input.strip()
         if not normalized:
             raise ValueError("message must not be empty")
-        workspace = self.workspace_repository.resolve(workspace_root)
-        existing = self._get_existing_session_by_name(workspace, session_name)
+        workspace = self.session_store.resolve_workspace(workspace_root)
+        existing = self.session_store.find_session(workspace, session_name)
         if existing is not None and existing[1]:
             yield archived_session_event(existing[0], run_id)
             return
-        session, _new_session = self.workspace_repository.resolve_session(
+        session, _new_session = self.session_store.resolve_session(
             workspace,
             session_name,
         )
@@ -125,14 +124,12 @@ class AgentRequestStreamService:
         control: ExecutionControl | None = None,
     ) -> Iterator[dict]:
         """Resume the Session's pending execution with a new bounded Grant."""
-        if self.execution_repository is None:
-            raise RuntimeError("Resumable execution is not configured.")
-        workspace = self.workspace_repository.resolve(workspace_root)
-        existing = self._get_existing_session_by_name(workspace, session_name)
+        workspace = self.session_store.resolve_workspace(workspace_root)
+        existing = self.session_store.find_session(workspace, session_name)
         if existing is not None and existing[1]:
             yield archived_session_event(existing[0], run_id)
             return
-        session, _ = self.workspace_repository.resolve_session(workspace, session_name)
+        session, _ = self.session_store.resolve_session(workspace, session_name)
         with self.lock_registry.get(session.session_id):
             if not self.execution_lifecycle.has_attached_execution(session):
                 yield idle_resume_event(session, run_id)
@@ -156,18 +153,3 @@ class AgentRequestStreamService:
                 resume=True,
                 control=control,
             )
-
-    def _get_existing_session_by_name(
-        self,
-        workspace,
-        session_name: str,
-    ) -> tuple[SessionContext, bool] | None:
-        """Return an existing Session when the repository supports lookup-only access."""
-        getter: Callable | None = getattr(
-            self.workspace_repository,
-            "get_session_by_name",
-            None,
-        )
-        if getter is None:
-            return None
-        return getter(workspace, session_name, include_archived=True)

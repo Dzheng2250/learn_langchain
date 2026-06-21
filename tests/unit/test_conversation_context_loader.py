@@ -13,7 +13,7 @@ class FakeStore:
         self.retrieve_calls = []
         self.memory_message_calls = []
 
-    def load_session(self, _session):
+    def load_context(self, _session):
         return "state", self.completed_turn_index
 
     def retrieve_for_turn(self, workspace_id, query, *, new_session):
@@ -47,8 +47,11 @@ class ConversationContextLoaderTest(unittest.TestCase):
         context_manager = FakeContextManager()
         session = self._session()
 
-        prepared = ConversationContextLoader(context_manager).prepare(
-            store=store,
+        prepared = ConversationContextLoader(
+            context_manager,
+            session_store=store,
+            memory_store=store,
+        ).prepare(
             session=session,
             user_input="hello",
             run_id="run-1",
@@ -72,9 +75,10 @@ class ConversationContextLoaderTest(unittest.TestCase):
 
         prepared = ConversationContextLoader(
             context_manager,
+            session_store=store,
+            memory_store=store,
             memory_enabled=False,
         ).prepare(
-            store=store,
             session=session,
             user_input="hello",
             run_id="run-2",

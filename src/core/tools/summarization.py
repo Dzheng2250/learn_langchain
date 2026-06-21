@@ -12,13 +12,13 @@ from src.config.settings import (
     LARGE_FILE_MAX_CHUNKS,
     LARGE_FILE_SUMMARY_LIMIT,
 )
-from src.core.llm.provider import LlmPurpose, ModelProvider, OpenAICompatibleProvider
+from src.core.llm.contracts import LlmPurpose, ModelProvider
 from src.core.tools.workspace import read_workspace_lines
 
 
-def create_summarize_large_file(root: Path, model_provider: ModelProvider | None = None):
+def create_summarize_large_file(root: Path, model_provider: ModelProvider):
     """Create a Workspace-bound parallel map-reduce file summarization tool."""
-    provider = model_provider or OpenAICompatibleProvider()
+    provider = model_provider
 
     def llm():
         """Create an isolated deterministic model call for one map/reduce step."""

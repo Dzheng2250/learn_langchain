@@ -28,6 +28,7 @@ from src.core.state import CheckpointManager
 from src.core.state.workspace import LocalWorkspaceRepository
 from src.core.streaming.events import stream_graph_events
 from src.core.tools.catalog import ToolRisk
+from tests.support.model_providers import UnusedModelProvider
 
 
 class LocalStateTest(unittest.TestCase):
@@ -69,7 +70,7 @@ class LocalStateTest(unittest.TestCase):
         self.assertNotEqual(self.session.session_id, recreated.session_id)
 
     def test_completed_turn_is_atomic_and_updates_branch_head(self):
-        store = LocalStateStore(self.database, projection_enabled=True)
+        store = LocalStateStore(self.database, UnusedModelProvider(), projection_enabled=True)
         state = AgentContextState(
             summary="summary",
             recent_messages=[HumanMessage(content="hello"), AIMessage(content="world")],
@@ -226,7 +227,7 @@ class LocalStateTest(unittest.TestCase):
             self.assertEqual(1, artifacts.collect_garbage())
 
     def test_vague_memory_recall_fallback_respects_retrieval_limit(self):
-        store = LocalStateStore(self.database, retrieval_limit=3)
+        store = LocalStateStore(self.database, UnusedModelProvider(), retrieval_limit=3)
         with self.database.transaction() as conn:
             for index in range(8):
                 conn.execute(
@@ -251,7 +252,7 @@ class LocalStateTest(unittest.TestCase):
         self.assertEqual(3, len(memories))
 
     def test_unknown_message_role_emits_warning_before_archiving_as_unknown(self):
-        store = LocalStateStore(self.database)
+        store = LocalStateStore(self.database, UnusedModelProvider())
 
         class NewMessageType:
             type = "new_message_type"

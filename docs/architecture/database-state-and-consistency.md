@@ -81,6 +81,9 @@ CompletedTurnCommitter.commit()
   -> 一次性提交
 ```
 
+`AgentServiceLifecycle` 也只通过 `StateInitializer` 请求 schema 初始化，具体由
+`LocalStateDatabase` 实现，不再构造完整状态 facade。
+
 `CompletedTurnCommitter` 只依赖 `src/core/ports/` 中的端口，不直接依赖 SQLite。当前 SQLite
 实现位于 `src/core/adapters/sqlite/`。这样后续可以替换会话历史或维护队列实现，而不改 Turn 提交流程。
 
@@ -88,7 +91,9 @@ CompletedTurnCommitter.commit()
 
 - `SQLiteConversationHistoryStore` 负责读取历史消息和重建近期上下文。
 - `SQLiteSessionStore` 负责读取 Session 上下文，并在 Unit of Work 内委托 fast context 更新。
+- `SQLiteSessionLifecycleStore` 负责 Session 身份查找、归档、硬删除、checkpoint thread 查询和近期历史重建；应用服务不直接访问 Workspace repository 或 SQLite 表。
 - `SQLiteMemoryRetrievalStore` 负责长期记忆召回。
+- 前台 `ConversationContextLoader` 直接依赖 Session 与 Memory 小端口，`TurnExecutionLoop` 不再为每轮创建 `LocalStateStore` 兼容 facade。
 - `messages.raw` 的序列化、`messages.parent_message_id` 链接、分支头更新和 execution 关联仍由原 SQLite 写入路径保证。
 
 也就是说，本轮拆分不会改变“成功 turn 必须先完整写入 `state.db` 才返回 done”的耐久性边界。未来如果替换会话历史后端，新后端必须通过同一组 contract tests 证明消息顺序、raw 结构和 turn 原子提交语义没有变化。

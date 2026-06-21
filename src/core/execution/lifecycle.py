@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from src.core.agent.models import StopReason
+from src.core.ports import ExecutionLifecycleStore
 from src.core.state.types import ExecutionStatus
 from src.core.tracing import TraceDirection, TraceLayer, record_trace
 
@@ -30,17 +31,17 @@ class ExecutionLifecycleService:
     application path and emits the corresponding trace records.
     """
 
-    def __init__(self, execution_repository=None) -> None:
-        self.execution_repository = execution_repository
+    def __init__(self, execution_store: ExecutionLifecycleStore | None) -> None:
+        self.execution_store = execution_store
 
     def begin_turn(self, session, user_input: str, *, goal_mode: bool) -> ExecutionStart:
         """Attach a new Execution unless the Session already has pending work."""
-        if self.execution_repository is None:
+        if self.execution_store is None:
             return ExecutionStart()
-        pending = self.execution_repository.get_pending(session)
+        pending = self.execution_store.get_pending(session)
         if pending is not None:
             return ExecutionStart(pending=pending)
-        execution = self.execution_repository.begin(
+        execution = self.execution_store.begin(
             session,
             user_input,
             goal_mode=goal_mode,
@@ -50,15 +51,15 @@ class ExecutionLifecycleService:
 
     def has_attached_execution(self, session) -> bool:
         """Return whether the Session has any attached Execution state."""
-        if self.execution_repository is None:
+        if self.execution_store is None:
             return False
-        return self.execution_repository.get_attached(session) is not None
+        return self.execution_store.get_attached(session) is not None
 
     def resume(self, session):
         """Resume the Session's recoverable Execution and record trace identity."""
-        if self.execution_repository is None:
+        if self.execution_store is None:
             raise RuntimeError("Resumable execution is not configured.")
-        pending = self.execution_repository.resume(session)
+        pending = self.execution_store.resume(session)
         self._record_attached(
             pending,
             {
@@ -78,9 +79,9 @@ class ExecutionLifecycleService:
         self._pause_error(execution, f"Execution resume preparation failed: {exc}")
 
     def _pause_error(self, execution, summary: str) -> None:
-        if execution is None or self.execution_repository is None:
+        if execution is None or self.execution_store is None:
             return
-        self.execution_repository.pause(
+        self.execution_store.pause(
             execution.execution_id,
             ExecutionStatus.PAUSED_ERROR,
             StopReason.TURN_ERROR.value,

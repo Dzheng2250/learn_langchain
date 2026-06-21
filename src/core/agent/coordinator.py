@@ -18,7 +18,6 @@ class TurnCoordinator:
     def prepare(
         self,
         *,
-        store,
         session,
         user_input: str,
         run_id: str,
@@ -26,7 +25,6 @@ class TurnCoordinator:
     ) -> PreparedTurn:
         """Load bounded context and workspace memory before graph execution."""
         return self.context_loader.prepare(
-            store=store,
             session=session,
             user_input=user_input,
             run_id=run_id,

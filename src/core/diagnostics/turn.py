@@ -1,9 +1,9 @@
 """Diagnostic turn service for validating Core without LLM configuration."""
 
-from collections.abc import Callable, Iterator
+from collections.abc import Iterator
 
 from src.core.agent.models import AgentRunContext, RunLimits, StopReason
-from src.core.state.contracts import StateStore
+from src.core.ports import SessionStore
 from src.core.telemetry import (
     bind_context,
     bind_run_context,
@@ -25,10 +25,10 @@ class DiagnosticTurnService:
     def __init__(
         self,
         *,
-        state_store_factory: Callable[[], StateStore],
+        session_store: SessionStore,
         run_limits: RunLimits,
     ) -> None:
-        self.state_store_factory = state_store_factory
+        self.session_store = session_store
         self.run_limits = run_limits
 
     def stream_unconfigured_turn(
@@ -38,7 +38,6 @@ class DiagnosticTurnService:
         missing: tuple[str, ...],
     ) -> Iterator[dict]:
         """Validate infrastructure without mutating conversation state."""
-        store = self.state_store_factory()
         context_token = bind_context(
             workspace_id=session.workspace.workspace_id,
             session_id=session.session_id,
@@ -46,7 +45,7 @@ class DiagnosticTurnService:
         )
         run_context_token = None
         try:
-            _state, turn_index = store.load_session(session)
+            _state, turn_index = self.session_store.load_context(session)
             run_context = AgentRunContext(
                 run_id=run_id,
                 session=session,
@@ -118,4 +117,3 @@ class DiagnosticTurnService:
             if run_context_token is not None:
                 reset_context(run_context_token)
             reset_context(context_token)
-            store.close()

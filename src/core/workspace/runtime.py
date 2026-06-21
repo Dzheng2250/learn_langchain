@@ -7,7 +7,7 @@ from uuid import UUID
 
 from src.core.agent.models import RunLimits
 from src.core.agent.graph import create_parent_graph
-from src.core.llm.provider import ModelProvider, OpenAICompatibleProvider
+from src.core.llm.contracts import ModelProvider
 from src.core.tasks.service import TaskPlanningService
 from src.core.tools.registry import WorkspaceToolset, create_workspace_toolset
 from src.core.workspace.models import WorkspaceContext
@@ -29,13 +29,13 @@ class WorkspaceRuntimeFactory:
 
     def __init__(
         self,
-        model_provider: ModelProvider | None = None,
+        model_provider: ModelProvider,
         run_limits: RunLimits | None = None,
         checkpointer=None,
         checkpointer_provider: Callable[[], object] | None = None,
         task_service: TaskPlanningService | None = None,
     ) -> None:
-        self.model_provider = model_provider or OpenAICompatibleProvider()
+        self.model_provider = model_provider
         self.run_limits = run_limits or RunLimits()
         self.checkpointer = checkpointer
         self.checkpointer_provider = checkpointer_provider
@@ -83,8 +83,8 @@ class WorkspaceRuntimeFactory:
 class WorkspaceRuntimeRegistry:
     """Thread-safe cache that prevents duplicate per-Workspace compilation."""
 
-    def __init__(self, factory: WorkspaceRuntimeFactory | None = None) -> None:
-        self.factory = factory or WorkspaceRuntimeFactory()
+    def __init__(self, factory: WorkspaceRuntimeFactory) -> None:
+        self.factory = factory
         self._lock = Lock()
         self._runtimes: dict[UUID, WorkspaceRuntime] = {}
         self._creation_locks: dict[UUID, Lock] = {}

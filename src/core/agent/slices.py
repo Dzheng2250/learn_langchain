@@ -7,6 +7,7 @@ from typing import Any
 from src.core.agent.budget import ExecutionBudget
 from src.core.agent.models import AgentRunContext, StopReason
 from src.core.errors import ProviderErrorHandler
+from src.core.ports import ExecutionSliceStore
 from src.core.state.types import ExecutionStatus
 from src.core.streaming.events import stream_graph_events
 from src.core.tasks.context import ToolExecutionContext
@@ -46,11 +47,11 @@ class SliceExecutionService:
     def __init__(
         self,
         *,
-        execution_repository=None,
-        provider_error_handler: ProviderErrorHandler | None = None,
+        execution_store: ExecutionSliceStore | None,
+        provider_error_handler: ProviderErrorHandler,
     ) -> None:
-        self.execution_repository = execution_repository
-        self.provider_error_handler = provider_error_handler or ProviderErrorHandler()
+        self.execution_store = execution_store
+        self.provider_error_handler = provider_error_handler
 
     def stream_slice(
         self,
@@ -170,9 +171,9 @@ class SliceExecutionService:
             raise
 
     def _start_slice(self, execution, slice_number: int) -> str | None:
-        if execution is None or self.execution_repository is None:
+        if execution is None or self.execution_store is None:
             return None
-        return self.execution_repository.start_slice(
+        return self.execution_store.start_slice(
             execution.execution_id,
             execution.grant_index,
             slice_number,
@@ -188,7 +189,7 @@ class SliceExecutionService:
         graph_steps_used: int | None = None,
         usage: dict | None = None,
     ) -> None:
-        if slice_id is None or execution is None or self.execution_repository is None:
+        if slice_id is None or execution is None or self.execution_store is None:
             return
         kwargs = {
             "status": status,
@@ -197,7 +198,7 @@ class SliceExecutionService:
         }
         if graph_steps_used is not None:
             kwargs["graph_steps_used"] = graph_steps_used
-        self.execution_repository.finish_slice(
+        self.execution_store.finish_slice(
             slice_id,
             execution.execution_id,
             **kwargs,

@@ -5,12 +5,22 @@ no SQL strings, table names, cursors, or SQLite connection objects should leak
 through this boundary.
 """
 
-from typing import Protocol
+from __future__ import annotations
+
+from typing import TYPE_CHECKING, Protocol
 
 from src.core.context.models import AgentContextState
-from src.core.finalization.models import CompletedTurn
 from src.core.maintenance.models import MaintenanceJobSpec
 from src.core.workspace.models import SessionContext
+
+if TYPE_CHECKING:
+    from src.core.finalization.models import CompletedTurn
+
+
+class StateInitializer(Protocol):
+    """Initialize the authoritative state schema before serving requests."""
+
+    def initialize(self) -> None: ...
 
 
 class ConversationHistoryStore(Protocol):

@@ -36,10 +36,10 @@ class LocalStateStore:
     def __init__(
         self,
         database: LocalStateDatabase,
+        model_provider,
         *,
         retrieval_limit: int = MEMORY_RETRIEVAL_LIMIT,
         min_importance: int = MEMORY_MIN_IMPORTANCE,
-        model_provider=None,
         projection_enabled: bool = POSTGRES_PROJECTION_ENABLED,
     ) -> None:
         self.database = database

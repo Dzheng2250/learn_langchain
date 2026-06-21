@@ -15,6 +15,7 @@ from src.core.tools.commands import _copy_workspace
 from src.core.tools.summarization import create_summarize_large_file
 from src.core.tools.workspace import create_workspace_file_tools
 from src.core.workspace.models import WorkspaceContext
+from tests.support.model_providers import UnusedModelProvider
 from src.core.workspace.runtime import WorkspaceRuntimeRegistry
 from src.core.workspace.resolver import resolve_workspace_path
 
@@ -41,7 +42,7 @@ class WorkspaceResolutionTest(unittest.TestCase):
 
     def test_all_file_reading_tools_reject_environment_files(self):
         read_file, _read_entire, _read_lite = create_workspace_file_tools(ROOT)
-        summarize = create_summarize_large_file(ROOT)
+        summarize = create_summarize_large_file(ROOT, UnusedModelProvider())
         self.assertIn("rejected", read_file.invoke({"path": ".env"}))
         self.assertIn(
             "rejected",

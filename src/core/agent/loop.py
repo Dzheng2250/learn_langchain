@@ -1,6 +1,6 @@
 """Foreground execution loop for one Agent turn or resume grant."""
 
-from collections.abc import Callable, Iterator
+from collections.abc import Iterator
 from dataclasses import dataclass
 
 from src.config.settings import MAX_AUTO_SLICES_PER_GRANT
@@ -19,8 +19,6 @@ from src.core.agent.loop_errors import TurnLoopErrorHandler
 from src.core.agent.loop_pause import TurnLoopPauseHandler
 from src.core.agent.run_observer import TurnRunObserver
 from src.core.agent.slices import SliceExecutionService
-from src.core.errors.provider_failure import ProviderFailureService
-from src.core.state.contracts import StateStore
 from src.core.state.types import ExecutionStatus
 from src.core.tasks.context import ToolExecutionContext
 from src.core.telemetry import (
@@ -54,35 +52,21 @@ class TurnExecutionLoop:
     def __init__(
         self,
         *,
-        state_store_factory: Callable[[], StateStore],
         turn_coordinator: TurnCoordinator,
         run_limits: RunLimits,
-        execution_repository=None,
         slice_execution_service: SliceExecutionService,
-        provider_failure_service: ProviderFailureService,
-        observer: TurnRunObserver | None = None,
-        error_handler: TurnLoopErrorHandler | None = None,
-        pause_handler: TurnLoopPauseHandler | None = None,
-        config: LoopConfig | None = None,
-        max_auto_slices: int = MAX_AUTO_SLICES_PER_GRANT,
+        observer: TurnRunObserver,
+        error_handler: TurnLoopErrorHandler,
+        pause_handler: TurnLoopPauseHandler,
+        config: LoopConfig,
     ) -> None:
-        self.state_store_factory = state_store_factory
         self.turn_coordinator = turn_coordinator
         self.run_limits = run_limits
-        self.execution_repository = execution_repository
         self.slice_execution_service = slice_execution_service
-        self.provider_failure_service = provider_failure_service
-        self.observer = observer or TurnRunObserver()
-        self.error_handler = error_handler or TurnLoopErrorHandler(
-            execution_repository=execution_repository,
-            provider_failure_service=provider_failure_service,
-            observer=self.observer,
-        )
-        self.pause_handler = pause_handler or TurnLoopPauseHandler(
-            execution_repository=execution_repository,
-            observer=self.observer,
-        )
-        self.config = config or LoopConfig(max_auto_slices=max_auto_slices)
+        self.observer = observer
+        self.error_handler = error_handler
+        self.pause_handler = pause_handler
+        self.config = config
         self.max_auto_slices = max(1, int(self.config.max_auto_slices))
 
     def stream_locked_turn(
@@ -97,7 +81,6 @@ class TurnExecutionLoop:
         control: ExecutionControl | None = None,
     ) -> Iterator[dict]:
         """Run bounded Slices and persist either completion or recoverable pause."""
-        store = self.state_store_factory()
         context_token = bind_context(
             workspace_id=session.workspace.workspace_id,
             session_id=session.session_id,
@@ -112,7 +95,6 @@ class TurnExecutionLoop:
             # Persisted turn_index identifies the last completed turn. The
             # current turn is assigned only after the Session lock is held.
             prepared = self.turn_coordinator.prepare(
-                store=store,
                 session=session,
                 user_input=user_input,
                 run_id=run_id,
@@ -174,7 +156,6 @@ class TurnExecutionLoop:
                     final_messages = item["data"]["messages"]
                     active_slice_id = slice_id
                     finalization = self.turn_coordinator.finalize(
-                        store=store,
                         session=session,
                         turn_index=current_turn,
                         previous_state=state,
@@ -241,4 +222,3 @@ class TurnExecutionLoop:
             if budget_token is not None:
                 reset_execution_budget(budget_token)
             reset_context(context_token)
-            store.close()

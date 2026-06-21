@@ -1,12 +1,12 @@
-"""LLM provider abstractions and implementations."""
+"""LLM provider contracts and implementations."""
 
-from .provider import (
+from .contracts import (
     LlmConfigurationStatus,
     LlmPurpose,
     ModelConfiguration,
     ModelProvider,
-    OpenAICompatibleProvider,
 )
+from .provider import OpenAICompatibleProvider
 
 __all__ = [
     "LlmConfigurationStatus",

@@ -2,13 +2,13 @@
 
 from langchain_core.messages import HumanMessage
 
-from src.core.workspace.runtime import WorkspaceRuntimeRegistry
+from src.core.workspace.contracts import WorkspaceRuntimeProvider
 
 
 class RuntimeGraphResolver:
     """Resolve the concrete graph for a turn without exposing runtime internals."""
 
-    def __init__(self, runtime_registry: WorkspaceRuntimeRegistry) -> None:
+    def __init__(self, runtime_registry: WorkspaceRuntimeProvider) -> None:
         self.runtime_registry = runtime_registry
 
     def graph_for_turn(self, workspace, *, goal_mode: bool):

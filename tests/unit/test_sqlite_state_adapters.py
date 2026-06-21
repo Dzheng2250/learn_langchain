@@ -11,11 +11,13 @@ from src.core.adapters.sqlite import (
     SQLiteSessionStore,
     SQLiteSummaryStore,
 )
+from src.core.adapters.sqlite.session_lifecycle import SQLiteSessionLifecycleStore
 from src.core.context.models import AgentContextState
 from src.core.finalization.models import CompletedTurn
 from src.core.state import LocalStateDatabase, LocalStateStore
 from src.core.state.workspace import LocalWorkspaceRepository
 from src.core.telemetry import BaseEventSink, EventBus, install_event_bus
+from tests.support.model_providers import UnusedModelProvider
 
 
 class RecordingSink(BaseEventSink):
@@ -45,12 +47,15 @@ class SQLiteStateAdapterTest(unittest.TestCase):
         self.database = LocalStateDatabase(":memory:")
         self.addCleanup(self.database.close)
         self.database.initialize()
-        workspace_repository = LocalWorkspaceRepository(self.database)
-        self.workspace = workspace_repository.resolve(
+        self.workspace_repository = LocalWorkspaceRepository(self.database)
+        self.workspace = self.workspace_repository.resolve(
             str(Path("tests/fixtures/workspace_a").resolve())
         )
-        self.session, _ = workspace_repository.resolve_session(self.workspace, "default")
-        self.store = LocalStateStore(self.database)
+        self.session, _ = self.workspace_repository.resolve_session(
+            self.workspace,
+            "default",
+        )
+        self.store = LocalStateStore(self.database, UnusedModelProvider())
 
     def tearDown(self):
         install_event_bus(None)
@@ -333,6 +338,38 @@ class SQLiteStateAdapterTest(unittest.TestCase):
         self.assertEqual(1, len(rows))
         self.assertEqual("session-2", rows[0]["aggregate_id"])
         self.assertIn('"turn_index": 2', rows[0]["payload"])
+
+    def test_session_lifecycle_store_preserves_archive_semantics(self):
+        adapter = SQLiteSessionLifecycleStore(
+            workspace_repository=self.workspace_repository,
+            history_store=SQLiteConversationHistoryStore(self.database),
+        )
+
+        active = adapter.find_session(self.workspace, "default")
+        archived_now = adapter.archive(self.session)
+        archived = adapter.find_session(self.workspace, "default")
+
+        self.assertFalse(active[1])
+        self.assertTrue(archived_now)
+        self.assertTrue(archived[1])
+
+    def test_session_lifecycle_store_rebuilds_recent_history(self):
+        self.archive_and_save(
+            1,
+            [HumanMessage(content="recover me")],
+            AgentContextState(),
+        )
+        adapter = SQLiteSessionLifecycleStore(
+            workspace_repository=self.workspace_repository,
+            history_store=SQLiteConversationHistoryStore(self.database),
+        )
+
+        count = adapter.rebuild_recent(self.session)
+        state, turn_index = SQLiteSessionStore(self.database).load_context(self.session)
+
+        self.assertEqual(1, count)
+        self.assertEqual(1, turn_index)
+        self.assertEqual(["recover me"], [message.content for message in state.recent_messages])
 
 
 if __name__ == "__main__":

@@ -10,12 +10,13 @@ from langchain_core.messages import AIMessage, HumanMessage
 from psycopg.errors import ForeignKeyViolation
 
 from src.core.context.models import AgentContextState
-from src.core.agent.service import AgentTurnService
+from tests.support.agent_services import build_agent_turn_service
 from src.core.database.connection import create_pool
 from src.core.telemetry import EventBus, NoopEventSink, PostgresEventSink, TelemetryEvent, install_event_bus
 from src.core.memory.store import PostgresMemoryStore
 from src.core.llm.provider import LlmConfigurationStatus
 from src.core.workspace.repository import WorkspaceRepository
+from tests.support.model_providers import UnusedModelProvider
 
 
 RUN_POSTGRES_INTEGRATION = os.getenv(
@@ -38,7 +39,7 @@ class WorkspaceMemoryStoreTest(unittest.TestCase):
         # Explicit integration runs should fail quickly when PostgreSQL is
         # unavailable instead of making the complete suite appear hung.
         self.pool.wait(timeout=5)
-        self.store = PostgresMemoryStore(pool=self.pool, retrieval_limit=5, min_importance=1)
+        self.store = PostgresMemoryStore(model_provider=UnusedModelProvider(), pool=self.pool, retrieval_limit=5, min_importance=1)
         self.store.initialize()
         repository = WorkspaceRepository(self.pool)
         self.workspace_a = repository.resolve(Path("tests/fixtures/workspace_a"))
@@ -111,10 +112,10 @@ class WorkspaceMemoryStoreTest(unittest.TestCase):
                 return LlmConfigurationStatus(False, ("LEARN_AGENT_LLM_API_KEY",))
 
         runtime_registry = Mock()
-        service = AgentTurnService(
+        service = build_agent_turn_service(
             workspace_repository=WorkspaceRepository(self.pool),
             runtime_registry=runtime_registry,
-            state_store_factory=lambda: PostgresMemoryStore(pool=self.pool),
+            state_store_factory=lambda: PostgresMemoryStore(model_provider=UnusedModelProvider(), pool=self.pool),
             model_configuration=MissingConfiguration(),
         )
         try:

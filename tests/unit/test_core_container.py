@@ -37,37 +37,31 @@ class CoreContainerTest(unittest.TestCase):
         self.assertIsInstance(agent_service, AgentTurnService)
         self.assertIsInstance(session_service, SessionLifecycleService)
         self.assertIsInstance(execution_service, ExecutionLifecycleService)
+
+        stream_service = agent_service.request_stream_service
+        execution_loop = stream_service.turn_execution_loop
+        self.assertIsInstance(stream_service, AgentRequestStreamService)
+        self.assertIsInstance(stream_service.runtime_graph_resolver, RuntimeGraphResolver)
         self.assertIsInstance(
-            agent_service.runtime_graph_resolver,
-            RuntimeGraphResolver,
-        )
-        self.assertIsInstance(agent_service.turn_worker, TurnWorkerExecutor)
-        self.assertIs(agent_service.execution_lifecycle.execution_repository, execution_service.execution_repository)
-        self.assertIs(agent_service.lock_registry, session_service.lock_registry)
-        self.assertIsInstance(
-            agent_service.diagnostic_turn_service,
-            DiagnosticTurnService,
-        )
-        self.assertIsInstance(
-            agent_service.slice_execution_service,
-            SliceExecutionService,
-        )
-        self.assertIsInstance(
-            agent_service.turn_execution_loop,
-            TurnExecutionLoop,
-        )
-        self.assertIsInstance(
-            agent_service.request_stream_service,
-            AgentRequestStreamService,
+            agent_service.async_turn_runner.turn_worker,
+            TurnWorkerExecutor,
         )
         self.assertIs(
-            agent_service.request_stream_service.turn_execution_loop,
-            agent_service.turn_execution_loop,
+            stream_service.execution_lifecycle.execution_store,
+            execution_service.execution_store,
         )
+        self.assertIs(stream_service.lock_registry, session_service.lock_registry)
         self.assertIsInstance(
-            agent_service.turn_execution_loop.slice_execution_service,
+            stream_service.diagnostic_turn_service,
+            DiagnosticTurnService,
+        )
+        self.assertIsInstance(execution_loop, TurnExecutionLoop)
+        self.assertIsInstance(
+            execution_loop.slice_execution_service,
             SliceExecutionService,
         )
+        self.assertIs(execution_loop.observer, execution_loop.error_handler.observer)
+        self.assertIs(execution_loop.observer, execution_loop.pause_handler.observer)
         self.assertIsInstance(container.transport(), SocketServer)
 
     def test_state_store_factory_creates_short_lived_store_instances(self):

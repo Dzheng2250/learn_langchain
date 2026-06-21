@@ -4,6 +4,7 @@ from src.core.agent.budget import ExecutionBudget
 from src.core.agent.models import StopReason
 from src.core.agent.responses import paused_turn_event
 from src.core.agent.run_observer import TurnRunObserver
+from src.core.ports import ExecutionPauseStore
 from src.core.state.types import ExecutionStatus
 from src.core.workspace.models import SessionContext
 
@@ -11,9 +12,9 @@ from src.core.workspace.models import SessionContext
 class TurnLoopPauseHandler:
     """Persist a budget pause and build the matching stream event."""
 
-    def __init__(self, *, execution_repository=None, observer: TurnRunObserver | None = None) -> None:
-        self.execution_repository = execution_repository
-        self.observer = observer or TurnRunObserver()
+    def __init__(self, *, execution_store: ExecutionPauseStore | None, observer: TurnRunObserver) -> None:
+        self.execution_store = execution_store
+        self.observer = observer
 
     def pause_event(
         self,
@@ -34,8 +35,8 @@ class TurnLoopPauseHandler:
             f"{snapshot['controlled_executions']} controlled execution(s), and "
             f"{snapshot['delegations']} delegation(s)."
         )
-        if execution is not None and self.execution_repository is not None:
-            self.execution_repository.pause(
+        if execution is not None and self.execution_store is not None:
+            self.execution_store.pause(
                 execution.execution_id,
                 ExecutionStatus.PAUSED_CONFIRMATION
                 if exhausted_reason == StopReason.BUDGET_LIMIT.value

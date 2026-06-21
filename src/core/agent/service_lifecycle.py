@@ -1,9 +1,7 @@
 """Lifecycle hooks for durable Agent service dependencies."""
 
-from collections.abc import Callable
-
 from src.core.agent.worker import TurnWorkerExecutor
-from src.core.state.contracts import StateStore
+from src.core.ports import StateInitializer
 
 
 class AgentServiceLifecycle:
@@ -17,13 +15,13 @@ class AgentServiceLifecycle:
     def __init__(
         self,
         *,
-        state_store_factory: Callable[[], StateStore],
+        state_initializer: StateInitializer,
         turn_worker: TurnWorkerExecutor,
         checkpoint_manager=None,
         maintenance_scheduler=None,
         recovery_coordinator=None,
     ) -> None:
-        self.state_store_factory = state_store_factory
+        self.state_initializer = state_initializer
         self.turn_worker = turn_worker
         self.checkpoint_manager = checkpoint_manager
         self.maintenance_scheduler = maintenance_scheduler
@@ -31,17 +29,13 @@ class AgentServiceLifecycle:
 
     def initialize(self) -> None:
         """Initialize durable schema dependencies before accepting requests."""
-        store = self.state_store_factory()
-        try:
-            store.initialize()
-            if self.checkpoint_manager is not None:
-                self.checkpoint_manager.initialize()
-            if self.recovery_coordinator is not None:
-                self.recovery_coordinator.reconcile()
-            if self.maintenance_scheduler is not None:
-                self.maintenance_scheduler.start()
-        finally:
-            store.close()
+        self.state_initializer.initialize()
+        if self.checkpoint_manager is not None:
+            self.checkpoint_manager.initialize()
+        if self.recovery_coordinator is not None:
+            self.recovery_coordinator.reconcile()
+        if self.maintenance_scheduler is not None:
+            self.maintenance_scheduler.start()
 
     def close(self) -> None:
         """Stop foreground workers, then close background durable resources."""

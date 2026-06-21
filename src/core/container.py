@@ -8,15 +8,27 @@ from src.config.settings import (
     MAX_AUTO_SLICES_PER_GRANT,
     MEMORY_ENABLED,
 )
-from src.core.adapters.sqlite import SQLiteStateUnitOfWorkFactory
+from src.core.adapters.sqlite import (
+    SQLiteConversationHistoryStore,
+    SQLiteMemoryRetrievalStore,
+    SQLiteSessionStore,
+    SQLiteStateUnitOfWorkFactory,
+)
+from src.core.adapters.sqlite.session_lifecycle import SQLiteSessionLifecycleStore
+from src.core.agent.async_runner import AgentAsyncTurnRunner
 from src.core.agent.coordinator import TurnCoordinator
-from src.core.agent.loop import TurnExecutionLoop
+from src.core.agent.loop import LoopConfig, TurnExecutionLoop
+from src.core.agent.loop_errors import TurnLoopErrorHandler
+from src.core.agent.loop_pause import TurnLoopPauseHandler
 from src.core.agent.models import RunLimits
 from src.core.agent.request_stream import AgentRequestStreamService
+from src.core.agent.run_observer import TurnRunObserver
 from src.core.agent.runtime_graph import RuntimeGraphResolver
 from src.core.agent.locking import SessionLockRegistry
 from src.core.agent.service import AgentTurnService
+from src.core.agent.service_lifecycle import AgentServiceLifecycle
 from src.core.agent.slices import SliceExecutionService
+from src.core.agent.sync_runner import AgentSyncTurnRunner
 from src.core.agent.worker import TurnWorkerExecutor
 from src.core.bus.router import RpcRouter
 from src.core.config.models import CoreConfig
@@ -47,6 +59,8 @@ from src.core.maintenance.handlers import (
     MemoryExtractionHandler,
 )
 from src.core.session import SessionLifecycleService
+from src.core.session.checkpoint_cleanup import SessionCheckpointCleanupQueue
+from src.core.session.status import SessionStatusReader
 from src.core.state import (
     CheckpointManager,
     ExecutionRepository,
@@ -107,7 +121,7 @@ class CoreContainer(containers.DeclarativeContainer):
     )
     execution_lifecycle_service = providers.Factory(
         ExecutionLifecycleService,
-        execution_repository=execution_repository,
+        execution_store=execution_repository,
     )
     maintenance_repository = providers.Singleton(
         MaintenanceRepository,
@@ -126,15 +140,35 @@ class CoreContainer(containers.DeclarativeContainer):
         AgentContextManager,
         model_provider=model_provider,
     )
-    context_loader = providers.Factory(
-        ConversationContextLoader,
-        context_manager=context_manager,
-        memory_enabled=memory_enabled,
-    )
+
     state_store_factory = providers.Factory(
         LocalStateStore,
         database=state_database,
         model_provider=model_provider,
+    )
+    conversation_history_store = providers.Factory(
+        SQLiteConversationHistoryStore,
+        database=state_database,
+    )
+    session_context_store = providers.Factory(
+        SQLiteSessionStore,
+        database=state_database,
+    )
+    memory_retrieval_store = providers.Factory(
+        SQLiteMemoryRetrievalStore,
+        database=state_database,
+    )
+    context_loader = providers.Factory(
+        ConversationContextLoader,
+        context_manager=context_manager,
+        session_store=session_context_store,
+        memory_store=memory_retrieval_store,
+        memory_enabled=memory_enabled,
+    )
+    session_lifecycle_store = providers.Factory(
+        SQLiteSessionLifecycleStore,
+        workspace_repository=workspace_repository,
+        history_store=conversation_history_store,
     )
 
     context_summary_handler = providers.Factory(
@@ -173,12 +207,12 @@ class CoreContainer(containers.DeclarativeContainer):
     )
     diagnostic_turn_service = providers.Factory(
         DiagnosticTurnService,
-        state_store_factory=state_store_factory.provider,
+        session_store=session_context_store,
         run_limits=run_limits,
     )
     slice_execution_service = providers.Factory(
         SliceExecutionService,
-        execution_repository=execution_repository,
+        execution_store=execution_repository,
         provider_error_handler=provider_error_handler,
     )
     unit_of_work_factory = providers.Factory(
@@ -202,15 +236,31 @@ class CoreContainer(containers.DeclarativeContainer):
         context_loader=context_loader,
         turn_finalizer=turn_finalizer,
     )
+    turn_run_observer = providers.Singleton(TurnRunObserver)
+    turn_loop_error_handler = providers.Factory(
+        TurnLoopErrorHandler,
+        execution_store=execution_repository,
+        provider_failure_service=provider_failure_service,
+        observer=turn_run_observer,
+    )
+    turn_loop_pause_handler = providers.Factory(
+        TurnLoopPauseHandler,
+        execution_store=execution_repository,
+        observer=turn_run_observer,
+    )
+    loop_config = providers.Factory(
+        LoopConfig,
+        max_auto_slices=MAX_AUTO_SLICES_PER_GRANT,
+    )
     turn_execution_loop = providers.Singleton(
         TurnExecutionLoop,
-        state_store_factory=state_store_factory.provider,
         turn_coordinator=turn_coordinator,
         run_limits=run_limits,
-        execution_repository=execution_repository,
         slice_execution_service=slice_execution_service,
-        provider_failure_service=provider_failure_service,
-        max_auto_slices=MAX_AUTO_SLICES_PER_GRANT,
+        observer=turn_run_observer,
+        error_handler=turn_loop_error_handler,
+        pause_handler=turn_loop_pause_handler,
+        config=loop_config,
     )
     recovery_coordinator = providers.Factory(
         ExecutionRecoveryCoordinator,
@@ -236,51 +286,57 @@ class CoreContainer(containers.DeclarativeContainer):
     )
     request_stream_service = providers.Factory(
         AgentRequestStreamService,
-        workspace_repository=workspace_repository,
+        session_store=session_lifecycle_store,
         lock_registry=session_lock_registry,
         model_configuration=model_provider,
         diagnostic_turn_service=diagnostic_turn_service,
         execution_lifecycle=execution_lifecycle_service,
         runtime_graph_resolver=runtime_graph_resolver,
         turn_execution_loop=turn_execution_loop,
-        execution_repository=execution_repository,
+    )
+    sync_turn_runner = providers.Factory(
+        AgentSyncTurnRunner,
+        request_stream_service=request_stream_service,
+    )
+    async_turn_runner = providers.Factory(
+        AgentAsyncTurnRunner,
+        turn_worker=turn_worker,
+        sync_runner=sync_turn_runner,
+    )
+    agent_service_lifecycle = providers.Factory(
+        AgentServiceLifecycle,
+        state_initializer=state_database,
+        turn_worker=turn_worker,
+        checkpoint_manager=checkpoint_manager,
+        maintenance_scheduler=maintenance_scheduler,
+        recovery_coordinator=recovery_coordinator,
     )
     agent_service = providers.Factory(
         AgentTurnService,
-        workspace_repository=workspace_repository,
-        runtime_registry=runtime_registry,
-        state_store_factory=state_store_factory.provider,
-        context_manager=context_manager,
-        context_loader=context_loader,
-        model_configuration=model_provider,
-        lock_registry=session_lock_registry,
-        turn_worker=turn_worker,
-        run_limits=run_limits,
-        turn_coordinator=turn_coordinator,
-        execution_repository=execution_repository,
-        checkpoint_manager=checkpoint_manager,
-        turn_finalizer=turn_finalizer,
-        execution_lifecycle=execution_lifecycle_service,
-        provider_failure_service=provider_failure_service,
-        diagnostic_turn_service=diagnostic_turn_service,
-        slice_execution_service=slice_execution_service,
-        turn_execution_loop=turn_execution_loop,
-        runtime_graph_resolver=runtime_graph_resolver,
+        async_turn_runner=async_turn_runner,
         request_stream_service=request_stream_service,
+        service_lifecycle=agent_service_lifecycle,
+    )
+    session_status_reader = providers.Factory(
+        SessionStatusReader,
+        lifecycle_store=session_lifecycle_store,
+        session_store=session_context_store,
+        execution_repository=execution_repository,
+        maintenance_repository=maintenance_repository,
+    )
+    session_checkpoint_cleanup = providers.Factory(
+        SessionCheckpointCleanupQueue,
         maintenance_repository=maintenance_repository,
         maintenance_scheduler=maintenance_scheduler,
-        recovery_coordinator=recovery_coordinator,
-        provider_error_handler=provider_error_handler,
     )
     session_lifecycle_service = providers.Factory(
         SessionLifecycleService,
-        workspace_repository=workspace_repository,
-        state_store_factory=state_store_factory.provider,
+        lifecycle_store=session_lifecycle_store,
         lock_registry=session_lock_registry,
         execution_repository=execution_repository,
         checkpoint_manager=checkpoint_manager,
-        maintenance_repository=maintenance_repository,
-        maintenance_scheduler=maintenance_scheduler,
+        checkpoint_cleanup=session_checkpoint_cleanup,
+        status_reader=session_status_reader,
     )
 
     router = providers.Singleton(
