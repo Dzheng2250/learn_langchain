@@ -27,7 +27,6 @@ Core daemon 的外部通信能力。
 | 调试一次请求失败 | [错误与恢复参考](/docs/api/error-reference.md) -> [RPC 方法参考](/docs/api/rpc-reference.md) -> [系统 Trace](/docs/architecture/system-tracing.md) |
 | 使用命令行 | [CLI 命令参考](/docs/api/cli-reference.md) |
 | 使用内置 TUI | [TUI 使用与命令参考](/docs/api/tui-reference.md) |
-| 扩展 Tool、Provider 或 Sink | [扩展指南](/docs/api/extension-guide.md) -> [协议兼容性](/docs/api/protocol-compatibility.md) |
 | 判断变更是否破坏兼容 | [协议兼容性](/docs/api/protocol-compatibility.md) -> [RPC 方法参考](/docs/api/rpc-reference.md) -> [流式事件参考](/docs/api/streaming-events.md) |
 
 ## 文档分组
@@ -76,7 +75,6 @@ Core daemon 的 RPC。
 
 ### 6. 扩展与兼容
 
-- [扩展指南](/docs/api/extension-guide.md)
 - [协议兼容性](/docs/api/protocol-compatibility.md)
 
 负责说明如何扩展公开能力，以及哪些变化属于兼容或破坏性变更。

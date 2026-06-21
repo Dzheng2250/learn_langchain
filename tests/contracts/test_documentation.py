@@ -101,7 +101,7 @@ class DocumentationStructureTest(unittest.TestCase):
             "docs/api/tui-client-guide.md",
             "docs/api/cli-reference.md",
             "docs/api/protocol-compatibility.md",
-            "docs/api/extension-guide.md",
+            "docs/development/platform-extension.md",
             "docs/architecture/core-architecture.md",
             "docs/architecture/cli-architecture.md",
             "docs/architecture/tui-architecture.md",
@@ -210,6 +210,54 @@ class DocumentationStructureTest(unittest.TestCase):
             if "## 本文负责" not in text or "## 本文不负责" not in text:
                 missing.append(str(path.relative_to(self.root)))
         self.assertEqual([], sorted(missing))
+
+    def test_decision_documents_use_governed_status_and_boundaries(self):
+        invalid_status = []
+        missing_boundaries = []
+        allowed = (
+            "文档状态：Current Decision",
+            "文档状态：Superseded Decision",
+            "文档状态：Historical Decision",
+        )
+        for path in (self.root / "docs" / "decisions").glob("*.md"):
+            if path.name == "README.md":
+                continue
+            text = path.read_text(encoding="utf-8")
+            if not any(status in text for status in allowed):
+                invalid_status.append(str(path.relative_to(self.root)))
+            if "文档状态：Current Decision" in text:
+                if "## 本文负责" not in text or "## 本文不负责" not in text:
+                    missing_boundaries.append(str(path.relative_to(self.root)))
+        self.assertEqual([], sorted(invalid_status))
+        self.assertEqual([], sorted(missing_boundaries))
+
+    def test_current_development_documents_declare_responsibility_boundaries(self):
+        self._assert_current_documents_have_boundaries("development")
+
+    def test_current_operations_documents_declare_responsibility_boundaries(self):
+        self._assert_current_documents_have_boundaries("operations")
+
+    def _assert_current_documents_have_boundaries(self, category):
+        missing = []
+        for path in (self.root / "docs" / category).glob("*.md"):
+            text = path.read_text(encoding="utf-8")
+            if "文档状态：Current" not in text:
+                continue
+            if "## 本文负责" not in text or "## 本文不负责" not in text:
+                missing.append(str(path.relative_to(self.root)))
+        self.assertEqual([], sorted(missing))
+
+    def test_current_product_documents_declare_responsibility_boundaries(self):
+        self._assert_current_documents_have_boundaries("product")
+
+    def test_current_quality_documents_declare_responsibility_boundaries(self):
+        self._assert_current_documents_have_boundaries("quality")
+
+    def test_current_reference_documents_declare_responsibility_boundaries(self):
+        self._assert_current_documents_have_boundaries("reference")
+
+    def test_current_governance_documents_declare_responsibility_boundaries(self):
+        self._assert_current_documents_have_boundaries("governance")
 
     def test_current_api_documents_declare_responsibility_boundaries(self):
         missing = []

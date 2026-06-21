@@ -4,6 +4,16 @@
 > 权威范围：延迟、可靠性、一致性、安全和可维护性目标
 > 维护触发：用户体验目标、关键路径、可靠性或安全边界变化
 
+## 本文负责
+
+- 延迟、可靠性、一致性、安全、可观测性和可维护性目标。
+
+## 本文不负责
+
+- 不规定具体实现方案。
+- 不提供测试代码或运维命令。
+
+
 数据库事务、维护任务、CAS、Saga 和恢复协调器的定义及实现边界见
 [`/docs/architecture/database-state-and-consistency.md`](/docs/architecture/database-state-and-consistency.md)。
 

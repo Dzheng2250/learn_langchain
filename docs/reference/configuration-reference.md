@@ -1,7 +1,18 @@
 # 配置参数参考
 
 > 文档状态：Current
-> 最后核对：`feature/telemetry-nfr-foundation` / 2026-06-14
+> 权威范围：环境变量、默认值、类型、单位、作用域和调整风险
+> 维护触发：新增、删除、重命名或修改配置项默认值与语义
+
+## 本文负责
+
+- 配置项名称、类型、默认值、单位、作用域和调整风险。
+
+## 本文不负责
+
+- 不提供完整部署流程；见 Deployment。
+- 不解释配置设计取舍或业务实现。
+
 
 本文是项目配置参数的权威参考。快速开始见 [`README.md`](/README.md)，部署与 Docker
 说明见 [`/docs/operations/deployment.md`](/docs/operations/deployment.md)，配置代码的设计边界见

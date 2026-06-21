@@ -123,4 +123,4 @@ flowchart LR
 7. 是否有路径逃逸、命令注入或 SQL 注入风险？
 8. 是否增加对应安全测试和文档？
 
-扩展实现流程见[扩展开发指南](/docs/api/extension-guide.md)。
+扩展实现流程见[Core 平台扩展指南](/docs/development/platform-extension.md)。

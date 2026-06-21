@@ -26,7 +26,9 @@
 | [开发指南](/docs/development/development-guide.md) | 本地开发环境、常用命令、代码组织和提交前检查 |
 | [变更管理清单](/docs/development/change-management.md) | 修改代码时必须同步检查哪些文档、测试、配置和兼容边界 |
 | [发布流程](/docs/development/release-process.md) | 维护者发布版本时的检查、标记和回滚准备 |
+| [Core 平台扩展指南](/docs/development/platform-extension.md) | Tool、Skill、Provider、RPC、Telemetry 和维护任务的扩展入口 |
 | [内部端口与 Adapter 扩展指南](/docs/development/internal-adapter-extension.md) | 新增内部 Port、Adapter、后端和契约测试 |
+| [Agent Runtime 扩展指南](/docs/development/agent-runtime-extension.md) | 新增模型用途、工具、运行限制和事件消费者 |
 | [接口化重构技术债务](/docs/development/interface-refactor-backlog.md) | 尚未完成的接口拆分计划，状态为 Draft |
 
 ## 推荐阅读顺序

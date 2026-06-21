@@ -1,7 +1,20 @@
 # 配置、领域常量与 Prompt 的管理边界
 
-> 文档状态：Current Design Note
-> 本文解释“配置代码如何组织”，不作为完整参数清单。全部环境变量、默认值、单位和调整风险见
+> 文档状态：Current Decision
+> 权威范围：运行配置、领域常量和 Prompt 的归属边界与方案取舍
+> 维护触发：配置组织、领域枚举或 Prompt 管理边界变化
+
+## 本文负责
+
+- 配置、领域常量和 Prompt 分离管理的原因与边界。
+
+## 本文不负责
+
+- 不维护环境变量和默认值清单；见配置参考。
+- 不记录具体模块的当前实现细节。
+
+
+本文解释“配置代码如何组织”，不作为完整参数清单。全部环境变量、默认值、单位和调整风险见
 > [`/docs/reference/configuration-reference.md`](/docs/reference/configuration-reference.md)。
 
 ## 为什么要优化
@@ -18,98 +31,49 @@
 
 这三类内容不应全部塞入一个全局 `constants.py`，否则只是把混乱移动了位置。
 
-## 本次采用的边界
+## 采用的管理边界
 
 ### 类型化运行配置
 
-`src/config/maintenance.py` 定义 `MaintenanceSettings`。它负责后台维护系统的：
+部署者可调整的运行策略应进入功能域配置对象，在 Core 启动时完成解析和校验，再通过依赖注入交给
+业务组件。组件不得在执行过程中反复读取环境变量，也不得自行决定生产默认值。
 
-- 轮询间隔；
-- 任务租约时长；
-- 关闭等待时间；
-- 默认重试次数；
-- 最大重试退避时间；
-- 错误摘要长度。
-
-这些值可以通过环境变量覆盖，并在 Core 服务启动前完成验证。业务组件接收
-一个 `MaintenanceSettings` 实例，而不是在内部直接决定策略。
-
-这种做法属于**依赖注入**：组件依赖的是调用方传入的配置对象，因此测试可以
-注入小间隔或不同重试策略，生产环境也可以独立调整。
+这使测试可以注入短超时或小容量，生产配置也可以独立调整。当前变量、默认值和作用域由
+[配置参考](/docs/reference/configuration-reference.md)维护。
 
 ### 领域枚举
 
-以下模块定义稳定的领域词汇：
+Execution、Checkpoint、Maintenance 等业务状态使用类型化枚举表达，并在持久化边界拒绝未知值。
+枚举保持字符串兼容性，但调用代码不再散布容易拼错的魔法字符串。
 
-- `src/core/state/types.py`
-  - `ExecutionStatus`
-  - `CheckpointState`
-- `src/core/maintenance/types.py`
-  - `MaintenanceJobType`
-  - `MaintenanceStatus`
-  - `MaintenancePriority`
-
-`StrEnum` 的值仍然是字符串，因此与 SQLite、JSON 和现有 RPC 响应兼容；但
-Python 代码不再需要到处手写容易拼错的字符串。
-
-数据库的新建 Schema 同时使用 `CHECK` 约束拒绝未知状态。旧数据库通过加法
-迁移创建等价的校验触发器，因为 SQLite 不能直接给已有列补加 `CHECK`。
-代码类型检查和数据库约束形成两道边界：
-
-```text
-调用代码 -> Enum 校验 -> Repository -> SQLite CHECK 约束
-```
-
-现有旧数据库不会因为本次加法改动被重建。触发器提供相同的非法状态拒绝能力，
-但其 Schema 表达形式与新建数据库的 `CHECK` 约束不同。若未来要求两者的表定义
-完全一致，应使用显式表重建迁移，而不是在启动时隐式执行。
+数据库约束和迁移形式属于状态实现事实，由[本地状态 Schema](/docs/reference/local-state-schema.md)维护。
 
 ### Prompt 模块
 
-Prompt 是模型行为策略，不是普通部署配置，也不应混在 Agent 循环控制代码中。
+Prompt 是模型行为策略，不是部署配置，也不应混入图循环或工具执行代码。父 Agent、子 Agent、
+记忆提取和上下文摘要的 Prompt 按用途分离，并具有可测试的构建入口。
 
-当前 Prompt 放在 `src/core/prompts/`：
+当前 Prompt 位置与版本由[Agent 执行架构](/docs/architecture/agent-execution-architecture.md)及源码维护，
+Decision 不复制文件清单。
 
-- `parent_agent.py`
-- `subagent.py`
-- `memory_extraction.py`
-- `context_summary.py`
+## 兼容入口为何允许暂时存在
 
-Prompt 文件带有版本常量。未来修改模型行为时，可以明确记录 Prompt 版本，
-并为构建函数单独编写测试，而不必修改图编排和工具执行逻辑。
-
-## 为什么没有全部移出 `settings.py`
-
-`src/config/settings.py` 仍作为兼容入口。现有模块大量依赖其中的常量，一次性
-全部迁移会扩大回归范围，并且难以区分“结构调整”与“行为变化”。
-
-后续应按模块逐步迁移：
-
-1. 建立该模块的类型化配置对象；
-2. 由 `CoreApp` 组合根加载并注入；
-3. 替换业务模块对全局 `settings.py` 的直接导入；
-4. 保留旧名称一段兼容周期；
-5. 最后删除不再使用的兼容导出。
+一次性移除旧配置导出会把结构重构与行为变化混在同一提交中。兼容入口可以在有限周期内保留，但
+新业务代码必须依赖类型化配置和构造函数注入；迁移顺序与剩余债务由
+[接口化重构技术债务](/docs/development/interface-refactor-backlog.md)维护。
 
 ## 设计原则
 
 - **单一职责**：配置对象只描述一个功能域的运行策略。
-- **依赖倒置**：业务组件接收配置和接口，不自行读取全局环境。
-- **开闭原则**：新增维护 Handler 可以注册，不需要修改调度器。
-- **组合优于继承**：`CoreApp` 组合配置、Repository、Scheduler 和 Handler。
-- **防御性持久化**：领域枚举约束代码，SQLite `CHECK` 约束最终数据。
+- **依赖倒置**：业务组件接收配置与接口，不自行读取环境或全局状态。
+- **开闭原则**：新增策略通过注册或注入扩展，不修改无关调度流程。
+- **组合优于继承**：Composition Root 组合配置、Repository、Scheduler 和 Handler。
+- **防御性持久化**：类型约束调用边界，存储约束最终数据。
 
-## 当前边界与后续工作
+## 当前实现与后续工作的权威来源
 
-当前已经完成维护策略、Execution/Checkpoint/Maintenance 状态和主要 Agent
-Prompt 的分层。尚未一次性拆分全部 `settings.py`，也未重建旧 SQLite 表。
+本文不维护已拆出的配置类、兼容导出或下一批迁移清单：
 
-建议后续优先继续拆分：
-
-1. `ExecutionSettings`
-2. `ContextSettings`
-3. `MemorySettings`
-4. `ToolSettings`
-5. `TelemetrySettings`
-
-每次只迁移一个功能域，并通过对应测试确认默认行为保持不变。
+- 当前配置事实见[配置参考](/docs/reference/configuration-reference.md)；
+- DI 与接口边界见[接口驱动的 Core](/docs/architecture/interface-driven-core.md)；
+- 未完成重构见[接口化重构技术债务](/docs/development/interface-refactor-backlog.md)。

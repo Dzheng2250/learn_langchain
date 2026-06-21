@@ -3,6 +3,16 @@
 > 文档状态：Current
 > 权威范围：首次安装、配置和基础设施部署
 > 维护触发：安装方式、依赖、配置加载或部署模型变化
+
+## 本文负责
+
+- 首次安装、用户级配置、基础设施启动和最小可用验证。
+
+## 本文不负责
+
+- 不维护所有配置字段；见配置参考。
+- 不说明内部架构或开发环境工作流。
+
 > 配置参数默认值、单位和调整风险见 [`/docs/reference/configuration-reference.md`](/docs/reference/configuration-reference.md)。
 
 日常启动、Session 排障和维护任务处理见[运维 Runbook](/docs/operations/runbook.md)；

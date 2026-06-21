@@ -15,7 +15,7 @@
 ## 本文不负责
 
 - 不解释当前 Core 架构；见 Architecture 文档。
-- 不定义外部 RPC、Tool 或 Provider 扩展契约；见 [扩展指南](/docs/api/extension-guide.md)。
+- 不定义外部 RPC、Tool 或 Provider 扩展契约；见 [Core 平台扩展指南](/docs/development/platform-extension.md)。
 - 不记录尚未完成的重构项；见 [接口化重构技术债务](/docs/development/interface-refactor-backlog.md)。
 
 ## 1. 如何新增存储后端

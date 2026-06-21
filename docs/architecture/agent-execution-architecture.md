@@ -1,7 +1,7 @@
-# Agent 执行架构与扩展指南
+# Agent 执行架构
 
 > 文档状态：Current
-> 权威范围：Agent Turn、Execution、Slice、Graph、工具和事件调用链
+> 权威范围：Agent Turn、Execution、Slice、Graph、模型与工具的高层协作关系
 > 维护触发：Agent 编排、预算、图结构或执行生命周期变化
 
 > Session 短期上下文、完整消息归档、长期记忆提取与加载机制见
@@ -26,7 +26,7 @@
 - `agent.chat` 到 `AgentTurnService` 的调用链。
 - Execution、Slice、预算、暂停、恢复和错误分支。
 - LangGraph、ModelProvider、ToolRegistry、ObservedToolNode 如何协作。
-- Agent 执行期间产生哪些内部事件，如何传递给 CLI/TUI。
+- Agent 执行如何接入请求流式事件与 Telemetry 边界。
 
 ## 本文不负责
 
@@ -231,161 +231,21 @@ Registry 当前只描述和筛选能力，不负责执行工具。工具执行�
 
 未来可基于风险等级增加审批策略或只读运行模式。
 
-## Telemetry 与请求流式事件
+## 事件边界
 
-项目保留两条事件通道，它们不能混为一体：
-
-### 观测事件
+Agent 执行会接入两条用途不同的通道：
 
 ```text
-emit_event
-  -> EventBus
-      -> BufferedEventSink
-          -> PostgresEventSink
-      -> JsonlFileEventSink
-      -> ConsoleEventSink
+请求流式事件：Graph -> Agent Handler -> JSON-RPC notification -> CLI / TUI
+观测事件：业务模块 -> EventBus -> Telemetry sinks
 ```
 
-观测事件用于日志、审计和诊断。subscriber 失败不会改变 Agent 业务结果。
-每个 turn 和后台任务结束时都会恢复进入任务前的事件上下文，避免线程复用导致身份泄漏。
-`CoreApp` 显式组装并安装 `EventBus`。业务模块不会因为首次发送事件而隐式创建数据库
-连接或后台线程。
+前者服务当前用户交互，依赖请求连接；后者用于诊断和审计，失败不得改变 Agent 业务结果。
+Agent 执行层只发布稳定事件，不负责具体前端渲染、数据库写入或 sink 生命周期。
 
-### 请求流式事件
-
-```text
-LangGraph stream
-  -> stream_graph_events
-  -> AgentHandlers
-  -> JSON-RPC agent.event
-  -> CLI renderer
-```
-
-流式事件用于当前请求的即时交互。客户端断开不会取消 Core 中已经开始的 turn。
-
-两条通道可以共享事件命名约定，但可靠性、生命周期和数据量不同，因此不使用同一个
-总线对象。
-
-### Agent 调用链与事件通道图
-
-事件通道不再与完整业务调用链画在同一张图中。请求流式事件和观测事件具有不同消费者、
-生命周期和可靠性语义，因此分别展示。
-
-#### 1. 请求流式事件通道
-
-这张图回答：当前 Turn 的 token 和步骤如何实时显示到 CLI。
-
-```mermaid
-flowchart LR
-    subgraph Worker["agent-turn worker"]
-        direction TB
-        Graph["LangGraph stream"]
-        Adapter["stream_graph_events<br/>token / step / error / done"]
-        Callback["on_event callback"]
-        Graph --> Adapter --> Callback
-    end
-
-    subgraph IPC["Core asyncio / IPC"]
-        direction TB
-        Handler["AgentHandlers"]
-        Notification["agent.event<br/>携带 request_id + run_id"]
-        Socket["SocketServer"]
-        Callback --> Handler --> Notification --> Socket
-    end
-
-    subgraph CLI["CLI 进程"]
-        direction TB
-        Client["CoreClient"]
-        Render["render_agent_event"]
-        User["用户终端"]
-        Client --> Render --> User
-    end
-
-    Socket -->|"NDJSON 通知"| Client
-
-    classDef worker fill:#dce9ff,stroke:#5b85c5,color:#222;
-    classDef ipc fill:#f3e8ff,stroke:#8b5fbf,color:#222;
-    classDef cli fill:#fff3cd,stroke:#d6a100,color:#222;
-    class Graph,Adapter,Callback worker;
-    class Handler,Notification,Socket ipc;
-    class Client,Render,User cli;
-```
-
-客户端断线时，通知发送停止并记录一次 `stream_notification_failed`；已经开始的 Turn 不会取消。
-
-#### 2. Telemetry 观测事件通道
-
-这张图回答：审计和诊断事件如何从业务模块进入不同 sink。
-
-```mermaid
-flowchart LR
-    subgraph Producers["事件生产者"]
-        direction TB
-        Service["AgentTurnService"]
-        Graph["Graph / LLM"]
-        Tool["ObservedToolNode"]
-        Context["Context / Memory"]
-    end
-
-    subgraph Bus["统一观测边界"]
-        direction TB
-        Identity["TelemetryContext<br/>workspace / session / turn / run"]
-        Emit["领域 helper / emit_event<br/>清洗 + 截断"]
-        Publisher["EventBus"]
-        Identity --> Emit --> Publisher
-    end
-
-    subgraph Sinks["可选 sinks"]
-        direction TB
-        Buffer["BufferedEventSink<br/>队列 + 批量写入"]
-        Pg["PostgresEventSink<br/>数据库批次写入"]
-        File["JsonlFileEventSink"]
-        Console["ConsoleEventSink"]
-    end
-
-    Service --> Emit
-    Graph --> Emit
-    Tool --> Emit
-    Context --> Emit
-    Publisher --> Buffer --> Pg
-    Publisher --> File
-    Publisher --> Console
-
-    classDef producer fill:#dce9ff,stroke:#5b85c5,color:#222;
-    classDef bus fill:#f3e8ff,stroke:#8b5fbf,color:#222;
-    classDef sink fill:#dff2df,stroke:#629b62,color:#222;
-    class Service,Graph,Tool,Context producer;
-    class Identity,Emit,Publisher bus;
-    class Buffer,Pg,File,Console sink;
-```
-
-两条事件通道的关键约束：
-
-1. `stream_graph_events()` 生成面向当前客户端的轻量流式事件；它不负责写入事件数据库。
-2. `emit_event()` 和领域 helper 生成观测事件，经清洗和截断后由 `EventBus` 广播。
-3. `BufferedEventSink` 负责内存队列和批量提交，`PostgresEventSink` 只负责数据库写入；队列或 sink 失败只记录调试信息，不中断 Agent。
-4. 两条事件通道都携带 `run_id`，但只有请求流式通道依赖当前 TCP 连接。
-
-### 图中组件与代码位置
-
-| 图中组件 | 主要实现 |
-|---|---|
-| CLI chat / workspace 识别 | `src/cli/commands/chat.py`、`src/cli/workspace.py` |
-| CoreClient / NDJSON 请求读取 | `src/cli/client.py` |
-| SocketServer / RequestContext | `src/core/transport/socket_server.py` |
-| JSON-RPC 验证与路由 | `src/core/bus/router.py`、`src/ipc/models.py` |
-| Agent RPC 适配与流式回调 | `src/core/handlers/agent.py` |
-| Turn 编排、线程池与 Session 锁 | `src/core/agent/service.py` |
-| Workspace runtime 构建与缓存 | `src/core/workspace/runtime.py` |
-| Parent Agent graph | `src/core/agent/graph.py` |
-| 流式事件适配与运行限制 | `src/core/streaming/events.py`、`message_events.py`、`failures.py` |
-| 工具注册、筛选与边界观测 | `src/core/tools/registry.py`、`src/core/tools/observed.py` |
-| 非递归 Sub-agent | `src/core/subagent/graph.py` |
-| 短期上下文与压缩 | `src/core/context/manager.py` |
-| Session、消息与长期记忆 | `src/core/state/store.py`、`src/core/state/` |
-| 观测事件入口与上下文 | `src/core/telemetry/recorder.py`、`src/core/telemetry/context.py` |
-| EventBus、组装与 sinks | `src/core/telemetry/bus.py`、`src/core/telemetry/factory.py`、`src/core/telemetry/sinks.py` |
-
+- 事件语义、可靠性与 sink 结构见[事件系统](/docs/architecture/event-system.md)；
+- 对外 notification 字段和顺序见[流式事件参考](/docs/api/streaming-events.md)；
+- 具体函数和代码位置见[Agent 执行函数级调用链](/docs/architecture/agent-execution-call-chain.md)。
 ## 与常见 AgentRunner / AgentLoop 设计的关系
 
 常见设计中的组件与本项目映射如下：
@@ -403,52 +263,13 @@ flowchart LR
 `AgentTurnService` 不实现 daemon、RPC 或数据库 schema 细节；它通过注入的 StateStore、Repository、
 Finalizer 和 Scheduler 委托这些职责，并由 `CoreApp` 组合和触发生命周期。
 
-## 扩展流程
+## 扩展与能力边界
 
-### 增加新的模型用途
+本篇不维护具体扩展步骤或未实现清单：
 
-1. 在 `LlmPurpose` 增加用途。
-2. 通过构造参数接收 `ModelProvider`。
-3. 调用 `provider.create_chat_model()`。
-4. 增加 Fake Provider 测试。
+- 新增模型用途、工具、运行限制或事件消费者时，遵循
+  [Agent Runtime 扩展指南](/docs/development/agent-runtime-extension.md)；
+- 当前尚未支持的能力和优先级见
+  [路线图与已知限制](/docs/product/roadmap-and-known-limitations.md)。
 
-### 增加工具
-
-1. 实现 Workspace 绑定的工具 factory。
-2. 在 `create_workspace_toolset()` 注册 `ToolSpec`。
-3. 明确受众和风险等级。
-4. 增加路径安全、受众筛选和工具边界事件测试。
-
-### 增加运行限制
-
-1. 扩展 `RunLimits`。
-2. 扩展 `StopReason`。
-3. 在 `stream_graph_events()` 或对应执行边界实施。
-4. 将停止原因返回 RPC，并写入观测事件。
-
-### 增加事件消费者
-
-1. 实现 `EventSink.emit()`。
-2. 由 `EventBus` 组合。
-3. sink 必须自行处理缓冲、重试和关闭。
-4. sink 失败不得抛入 Agent 业务链。
-
-## 当前边界与后续方向
-
-当前仍未实现：
-
-- 运行中任务取消和超时中断。
-- 全异步 LangGraph、工具和 psycopg Repository。
-- Token 预算和成本预算。
-- 子 Agent 工具调用次数独立限制。
-- 按用途配置不同模型和重试策略。
-- ToolRegistry 动态插件发现和审批策略。
-- WorkspaceRuntime 缓存淘汰。
-- 类型化 JSON-RPC 流事件数据模型。
-
-后续优先级建议：
-
-1. 为 `ModelProvider` 增加按用途的配置与统一重试。
-2. 增加可取消的 `AgentRun` 生命周期对象。
-3. 为 ToolRegistry 增加风险策略与人工审批边界。
-4. 为流式事件增加严格数据模型和断线恢复。
+这样 Architecture 只维护已实现的运行结构，Development 维护变更方法，Product 维护能力状态。

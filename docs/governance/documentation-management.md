@@ -4,6 +4,16 @@
 > 权威范围：文档分类、状态、冲突处理和维护流程
 > 维护触发：文档结构或治理规则变化
 
+## 本文负责
+
+- 文档分类、权威优先级、状态、冲突处理、写作规则和自动治理。
+
+## 本文不负责
+
+- 不登记每篇文档的具体状态；见文档登记表。
+- 不定义业务、接口或运维事实。
+
+
 ## 1. 目标
 
 文档必须帮助读者回答以下问题：
@@ -65,7 +75,7 @@
 | 新增或修改 RPC | `src/ipc/models.py`、Handler、`api/rpc-reference.md`、协议测试 |
 | 新增流式事件 | `api/streaming-events.md`、CLI/TUI 渲染、兼容测试 |
 | 新增 CLI 命令 | `api/cli-reference.md`、README、CLI 测试 |
-| 新增 Tool/Skill/Provider | `api/extension-guide.md`、安全模型、单元与集成测试 |
+| 新增 Tool/Skill/Provider | `development/platform-extension.md`、安全模型、单元与集成测试 |
 | 修改状态表或迁移 | 数据库架构、备份恢复、升级回滚、迁移测试 |
 | 修改用户可见功能 | 功能需求、路线图、相关 API |
 | 修改延迟或后台边界 | 非功能需求、非功能测试、架构文档 |
@@ -82,6 +92,7 @@
 - 文档链接使用 `/docs/...` 或仓库根路径。
 - 新文档使用[文档模板](/docs/governance/document-template.md)。
 - 重要跨模块取舍使用[设计决策记录模板](/docs/governance/decision-record-template.md)。
+- 函数级调用链和代码位置在更新前必须通过 CodeGraph 或当前源码核对；不得凭旧文档复制符号名。
 - 中文 Markdown 必须保存为 UTF-8。Windows PowerShell 读取中文文档时应显式使用
   `-Encoding UTF8`，否则可能按系统 ANSI/GBK 解码并显示为乱码；这不代表文件内容损坏。
 
@@ -130,11 +141,13 @@
 - 核心权威文档是否声明 `Current`，所有受治理文档是否声明状态。
 - 所有 Current API 文档是否声明“本文负责 / 本文不负责”。
 - 所有 Current Architecture 文档是否声明“本文负责 / 本文不负责”。
+- 所有 Current Development 和 Operations 文档是否声明“本文负责 / 本文不负责”。
+- 所有 Current Product、Quality、Reference 和 Governance 文档是否声明“本文负责 / 本文不负责”。
+- 所有 Decision 文档是否使用规范状态，Current Decision 是否声明职责边界。
 - 测试目录是否符合分类规则。
 
 后续应继续增加：
 
 - 配置变量与配置参考同步检查。
 - 文档登记表覆盖检查。
-- 其余 Current Development、Operations、Product、Quality、Reference 和 Governance 文档必须声明“本文负责 / 本文不负责”。
 - 架构文档不得越界定义其他模块的权威细节，例如 Agent 文档不得定义数据库表结构。

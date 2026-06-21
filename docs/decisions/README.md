@@ -40,7 +40,7 @@ Decision 的核心价值是记录取舍，而不是复制当前实现细节。�
 |---|---|---|
 | [CLI / Core 双进程与 JSON-RPC](/docs/decisions/cli-core-json-rpc.md) | 为什么拆分 CLI 与 Core daemon，为什么采用本地 TCP + NDJSON + JSON-RPC | 解释进程与通信方案取舍 |
 | [本地优先状态设计](/docs/decisions/local-first-rationale-and-review.md) | 为什么从 PostgreSQL 关键路径迁移到本地优先状态与后台维护 | 解释响应延迟、一致性和恢复策略的来源 |
-| [Workspace 隔离与迁移](/docs/decisions/workspace-isolation-and-migration.md) | 为什么选择用户级 daemon + Workspace 隔离 | 解释 Session、记忆和工具为何绑定 Workspace |
+| [Workspace 隔离设计决策](/docs/decisions/workspace-isolation-and-migration.md) | 为什么选择用户级 daemon + Workspace 隔离 | 解释 Session、记忆、工具和路径为何绑定 Workspace |
 | [配置、领域常量与 Prompt 边界](/docs/decisions/configuration-and-domain-constants.md) | 为什么拆分运行配置、领域枚举和 Prompt | 解释配置治理和代码边界 |
 | [私有任务规划设计决策](/docs/decisions/private-task-planning.md) | 为什么任务规划只作为 goal 模式下父 Agent 私有工具 | 解释任务系统定位、存储和用户边界 |
 
@@ -50,9 +50,13 @@ Decision 的核心价值是记录取舍，而不是复制当前实现细节。�
 |---|---|
 | 为什么项目是双进程，而不是 CLI 直接跑 Agent | [CLI / Core 双进程与 JSON-RPC](/docs/decisions/cli-core-json-rpc.md) |
 | 为什么普通对话不再依赖 PostgreSQL | [本地优先状态设计](/docs/decisions/local-first-rationale-and-review.md) |
-| 为什么不同项目的 Session 和记忆隔离 | [Workspace 隔离与迁移](/docs/decisions/workspace-isolation-and-migration.md) |
+| 为什么不同项目的 Session 和记忆隔离 | [Workspace 隔离设计决策](/docs/decisions/workspace-isolation-and-migration.md) |
 | 为什么配置、枚举、Prompt 分开管理 | [配置、领域常量与 Prompt 边界](/docs/decisions/configuration-and-domain-constants.md) |
 | 为什么任务系统不暴露给用户直接 CRUD | [私有任务规划设计决策](/docs/decisions/private-task-planning.md) |
+
+## 历史决策材料
+
+- [Workspace PostgreSQL 迁移历史设计](/docs/history/workspace-postgres-migration-design.md)：保存本地优先状态启用前的旧 Schema 和迁移设计，不代表当前实现。
 
 ## 写作约束
 

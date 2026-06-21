@@ -31,49 +31,34 @@
 | 顺序 | 函数 | 执行位置 | 主要职责 |
 |---:|---|---|---|
 | 1 | `chat_once()` | CLI 主线程 | 识别 Workspace，构造 `agent.chat` 参数 |
-| 2 | `CoreClient.request()` | CLI 主线程 | 建立 TCP 连接，发送 JSON-RPC，持续读取通知和最终响应 |
-| 3 | `SocketServer._handle_connection()` | Core asyncio loop | 读取一条 NDJSON frame，并交给 Router |
+| 2 | `CoreClient.request()` | CLI 主线程 | 建立单请求连接，读取 notification 与最终响应 |
+| 3 | `SocketServer._handle_connection()` | Core asyncio loop | 读取 NDJSON frame 并交给 Router |
 | 4 | `RpcRouter.dispatch()` | Core asyncio loop | 验证协议、参数、方法和 token |
-| 5 | `AgentHandlers.chat()` | Core asyncio loop | 创建 `run_id`，建立 worker 到 socket 的事件桥 |
-| 6 | `AgentTurnService.run_turn()` | Core asyncio loop | 获取并发 slot，提交同步 Turn 到专用 executor |
-| 7 | `AgentTurnService._run_turn_sync()` | `agent-turn` worker | 消费内部事件流，形成最终结果 |
-| 8 | `AgentTurnService.stream_turn()` | `agent-turn` worker | 解析 Workspace/Session，获取 Session UUID 锁 |
-| 9 | `AgentTurnService._stream_locked_turn()` | `agent-turn` worker | 加载上下文、执行 Graph、委托 TurnFinalizer |
-| 10 | `TurnExecutionLoop.run()` | `agent-turn` worker | 控制 Slice 循环、预算和继续/停止判断 |
-| 11 | `SliceExecutionService.run_slice()` | `agent-turn` worker | 调用 LangGraph，并生成稳定事件协议 |
-| 12 | `stream_graph_events()` | `agent-turn` worker | 将 LangGraph stream 转换为稳定事件协议 |
-| 13 | `agent_node()` / `ObservedToolNode` | `agent-turn` worker | 调用 LLM，或执行模型请求的工具 |
-| 14 | `TurnLoopErrorHandler` / `TurnLoopPauseHandler` | `agent-turn` worker | 处理错误或暂停分支的状态更新和事件构造 |
-| 15 | `TurnRunObserver` | `agent-turn` worker | 发送 run/slice 成功、暂停或失败的观测事件 |
+| 5 | `AgentHandlers.chat()` | Core asyncio loop | 创建 `run_id`、控制信号和 worker 到 socket 的事件桥 |
+| 6 | `AgentTurnService.run_turn()` | Core asyncio loop | 委托异步 Runner，不直接执行同步 Agent 逻辑 |
+| 7 | `AgentAsyncTurnRunner.run_turn()` | Core asyncio loop | 通过 `TurnWorkerExecutor` 获取 slot 并提交同步消费者 |
+| 8 | `AgentSyncTurnRunner.run_turn()` | `agent-turn` worker | 消费内部事件流并聚合最终 RPC result |
+| 9 | `AgentRequestStreamService.stream_turn()` | `agent-turn` worker | 解析身份、获取 Session 锁并创建 Execution |
+| 10 | `RuntimeGraphResolver.graph_for_turn()` | `agent-turn` worker | 根据普通/goal 模式选择 Workspace Graph |
+| 11 | `TurnExecutionLoop.stream_locked_turn()` | `agent-turn` worker | 准备上下文并控制有界 Slice 循环 |
+| 12 | `SliceExecutionService.stream_slice()` | `agent-turn` worker | 启动 Slice，调用 Graph stream 并返回终态 |
+| 13 | `stream_graph_events()` | `agent-turn` worker | 将 LangGraph stream 转换为稳定内部事件 |
+| 14 | `agent_node()` / `ObservedToolNode` | `agent-turn` worker | 调用模型或执行模型请求的工具 |
+| 15 | `TurnCoordinator.finalize()` | `agent-turn` worker | 委托最小业务提交与维护任务入队 |
 | 16 | `on_event()` | `agent-turn` worker | 将流事件投递回 Core asyncio loop |
-| 17 | `SocketRequestContext.send_notification()` | Core asyncio loop | 将 `agent.event` 通知写入 TCP |
-| 18 | `CoreClient.request()` | CLI 主线程 | 匹配 `request_id`，渲染流事件，读取最终响应 |
+| 17 | `SocketRequestContext.send_notification()` | Core asyncio loop | 将 `agent.event` 写入 TCP |
+| 18 | `CoreClient.request()` | CLI 主线程 | 匹配 `request_id`、渲染事件并读取最终响应 |
 
 ### 第一阶段：CLI 构造请求
 
 入口位于 `src/cli/commands/chat.py`：
 
 ```python
-chat_once(client, session_name, message, workspace)
+chat_once(client, session_name, message, workspace, goal_mode=...)
 ```
 
-参数语义：
-
-| 参数 | 来源 | 功能 |
-|---|---|---|
-| `client` | `CoreClient(config)` | 保存 Core 地址、连接超时和用户级 runtime 路径 |
-| `session_name` | `--session`，默认 `default` | Workspace 内可读名称，不是数据库内部 UUID |
-| `message` | CLI 位置参数或交互输入 | 当前用户请求 |
-| `workspace` | `--workspace`，默认当前目录 | 显式 Workspace 起点，可为空 |
-
-`chat_once()` 首先调用：
-
-```python
-workspace_root = discover_workspace_root(workspace)
-```
-
-`discover_workspace_root()` 从起点向父目录查找最近的 `.git`；找到后使用 Git 根目录，否则使用
-起点目录。随后调用：
+`discover_workspace_root()` 从显式起点或当前目录向上查找最近的 Git 根目录；非 Git 目录使用起点
+本身。CLI 随后调用：
 
 ```python
 client.request(
@@ -82,213 +67,134 @@ client.request(
         "workspace_root": str(workspace_root),
         "session_name": session_name,
         "message": message,
+        "goal_mode": goal_mode,
     },
     on_event=render_agent_event,
 )
 ```
 
-`CoreClient.request()` 在 `src/cli/client.py` 中完成以下动作：
+`CoreClient.request()`：
 
-1. 生成只用于 JSON-RPC 关联的 `request_id`。
-2. 从用户级 runtime 目录读取 daemon token。
-3. 构造 JSON-RPC 2.0 请求，并把 token 放入 `params.auth_token`。
-4. 使用 `socket.create_connection()` 建立单请求单连接 TCP。
-5. 写入一行 UTF-8 JSON，换行符是 NDJSON frame 边界。
-6. 循环读取服务端消息：
-   - `method == "agent.event"`：交给 `on_event` 渲染。
-   - `id == request_id`：这是最终成功或错误响应，结束请求。
-   - 其他 `id`：忽略。
+1. 生成 JSON-RPC `request_id` 并读取用户级 daemon token。
+2. 建立单请求单连接 TCP，写入一行 UTF-8 JSON。
+3. 持续读取 `agent.event` notification，交给 `on_event`。
+4. 收到匹配 `request_id` 的最终响应后关闭本次请求。
 
-这里有两个不同 ID：
-
-| ID | 创建位置 | 生命周期 | 用途 |
-|---|---|---|---|
-| `request_id` | `CoreClient.request()` | 一次 JSON-RPC 请求 | 匹配通知与最终响应 |
-| `run_id` | `AgentHandlers.chat()` | 一次 Agent Turn | 串联事件、日志与执行结果 |
+`request_id` 关联传输请求，`run_id` 关联一次 Core Agent 运行；客户端不能指定诊断身份。
+公开字段以 [RPC 方法参考](/docs/api/rpc-reference.md)为准。
 
 ### 第二阶段：Transport、验证与路由
 
-Core 的 TCP 入口是 `SocketServer._handle_connection()`：
+`SocketServer._handle_connection()` 读取受大小限制的 NDJSON frame，创建 `SocketRequestContext`，
+再调用 `RpcRouter.dispatch(raw, context)`。Transport 不理解 Agent 业务。
 
-```python
-raw = await read_ndjson(reader, self.max_message_bytes)
-response = await self.router.dispatch(raw, context)
-await context.send_response(response)
-```
-
-这一层只处理连接和 frame，不理解 Agent。`SocketRequestContext` 提供：
-
-- `request_id`：当前请求 ID，供通知关联。
-- `send_notification()`：Handler 执行期间主动发送通知。
-- `send_response()`：发送最终响应。
-- `request_close()`：要求最终响应后关闭连接。
-
-`RpcRouter.dispatch()` 按固定顺序执行：
+Router 按以下边界处理：
 
 ```text
 JsonRpcRequest.model_validate(raw)
   -> 查找 method 注册
-  -> ChatParams.model_validate(request.params)
+  -> 对应 Params.model_validate(request.params)
   -> verify_token()
-  -> await AgentHandlers.chat(params, context)
-  -> JsonRpcSuccess
+  -> await handler(params, context)
+  -> JsonRpcSuccess / JsonRpcError
 ```
 
-`ChatParams` 是 Core 接受 `agent.chat` 的安全边界：
+参数与 token 验证成功前，不会调用 Agent、工具或 shutdown handler。具体字段和错误码分别由
+[RPC 方法参考](/docs/api/rpc-reference.md)与[错误参考](/docs/api/error-reference.md)维护。
 
-```python
-workspace_root: str       # 1..4000 字符
-session_name: str         # 1..200 字符，默认 default
-message: str              # 1..200000 字符
-auth_token: str           # 必填
-```
+### 第三阶段：Handler 建立线程与事件边界
 
-在 Pydantic 参数验证和 token 验证成功前，Router 不会调用 Agent、工具或 shutdown handler。
+`AgentHandlers.chat()` 创建：
 
-### 第三阶段：Handler 建立异步与同步边界
+- `run_id`：当前 Agent 运行身份；
+- `ExecutionControl`：跨线程协作信号，断线时要求当前 Slice 后暂停；
+- `on_event`：把 worker 事件送回 Core asyncio loop 的回调。
 
-`AgentHandlers.chat()` 位于 `src/core/handlers/agent.py`。它做两件事：
-
-1. 创建 `run_id = uuid4().hex`。
-2. 创建 `on_event(item)` 回调，把 worker 线程产生的事件送回 Core asyncio loop。
-
-调用关系：
-
-```python
-return await self.agent_service.run_turn(
-    params.workspace_root,
-    params.session_name,
-    params.message,
-    on_event,
-    run_id=run_id,
-)
-```
-
-`AgentTurnService.run_turn()` 是异步外观，但当前 Agent 链路是同步的。它先获取
-`asyncio.Semaphore`，再把 `_run_turn_sync()` 提交到专用 `ThreadPoolExecutor`：
+随后调用 `await AgentTurnService.run_turn(...)`。Service 是稳定应用入口，但实际调度委托给：
 
 ```text
-Core asyncio loop
-  -> await semaphore.acquire()
-  -> executor.submit(_run_turn_sync)
-  -> await asyncio.wrap_future(worker_future)
+AgentTurnService.run_turn()
+  -> AgentAsyncTurnRunner.run_turn()
+  -> TurnWorkerExecutor.run(AgentSyncTurnRunner.run_turn, ...)
 ```
 
-参数功能：
+`TurnWorkerExecutor` 使用 `asyncio.Semaphore` 限制并发，复制当前 `ContextVar`，再提交到专用
+`ThreadPoolExecutor`。worker 完成后由事件循环释放 slot；注入的外部 executor 不由 Service 关闭。
 
-| 参数 | 功能 |
-|---|---|
-| `workspace_root` | 确定本轮允许访问的文件、Skill、命令和记忆范围 |
-| `session_name` | 在 Workspace 内解析或创建 Session UUID |
-| `user_input` | 当前用户输入，进入上下文和记忆检索 |
-| `on_event` | worker 线程调用的流事件回调 |
-| `run_id` | 本轮观测身份；未传入时 Service 自行生成 |
+### 第四阶段：同步消费、身份解析与 Session 串行
 
-信号量限制已提交和正在执行的 Turn 总数，避免默认 executor 形成无界排队。worker 完成后，
-done callback 在 Core loop 中释放 slot。
-
-### 第四阶段：解析身份并建立并发边界
-
-worker 首先进入 `_run_turn_sync()`，它消费 `stream_turn()` 产生的事件：
+`AgentSyncTurnRunner.run_turn()` 消费 `AgentRequestStreamService.stream_turn()` 产生的事件：
 
 ```python
-for item in self.stream_turn(...):
-    on_event(item)
-    # done 更新最终 result；error 更新错误结果
+for item in request_stream_service.stream_turn(...):
+    if on_event:
+        on_event(item)
+    result.observe(item)
+return result.build()
 ```
 
-`stream_turn()` 的顺序是：
+`AgentRequestStreamService.stream_turn()` 的顺序是：
 
 ```text
-去除输入首尾空白并拒绝空消息
-  -> WorkspaceRepository.resolve(workspace_root)
-  -> WorkspaceRepository.resolve_session(workspace, session_name)
-  -> SessionLockRegistry.get(session.session_id)
+规范化输入并拒绝空消息
+  -> workspace_repository.resolve(workspace_root)
+  -> 检查同名 Session 是否已归档
+  -> resolve_session(workspace, session_name)
+  -> 获取 Session UUID 锁
   -> 检查模型配置
-  -> 进入真实 Turn 或诊断路径
+  -> execution_lifecycle.begin_turn(...)
+  -> runtime_graph_resolver.graph_for_turn(...)
+  -> turn_execution_loop.stream_locked_turn(...)
 ```
 
-身份对象的职责：
+Session 锁使用内部 UUID，因此同一 Session 的加载、执行和保存串行；不同 Session 可并行，但仍受
+worker slot 总数限制。Execution 已挂起时，服务返回结构化 pending 事件，不覆盖旧 Execution。
 
-| 对象 | 关键字段 | 作用 |
-|---|---|---|
-| `WorkspaceContext` | `workspace_id`, `root` | 确定隔离边界 |
-| `SessionContext` | `session_id`, `session_name`, `workspace` | 确定会话归属 |
-| `AgentRunContext` | `run_id`, `session`, `turn_index`, `limits` | 确定一次真实执行的身份和限制 |
+### 第五阶段：选择 Workspace Runtime 与 Graph
 
-Session 锁使用内部 `session_id`，不是 `session_name`。因此：
-
-- 同一 Session 的“加载状态 → 执行 → 保存状态”严格串行。
-- 不同 Workspace 都可拥有名为 `default` 的 Session，并可并行执行。
-- 不同 Session 也可并行，但总并发受 `CORE_AGENT_WORKERS` 限制。
-
-### 第五阶段：创建或复用 WorkspaceRuntime
-
-模型配置有效时，`stream_turn()` 调用：
-
-```python
-runtime = self.runtime_registry.get(workspace)
-```
-
-`WorkspaceRuntimeRegistry.get()` 按 `workspace_id` 缓存 Runtime。缓存未命中时，
-`WorkspaceRuntimeFactory.create()` 执行：
+`RuntimeGraphResolver.graph_for_turn(workspace, goal_mode=...)` 隐藏 Runtime 缓存细节：
 
 ```text
-create_workspace_toolset(workspace, model_provider)
-  -> 创建绑定 workspace.root 的文件、Skill、总结和命令工具
-  -> 注册 ToolSpec
-  -> 生成 Sub-agent 工具视图
-  -> 创建 delegate_to_subagent
-  -> 生成 Parent Agent 工具视图
-  -> freeze ToolRegistry
-
-create_parent_graph(parent_tools, skill_manifest, model_provider)
-  -> 创建绑定工具的 Parent LLM
-  -> 注册 agent 节点和 tools 节点
-  -> 编译 LangGraph
+runtime_registry.get(workspace)
+  -> 普通模式返回 runtime.graph
+  -> goal 模式返回 runtime.goal_graph
 ```
 
-`WorkspaceRuntime` 在多轮之间复用，但其中的工具和 Graph 永久绑定到创建时的
-`WorkspaceContext`。一次请求不能通过修改全局变量把 Runtime 切换到另一个目录。
+缓存未命中时，`WorkspaceRuntimeFactory` 创建 Workspace 绑定的 ToolRegistry、SkillStore、父 Agent
+Graph 和子 Agent。工具路径始终绑定不可变 `WorkspaceContext`；请求不能通过修改全局变量切换目录。
 
-### 第六阶段：准备真实 Turn 输入
+任务规划工具只存在于 goal Graph。普通对话不会因为 Runtime 缓存复用而获得 goal 私有工具。
 
-`_stream_locked_turn()` 在 Session 锁内执行：
+### 第六阶段：准备 Turn 输入并进入 Slice 循环
 
-```python
-state, turn_index = store.load_session(session)
-current_turn = turn_index + 1
-run_context = AgentRunContext(..., turn_index=current_turn, ...)
-```
-
-这里的持久化 `turn_index` 表示最后完成的 Turn；只有本轮成功完成后，Session 才保存为
-`current_turn`。
-
-随后加载长期记忆：
+`TurnExecutionLoop.stream_locked_turn()` 创建本轮 State Store facade，并调用：
 
 ```python
-store.retrieve_for_turn(
-    workspace_id,
-    user_input,
-    new_session=turn_index == 0,
+prepared = turn_coordinator.prepare(
+    store=store,
+    session=session,
+    user_input=user_input,
+    run_id=run_id,
+    limits=run_limits,
 )
 ```
 
-- `new_session=True`：合并 bootstrap memory 和相关记忆。
-- `new_session=False`：只加载相关记忆。
-- 查询始终携带 `workspace_id`。
-
-`AgentContextManager.build_input_messages()` 按顺序构造 Graph 输入：
+`ConversationContextLoader.prepare()` 通过存储 Port 加载已提交 Session 上下文、当前 Workspace 的
+相关记忆，并返回不可变 `PreparedTurn`：
 
 ```text
-可选的 Session summary SystemMessage
-  -> 可选的长期记忆 SystemMessage
-  -> 最近 RECENT_MESSAGE_LIMIT 条原始消息
-  -> 当前 HumanMessage
+state
+current turn_index
+AgentRunContext
+input_messages
 ```
 
-这些输入中，summary 和长期记忆是合成上下文，只用于本轮模型输入，不应再次归档为用户历史。
+Graph 输入由已有摘要、Workspace 记忆、近期原始消息和当前 `HumanMessage` 组成。合成的摘要与记忆
+只用于模型上下文，不重复归档为用户历史。
 
+随后 `TurnExecutionLoop` 为本次 Execution 绑定预算和 ToolExecutionContext，并循环调用
+`SliceExecutionService.stream_slice()`。每个 Slice 都有独立 `slice_id`；预算耗尽、客户端断线、
+Graph 错误和正常完成分别交给 PauseHandler、ErrorHandler 或 Finalizer。
 ### 第七阶段：LangGraph AgentLoop
 
 `create_parent_graph()` 在 `src/core/agent/graph.py` 中定义循环：
@@ -330,7 +236,7 @@ tool_started
 
 ### 第八阶段：把 Graph stream 转换为稳定事件
 
-`_stream_locked_turn()` 不直接消费 LangGraph 原始 stream，而是调用：
+`SliceExecutionService.stream_slice()` 不直接暴露 LangGraph 原始 stream，而是调用：
 
 ```python
 stream_graph_events(graph, input_messages, run_context)
@@ -367,7 +273,7 @@ app.stream(
 
 ### 第九阶段：流事件返回 CLI
 
-worker 每产生一个事件，`_run_turn_sync()` 就调用 `on_event(item)`。该回调仍运行在 worker
+`AgentSyncTurnRunner` 每消费一个事件，就调用 `on_event(item)`。该回调仍运行在 worker
 线程，不能直接操作 asyncio socket，因此 `AgentHandlers.chat()` 使用：
 
 ```python
@@ -424,7 +330,7 @@ finalization = turn_coordinator.finalize(
 
 ### 第十一阶段：最终响应与资源恢复
 
-成功时 `_stream_locked_turn()` 产生最终 `done`：
+成功时 `TurnExecutionLoop.stream_locked_turn()` 产生最终 `done`：
 
 ```python
 {
@@ -441,10 +347,10 @@ finalization = turn_coordinator.finalize(
 }
 ```
 
-`_run_turn_sync()` 将其转换为 Handler 的最终 result。`RpcRouter.dispatch()` 包装为
+`TurnResultBuilder` 将事件流聚合为 Handler 的最终 result。`RpcRouter.dispatch()` 包装为
 `JsonRpcSuccess`，`SocketServer` 写回连接，CLI 收到与 `request_id` 匹配的响应后结束读取。
 
-无论成功或失败，`_stream_locked_turn()` 的 `finally` 都会：
+无论成功或失败，`TurnExecutionLoop.stream_locked_turn()` 的 `finally` 都会：
 
 ```text
 恢复进入本轮前的事件上下文
@@ -518,53 +424,61 @@ flowchart LR
 
 #### 2. Core 内单轮 Turn
 
-这张图回答：一次经过验证的请求，在 Core 中如何完成准备、执行和持久化。
+这张图回答：一次经过验证的请求，在 Core 中如何跨越异步调度、同步 worker、Session 一致性边界和
+最小提交。
 
 ```mermaid
 flowchart LR
-    subgraph Prepare["阶段一：准备"]
+    subgraph Schedule["阶段一：调度"]
         direction TB
-        Resolve["解析 Workspace<br/>与 Session"]
+        Async["AgentAsyncTurnRunner"]
+        Slot["TurnWorkerExecutor<br/>获取并发 slot"]
+        Worker["agent-turn worker<br/>AgentSyncTurnRunner"]
+        Async --> Slot --> Worker
+    end
+
+    subgraph Prepare["阶段二：身份与上下文"]
+        direction TB
+        Request["AgentRequestStreamService"]
+        Resolve["解析 Workspace / Session"]
         Lock["获取 Session UUID 锁"]
-        Load["加载短期上下文<br/>与 Workspace 记忆"]
-        Build["构造 AgentRunContext<br/>与模型输入"]
-        Resolve --> Lock --> Load --> Build
+        Runtime["RuntimeGraphResolver"]
+        Load["ConversationContextLoader<br/>上下文 + Workspace 记忆"]
+        Request --> Resolve --> Lock --> Runtime --> Load
     end
 
-    subgraph Execute["阶段二：执行"]
+    subgraph Execute["阶段三：有界执行"]
         direction TB
-        Slot["获取并发 slot"]
-        Worker["agent-turn worker"]
-        Graph["执行 WorkspaceRuntime.graph"]
-        Slot --> Worker --> Graph
+        Loop["TurnExecutionLoop"]
+        Slice["SliceExecutionService"]
+        Graph["LangGraph / LLM / Tool"]
+        Loop --> Slice --> Graph
     end
 
-    subgraph Persist["阶段三：最小提交与后台维护"]
+    subgraph Persist["阶段四：最小提交与维护"]
         direction TB
-        Commit["CompletedTurnCommitter<br/>原子提交业务事实"]
+        Commit["CompletedTurnCommitter<br/>StateUnitOfWork"]
         State["state.db<br/>消息 / Session / Execution"]
-        Jobs["maintenance_jobs<br/>持久化任务"]
-        Done["返回 done<br/>CLI 恢复输入"]
-        Maintenance["MaintenanceScheduler<br/>摘要 / 记忆 / checkpoint 清理"]
+        Jobs["maintenance_jobs<br/>持久化 Outbox"]
+        Done["返回 done"]
+        Maintenance["MaintenanceScheduler"]
         Commit --> State --> Done
         Commit --> Jobs --> Maintenance
     end
 
-    Build --> Slot
+    Worker --> Request
+    Load --> Loop
     Graph --> Commit
-    Resolve <--> State
-    Load <--> State
 
+    classDef schedule fill:#f3e8ff,stroke:#8b5fbf,color:#222;
     classDef prepare fill:#fff3cd,stroke:#d6a100,color:#222;
     classDef execute fill:#dce9ff,stroke:#5b85c5,color:#222;
     classDef persist fill:#dff2df,stroke:#629b62,color:#222;
-    classDef store fill:#f3e8ff,stroke:#8b5fbf,color:#222;
-    class Resolve,Lock,Load,Build prepare;
-    class Slot,Worker,Graph execute;
-    class Commit,Done,Maintenance persist;
-    class State,Jobs store;
+    class Async,Slot,Worker schedule;
+    class Request,Resolve,Lock,Runtime,Load prepare;
+    class Loop,Slice,Graph execute;
+    class Commit,State,Jobs,Done,Maintenance persist;
 ```
-
 #### 3. Parent Agent 与 Sub-agent 调用链
 
 这张图回答：LangGraph 如何循环调用 LLM、工具和非递归 Sub-agent。
@@ -615,5 +529,5 @@ flowchart LR
 - `WorkspaceRepository`、Memory、LangGraph、LLM 和工具执行位于专用 `agent-turn` worker。
 - worker 通过 `on_event` 回调和 `asyncio.run_coroutine_threadsafe()` 将流式通知送回事件循环。
 - 完整消息和最小 Session 状态原子写入 `state.db`；摘要、长期记忆和 checkpoint 清理通过持久化维护任务完成。
-- 客户端断线后，流式通知停止；已经进入 worker 的 turn 仍继续执行并完成持久化。
+- 客户端断线后停止通知；当前 Slice 可结束，若已完成则提交，若仍需后续 Slice 则保存为可恢复暂停。
 

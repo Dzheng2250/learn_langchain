@@ -28,7 +28,7 @@
 > 数据库表、事务、Outbox、CAS、Saga 和恢复协调器的通俗说明见
 > [`/docs/architecture/database-state-and-consistency.md`](/docs/architecture/database-state-and-consistency.md)。
 > 端到端请求路径见其中的[完整数据流动示意图](/docs/architecture/agent-execution-call-chain.md#完整数据流动示意图)，
-> Agent 内部执行与双事件通道见[调用链与事件通道图](/docs/architecture/agent-execution-architecture.md#agent-调用链与事件通道图)。
+> Agent 内部执行见[Agent 执行架构](/docs/architecture/agent-execution-architecture.md)，双事件通道见[事件系统](/docs/architecture/event-system.md)。
 >
 > PR #3 review 整改与可靠性决策见
 > [`/docs/history/pr-3-review-hardening.md`](/docs/history/pr-3-review-hardening.md)。

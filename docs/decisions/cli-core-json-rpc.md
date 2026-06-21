@@ -4,6 +4,16 @@
 > 权威范围：选择用户级 Core daemon 与本地 JSON-RPC 的原因和取舍
 > 维护触发：进程模型、传输协议或客户端边界变化
 
+## 本文负责
+
+- 选择双进程、用户级 Core daemon、本地 TCP、NDJSON 和 JSON-RPC 的原因、替代方案与代价。
+
+## 本文不负责
+
+- 不维护当前 RPC 字段和命令清单；见 API。
+- 不解释当前 Core 函数级实现；见 Architecture。
+
+
 > 文档类型：当前设计决策
 > 面向读者：希望理解双进程架构原因的开发者
 > 具体接口字段请查阅 [IPC 协议](/docs/api/ipc-protocol.md) 和
@@ -209,16 +219,8 @@ TCP frame 大小限制
 
 只有通过全部验证后，Core 才能执行 Agent、工具或关闭操作。
 
-职责分布：
-
-| 模块 | 职责 |
-|---|---|
-| `src/ipc/models.py` | CLI 与 Core 共享的严格 wire model |
-| `src/ipc/auth.py` | 用户级 daemon token 的创建、读取和验证 |
-| `src/core/transport/` | TCP 与 NDJSON 分帧、连接和写回 |
-| `src/core/bus/router.py` | 方法注册、参数验证、鉴权和分发 |
-| `src/core/handlers/` | 将 RPC 调用适配到应用服务 |
-
+职责按 Wire Model、Auth、Transport、Router 和 Handler 分层。当前模块位置由
+[Core 架构](/docs/architecture/core-architecture.md)维护，本文只固定依赖方向：
 协议模型放在中立的 `src/ipc`，使依赖方向保持：
 
 ```text
@@ -229,19 +231,12 @@ CLI 不得导入 Core 的 Agent、Memory、Tool 或数据库实现。
 
 ## 6. 为什么 Agent 需要服务层
 
-`AgentTurnService` 提供不依赖终端和 TCP 的应用服务边界。它负责：
+Agent 需要一个不依赖终端和传输协议的应用服务边界。该边界接收经过验证的领域参数，编排一次
+Turn，并通过回调或事件返回执行进度；它不读取 `stdin`、不直接渲染输出，也不依赖 CLI。
 
-- 解析 Workspace 与 Session；
-- 串行化同一 Session 的执行；
-- 调度 Agent worker；
-- 创建 Execution 和 Slice；
-- 执行 LangGraph、模型和工具；
-- 提交最小业务状态；
-- 安排后台摘要、记忆和 checkpoint 清理。
-
-它不读取 `stdin`，不直接打印用户输出，也不依赖 CLI。
-
-这使 CLI、TUI、测试程序或未来其他 Transport 都可以复用同一个 Agent 服务。
+这样 CLI、TUI、测试程序或未来其他 Transport 都可以复用同一套业务能力。当前服务、端口和
+适配器的职责划分见[接口驱动的 Core](/docs/architecture/interface-driven-core.md)，实际函数调用关系见
+[Agent 执行调用链](/docs/architecture/agent-execution-call-chain.md)。
 
 ## 7. 为什么需要流式 notification
 
@@ -263,48 +258,22 @@ Agent 请求可能持续较长时间。只返回一个最终响应会使界面�
 
 事件结构和顺序见[流式事件参考](/docs/api/streaming-events.md)。
 
-## 8. 一次对话的调用链
+## 8. 为什么调用链不在 Decision 中维护
 
-这张图按时间顺序展示一个 `agent.chat` 请求。请求只发送一次，中间可以产生多条通知，最后
-只有一条与原始请求 ID 对应的最终响应。
+调用链属于当前实现事实，会随着 Handler、Service、Graph、状态端口和适配器重构而变化；复制到
+设计决策中会形成多个权威来源。本文只固定以下边界：
 
-```mermaid
-sequenceDiagram
-    autonumber
-    participant UI as CLI / TUI
-    participant Transport as SocketServer
-    participant Router as RpcRouter
-    participant Handler as AgentHandlers
-    participant Service as AgentTurnService
-    participant Graph as LangGraph / LLM / Tool
-    participant State as state.db
-
-    UI->>Transport: agent.chat JSON-RPC request
-    Transport->>Router: 已解析的 JSON 对象
-    Router->>Router: 验证 envelope、params、auth_token
-    Router->>Handler: chat(ChatParams, RequestContext)
-    Handler->>Handler: 创建 run_id 与 ExecutionControl
-    Handler->>Service: run_turn(workspace, session, message)
-    Service->>Service: 获取 Session 锁与 worker slot
-    Service->>Graph: 执行一个或多个有界 Slice
-
-    loop token / step
-        Graph-->>Service: Agent event
-        Service-->>Handler: on_event callback
-        Handler-->>Transport: agent.event notification
-        Transport-->>UI: NDJSON notification
-    end
-
-    Service->>State: 原子提交消息、Session 与 Execution
-    State-->>Service: committed
-    Service-->>Handler: 最终聚合结果
-    Handler-->>Router: result
-    Router-->>Transport: JSON-RPC success response
-    Transport-->>UI: 最终响应
+```text
+Frontend -> Transport -> Router -> Application Service -> Agent Runtime
 ```
 
-更详细的函数级流程见
-[Agent 执行架构](/docs/architecture/agent-execution-architecture.md)。
+- 前端只发起请求并消费事件，不执行 Agent 业务；
+- Transport 只负责连接与分帧，Router 负责验证和分发；
+- 应用服务通过接口编排 Agent 与状态能力，不直接依赖前端；
+- 业务状态提交与后台维护的实现不属于通信协议决策。
+
+当前组件数据流见 [Core 架构](/docs/architecture/core-architecture.md)，函数级调用与参数传播见
+[Agent 执行调用链](/docs/architecture/agent-execution-call-chain.md)。
 
 ## 9. 并发、断线与恢复
 
@@ -381,32 +350,18 @@ learn-agent stop
 
 路径和配置项见[配置参考](/docs/reference/configuration-reference.md)。
 
-## 11. 当前公开接口与限制
+## 11. 公开接口与能力边界的权威来源
 
-当前 RPC 方法：
+Decision 不维护 RPC 方法、字段或当前限制清单，因为这些内容的变化频率高于进程与协议决策。
+前端开发者应使用以下权威来源：
 
-```text
-core.ping
-core.shutdown
-agent.chat
-session.status
-session.resume
-session.discard
-```
+- [API 导航](/docs/api/README.md)：接口文档入口；
+- [RPC 方法参考](/docs/api/rpc-reference.md)：当前可调用方法与参数；
+- [流式事件参考](/docs/api/streaming-events.md)：服务端 notification；
+- [协议兼容策略](/docs/api/protocol-compatibility.md)：兼容性与演进规则；
+- [路线图与已知限制](/docs/product/roadmap-and-known-limitations.md)：当前不支持的能力。
 
-`agent.event` 是服务端 notification，不是客户端可调用的 RPC 方法。
-
-当前限制：
-
-- 不支持执行中取消；
-- 不支持断线后的旧事件续传；
-- 不支持同一连接并发多个请求；
-- 不支持 Session 列表和历史查询 RPC；
-- 不支持远程网络访问；
-- 尚未实现协议版本和 capabilities 协商。
-
-前端开发者应以 [API 文档](/docs/README.md#api外部接口契约) 为准，不得读取 SQLite 或导入
-Core 私有模块绕过这些限制。
+前端不得读取 SQLite 或导入 Core 私有模块绕过公开契约。
 
 ## 12. 设计原则检查
 
