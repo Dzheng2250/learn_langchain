@@ -31,13 +31,11 @@ class ExecutionLifecycleService:
     application path and emits the corresponding trace records.
     """
 
-    def __init__(self, execution_store: ExecutionLifecycleStore | None) -> None:
+    def __init__(self, execution_store: ExecutionLifecycleStore) -> None:
         self.execution_store = execution_store
 
     def begin_turn(self, session, user_input: str, *, goal_mode: bool) -> ExecutionStart:
         """Attach a new Execution unless the Session already has pending work."""
-        if self.execution_store is None:
-            return ExecutionStart()
         pending = self.execution_store.get_pending(session)
         if pending is not None:
             return ExecutionStart(pending=pending)
@@ -51,14 +49,10 @@ class ExecutionLifecycleService:
 
     def has_attached_execution(self, session) -> bool:
         """Return whether the Session has any attached Execution state."""
-        if self.execution_store is None:
-            return False
         return self.execution_store.get_attached(session) is not None
 
     def resume(self, session):
         """Resume the Session's recoverable Execution and record trace identity."""
-        if self.execution_store is None:
-            raise RuntimeError("Resumable execution is not configured.")
         pending = self.execution_store.resume(session)
         self._record_attached(
             pending,
@@ -79,7 +73,7 @@ class ExecutionLifecycleService:
         self._pause_error(execution, f"Execution resume preparation failed: {exc}")
 
     def _pause_error(self, execution, summary: str) -> None:
-        if execution is None or self.execution_store is None:
+        if execution is None:
             return
         self.execution_store.pause(
             execution.execution_id,

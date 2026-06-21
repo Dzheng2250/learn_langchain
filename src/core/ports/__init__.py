@@ -4,6 +4,7 @@ Ports describe capabilities the application layer needs. Concrete storage
 choices such as SQLite, JSONL files, or PostgreSQL live behind adapters.
 """
 
+from .checkpoint import CheckpointStore
 from .session import AgentSessionStore, SessionLifecycleStore
 from .execution import (
     ExecutionFailureStore,
@@ -21,9 +22,11 @@ from .state import (
     StateUnitOfWork,
     StateUnitOfWorkFactory,
 )
+from .maintenance import MemoryWriteStore, SummaryMaintenanceStore
 
 __all__ = [
     "AgentSessionStore",
+    "CheckpointStore",
     "ConversationHistoryStore",
     "ExecutionFailureStore",
     "ExecutionLifecycleStore",
@@ -31,10 +34,12 @@ __all__ = [
     "ExecutionSliceStore",
     "ExecutionStore",
     "MaintenanceQueue",
+    "MemoryWriteStore",
     "MemoryRetrievalStore",
     "SessionLifecycleStore",
     "SessionStore",
     "StateInitializer",
     "StateUnitOfWork",
     "StateUnitOfWorkFactory",
+    "SummaryMaintenanceStore",
 ]

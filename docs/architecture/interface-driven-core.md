@@ -74,13 +74,16 @@ Application Service
 | `ExecutionPauseStore` | 只持久化暂停状态，供预算暂停等窄场景使用 |
 | `ExecutionSliceStore` | 创建和结束单个有界 Slice |
 | `ExecutionFailureStore` | 为错误处理组合暂停与 Slice 收尾能力 |
+| `SummaryMaintenanceStore` | 为后台摘要提供摘要源读取与 CAS 写回 |
+| `MemoryWriteStore` | 从已提交 Turn 提取并保存长期记忆 |
+| `CheckpointStore` | 初始化、查询、清理和关闭 LangGraph checkpoint |
 | `MaintenanceQueue` | 将后台维护任务写入可靠队列 |
 | `StateUnitOfWork` | 把一次成功 Turn 的多项状态修改放进同一个原子提交 |
 | `StateUnitOfWorkFactory` | 为具体后端创建 Unit of Work |
 | `StateInitializer` | 在 daemon 启动时初始化权威状态 schema，不暴露完整 Store |
 | `ModelProvider / ModelConfiguration` | 定义在 `llm/contracts.py` 的供应商无关模型能力；具体 `ChatOpenAI` 构造留在 adapter 实现 |
 
-旧的 `src/core/state/contracts.py::StateStore` 也已经收缩为前台 Turn 真正需要的能力：加载 Session、召回长期记忆和构造记忆提示消息。它不再声明 `append_messages_in_transaction()` 或 `save_fast_session_in_transaction()` 这类带数据库事务细节的方法。
+旧的 `src/core/state/contracts.py` 已停止定义业务端口，仅保留弃用说明。前台、后台维护和 checkpoint 能力统一从 `src/core/ports/` 导入，避免项目同时维护两套接口命名空间。
 
 当前生产实现仍然是 SQLite：
 
@@ -112,6 +115,9 @@ src/core/adapters/sqlite/
 | 保存 fast context | `SQLiteSessionStore.save_fast_context()` | 响应关键路径使用，不覆盖后台摘要 |
 | 前台长期记忆召回 | `SQLiteMemoryRetrievalStore.retrieve_for_turn()` | 处理 bootstrap/relevant 去重和长度限制 |
 | 后台长期记忆写入 | `SQLiteMemoryWriteStore.extract_and_save()` | 负责提取、去重、来源关系、outbox 和事件 |
+| 后台摘要维护 | `ContextSummaryHandler -> SummaryMaintenanceStore` | Handler 不再获取或关闭万能 Store |
+| 后台记忆维护 | `MemoryExtractionHandler -> ConversationHistoryStore + MemoryWriteStore` | 已提交消息读取和记忆写入分别依赖小端口 |
+| Checkpoint 清理与恢复 | `CheckpointCleanupHandler / ExecutionRecoveryCoordinator -> CheckpointStore` | LangGraph 存储实现不泄漏到维护编排 |
 | PostgreSQL 投影 outbox | `SQLiteProjectionOutboxStore.enqueue()` | 负责可选投影事件写入 |
 | 摘要读取与 CAS 写回 | `SQLiteSummaryStore` | 防止旧摘要覆盖新摘要 |
 | 成功 Turn 原子提交 | `SQLiteStateUnitOfWorkFactory` | 组合 history/session/execution/maintenance 端口 |
@@ -126,6 +132,10 @@ src/core/adapters/sqlite/
 | Session 生命周期持久化 | `SQLiteSessionLifecycleStore` | 隔离 Workspace repository、checkpoint thread 查询和历史重建的 SQLite 细节 |
 | Session 生命周期编排 | `SessionLifecycleService` | 只协调归档、删除、重置和 pending execution，不再创建或关闭具体 Store |
 | Agent 循环配置 | `LoopConfig` | 收敛 `TurnExecutionLoop` 的标量配置，避免构造器随配置项膨胀 |
+
+`ExecutionLifecycleService` 的 `ExecutionLifecycleStore` 是强制依赖。生产系统中的每个正常 Turn 都必须进入 Execution 状态机，因此不再用 `None` 表示“静默跳过持久化”。如果未来确实需要无持久化运行模式，应提供显式的 Null Adapter，并单独定义其行为契约。
+
+`RuntimeGraphResolver` 中构造 `HumanMessage` 是有意保留的 LangGraph Adapter 边界：普通文本只在更新 Graph 状态时转换为框架消息。业务服务不应在更上层传播 LangChain/LangGraph 具体类型，也不需要为这一处转换增加无实际替换价值的工厂。
 
 这意味着响应关键路径中的消息追加和 Session fast context 更新已经不再由 `LocalStateStore` 自己执行 SQL，而是委托给 SQLite adapter。
 
@@ -235,7 +245,7 @@ Agent 执行提交到有界 worker，`AgentSyncTurnRunner` 负责在 worker 线�
 
 - 把旧方法委托给新的 SQLite adapter。
 - 保留旧的 foreground / maintenance store 方法名，方便现有服务逐步迁移到更小端口。
-- 提供旧测试和维护任务仍在使用的统一入口。
+- 提供尚未迁移的旧测试和兼容调用所需的统一入口。
 
 它不应该继续承载新的业务能力。后续新增或迁移状态能力时，应优先新增端口和 adapter。
 

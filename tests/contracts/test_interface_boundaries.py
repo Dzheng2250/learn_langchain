@@ -46,6 +46,16 @@ class InterfaceBoundaryTest(unittest.TestCase):
 
         self.assertEqual([], violations)
 
+    def test_maintenance_uses_ports_instead_of_legacy_state_contracts(self):
+        maintenance_root = REPOSITORY_ROOT / "src" / "core" / "maintenance"
+        violations = []
+        for path in maintenance_root.rglob("*.py"):
+            source = path.read_text(encoding="utf-8-sig")
+            if "src.core.state.contracts" in source or "MaintenanceStateStore" in source:
+                violations.append(str(path.relative_to(REPOSITORY_ROOT)))
+
+        self.assertEqual([], violations)
+
     def test_agent_turn_service_is_a_composed_facade(self):
         parameters = set(inspect.signature(AgentTurnService).parameters)
 

@@ -481,7 +481,6 @@ class MaintenanceHandlerTest(unittest.TestCase):
         class Store:
             def __init__(self):
                 self.updated = None
-                self.closed = False
 
             def load_summary_source(self, _session, _target_turn):
                 return (
@@ -498,9 +497,6 @@ class MaintenanceHandlerTest(unittest.TestCase):
                 self.updated = kwargs
                 return True
 
-            def close(self):
-                self.closed = True
-
         class Context:
             recent_message_limit = 1
 
@@ -513,7 +509,7 @@ class MaintenanceHandlerTest(unittest.TestCase):
         store = Store()
         handler = ContextSummaryHandler(
             Mock(get_session=Mock(return_value=session)),
-            lambda: store,
+            store,
             Context(),
         )
         handler(
@@ -526,7 +522,6 @@ class MaintenanceHandlerTest(unittest.TestCase):
 
         self.assertEqual("one,two", store.updated["summary"])
         self.assertEqual(2, store.updated["summary_through_turn"])
-        self.assertTrue(store.closed)
 
 
 class RecoveryCoordinatorTest(unittest.TestCase):

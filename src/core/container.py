@@ -7,11 +7,15 @@ from src.config.settings import (
     CORE_AGENT_WORKERS,
     MAX_AUTO_SLICES_PER_GRANT,
     MEMORY_ENABLED,
+    MEMORY_MIN_IMPORTANCE,
+    POSTGRES_PROJECTION_ENABLED,
 )
 from src.core.adapters.sqlite import (
     SQLiteConversationHistoryStore,
     SQLiteMemoryRetrievalStore,
+    SQLiteMemoryWriteStore,
     SQLiteSessionStore,
+    SQLiteSummaryStore,
     SQLiteStateUnitOfWorkFactory,
 )
 from src.core.adapters.sqlite.session_lifecycle import SQLiteSessionLifecycleStore
@@ -58,6 +62,7 @@ from src.core.maintenance.handlers import (
     ContextSummaryHandler,
     MemoryExtractionHandler,
 )
+from src.core.memory.extractor import MemoryCandidateExtractor
 from src.core.session import SessionLifecycleService
 from src.core.session.checkpoint_cleanup import SessionCheckpointCleanupQueue
 from src.core.session.status import SessionStatusReader
@@ -65,7 +70,6 @@ from src.core.state import (
     CheckpointManager,
     ExecutionRepository,
     LocalStateDatabase,
-    LocalStateStore,
     LocalWorkspaceRepository,
 )
 from src.core.tasks import TaskPlanningService, TaskRepository
@@ -141,11 +145,6 @@ class CoreContainer(containers.DeclarativeContainer):
         model_provider=model_provider,
     )
 
-    state_store_factory = providers.Factory(
-        LocalStateStore,
-        database=state_database,
-        model_provider=model_provider,
-    )
     conversation_history_store = providers.Factory(
         SQLiteConversationHistoryStore,
         database=state_database,
@@ -156,6 +155,21 @@ class CoreContainer(containers.DeclarativeContainer):
     )
     memory_retrieval_store = providers.Factory(
         SQLiteMemoryRetrievalStore,
+        database=state_database,
+    )
+    memory_candidate_extractor = providers.Factory(
+        MemoryCandidateExtractor,
+        model_provider=model_provider,
+    )
+    memory_write_store = providers.Factory(
+        SQLiteMemoryWriteStore,
+        database=state_database,
+        extractor=memory_candidate_extractor,
+        min_importance=MEMORY_MIN_IMPORTANCE,
+        projection_enabled=POSTGRES_PROJECTION_ENABLED,
+    )
+    summary_store = providers.Factory(
+        SQLiteSummaryStore,
         database=state_database,
     )
     context_loader = providers.Factory(
@@ -174,13 +188,14 @@ class CoreContainer(containers.DeclarativeContainer):
     context_summary_handler = providers.Factory(
         ContextSummaryHandler,
         workspace_repository=workspace_repository,
-        store_factory=state_store_factory.provider,
+        summary_store=summary_store,
         context_manager=context_manager,
     )
     memory_extraction_handler = providers.Factory(
         MemoryExtractionHandler,
         workspace_repository=workspace_repository,
-        store_factory=state_store_factory.provider,
+        history_store=conversation_history_store,
+        memory_store=memory_write_store,
     )
     checkpoint_cleanup_handler = providers.Factory(
         CheckpointCleanupHandler,

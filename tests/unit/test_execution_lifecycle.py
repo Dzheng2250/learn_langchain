@@ -90,16 +90,9 @@ class ExecutionLifecycleServiceTest(unittest.TestCase):
         self.assertEqual("turn_error", repository.paused[0][2])
         self.assertIn("Workspace runtime creation failed", repository.paused[0][3])
 
-    def test_no_repository_means_non_resumable_but_allows_plain_turns(self):
-        service = ExecutionLifecycleService(None)
-
-        result = service.begin_turn("session", "hello", goal_mode=False)
-
-        self.assertIsNone(result.execution)
-        self.assertFalse(result.blocked_by_pending)
-        self.assertFalse(service.has_attached_execution("session"))
-        with self.assertRaisesRegex(RuntimeError, "Resumable execution is not configured"):
-            service.resume("session")
+    def test_execution_store_is_a_required_dependency(self):
+        with self.assertRaises(TypeError):
+            ExecutionLifecycleService()
 
 
 if __name__ == "__main__":

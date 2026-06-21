@@ -3,6 +3,7 @@ import unittest
 
 from dependency_injector import providers
 
+from src.core.adapters.sqlite import SQLiteSummaryStore
 from src.core.agent.service import AgentTurnService
 from src.core.agent.loop import TurnExecutionLoop
 from src.core.agent.request_stream import AgentRequestStreamService
@@ -14,7 +15,6 @@ from src.core.container import CoreContainer
 from src.core.diagnostics import DiagnosticTurnService
 from src.core.execution import ExecutionLifecycleService
 from src.core.session import SessionLifecycleService
-from src.core.state import LocalStateStore
 from src.core.transport.socket_server import SocketServer
 
 
@@ -64,14 +64,14 @@ class CoreContainerTest(unittest.TestCase):
         self.assertIs(execution_loop.observer, execution_loop.pause_handler.observer)
         self.assertIsInstance(container.transport(), SocketServer)
 
-    def test_state_store_factory_creates_short_lived_store_instances(self):
+    def test_maintenance_store_adapters_are_short_lived(self):
         container = self._container()
 
-        first = container.state_store_factory()
-        second = container.state_store_factory()
+        first = container.summary_store()
+        second = container.summary_store()
 
-        self.assertIsInstance(first, LocalStateStore)
-        self.assertIsInstance(second, LocalStateStore)
+        self.assertIsInstance(first, SQLiteSummaryStore)
+        self.assertIsInstance(second, SQLiteSummaryStore)
         self.assertIsNot(first, second)
         self.assertIs(first.database, second.database)
 

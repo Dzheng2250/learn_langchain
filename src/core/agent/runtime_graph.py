@@ -20,6 +20,8 @@ class RuntimeGraphResolver:
         """Return the graph for a pending execution and inject resume instruction."""
         graph = self.graph_for_turn(workspace, goal_mode=pending.goal_mode)
         if instruction.strip():
+            # This is the deliberate LangGraph adapter boundary: application
+            # text becomes a framework message only when graph state is updated.
             graph.update_state(
                 {"configurable": {"thread_id": pending.checkpoint_thread_id}},
                 {

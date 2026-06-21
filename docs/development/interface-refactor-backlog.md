@@ -37,8 +37,10 @@
    `RuntimeGraphProvider` 和 `LockedTurnStreamer`；诊断 Turn 也已使用 `SessionStore`。
    `RuntimeGraphResolver` 通过 `WorkspaceRuntimeProvider` 获取 runtime，不再依赖具体 Registry。
    `AgentServiceLifecycle` 也已改为依赖 `StateInitializer`，生产环境直接注入
-   `LocalStateDatabase`，不再创建兼容 Store。下一步主要处理诊断之外的后台 maintenance
-   中仍保留的兼容 store factory，但不能把进程初始化职责重新放回前台执行链路。
+   `LocalStateDatabase`，不再创建兼容 Store。后台 maintenance 也已经移除兼容 store factory：
+   摘要、消息历史、记忆写入和 checkpoint 分别依赖 `SummaryMaintenanceStore`、
+   `ConversationHistoryStore`、`MemoryWriteStore` 和 `CheckpointStore`。这些端口已有
+   SQLite 契约测试。后续不能把进程初始化职责重新放回前台执行链路。
 
 2. **Task Store**
    私有任务规划已经拆出 `TaskPlanValidator` 和 `TaskQueryStore`，分别承载纯规则校验与任务查询装配。
@@ -81,3 +83,8 @@
    后续如果要替换维护队列后端，应继续把 enqueue、claim、succeed/fail/requeue 拆成明确的 `MaintenanceQueue`
    和 `MaintenanceLeaseStore` 端口。
 
+9. **Maintenance Ports（本阶段已完成）**
+   旧的 `src/core/state/contracts.py` 已停止定义 `StateStore`、`MaintenanceStateStore` 和
+   `CheckpointStore`。后台 Handler 不再接收万能 Store，也不负责创建或关闭具体 Adapter。
+   如果新增维护任务，应按用例扩展小端口，并让所有实现运行同一组 contract tests，禁止重新引入
+   `LocalStateStore` factory。
