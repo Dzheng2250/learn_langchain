@@ -1,6 +1,7 @@
 """LLM-backed execution of context summary compression."""
 
 from src.config.settings import SESSION_SUMMARY_MAX_CHARS, SUMMARY_SOURCE_CHAR_LIMIT
+from src.core.common.content import message_content_text
 from src.core.common.debug import debug_print
 from src.core.context.messages import format_messages_for_summary
 from src.core.llm.contracts import LlmPurpose, ModelProvider
@@ -48,7 +49,7 @@ class ContextSummaryExecutor:
                 )
             )
 
-        summary = response.content.strip()
+        summary = message_content_text(response).strip()
         if len(summary) > self.summary_max_chars:
             summary = summary[:self.summary_max_chars] + "\n... summary truncated ..."
 

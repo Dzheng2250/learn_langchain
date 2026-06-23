@@ -49,7 +49,7 @@
 - Python 3.11 或更高版本。
 - Docker Engine 或 Docker Desktop。使用容器命令工具、PostgreSQL 可选能力或迁移时需要。
 - Docker Compose v2，即 `docker compose` 命令。启动项目提供的 PostgreSQL 时需要。
-- OpenAI 兼容模型 API。仅验证基础设施时可以暂不配置。
+- Anthropic API。仅验证基础设施时可以暂不配置。
 
 ### 创建配置
 
@@ -130,11 +130,11 @@ learn-agent start
 
 ```dotenv
 LEARN_AGENT_LLM_API_KEY=your-api-key
-LEARN_AGENT_LLM_BASE_URL=https://your-openai-compatible-endpoint/v1
+# LEARN_AGENT_LLM_BASE_URL=https://api.anthropic.com
 LEARN_AGENT_MODEL=your-model
 ```
 
-旧 `ALIYUN_API_KEY` 与 `ALIYUN_BASE_URL` 仅作为兼容回退，已弃用。若新旧变量同时存在，通用变量
+旧 `ALIYUN_API_KEY` 与 `ALIYUN_BASE_URL` 已废弃，不属于默认 Anthropic 运行路径。通用变量
 优先。
 
 ## 可选 PostgreSQL 配置

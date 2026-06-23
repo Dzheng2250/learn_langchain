@@ -8,6 +8,8 @@ from langchain_core.messages import ToolMessage
 from langchain_core.tools import BaseTool
 from langgraph.prebuilt import ToolNode
 
+from src.core.common.content import message_content_text
+
 from src.core.telemetry import record_tool_failed, record_tool_finished, record_tool_started
 from src.core.agent.budget import ToolBudgetExceeded, current_execution_budget
 from src.core.tools.catalog import ToolRisk
@@ -33,11 +35,9 @@ def _result_preview(result) -> str:
     if isinstance(result, list):
         return "\n".join(_result_preview(item) for item in result)
 
-    content = getattr(result, "content", None)
-    if isinstance(content, str):
+    content = message_content_text(result)
+    if content:
         return content
-    if content is not None:
-        return repr(content)
     return repr(result)
 
 

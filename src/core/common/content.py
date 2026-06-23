@@ -13,6 +13,11 @@ _NON_TEXT_BLOCK_TYPES = {
     "reasoning",
     "thinking",
     "redacted_thinking",
+    # Anthropic streams tool arguments and hidden reasoning as delta blocks.
+    # They are protocol data, not user-visible assistant text.
+    "input_json_delta",
+    "thinking_delta",
+    "signature_delta",
 }
 
 

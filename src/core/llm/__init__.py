@@ -6,14 +6,14 @@ from .contracts import (
     ModelConfiguration,
     ModelProvider,
 )
-from .provider import OpenAICompatibleProvider
+from .provider import AnthropicProvider
 from .resilience import ResilientModelProvider
 
 __all__ = [
+    "AnthropicProvider",
     "LlmConfigurationStatus",
     "LlmPurpose",
     "ModelConfiguration",
     "ModelProvider",
-    "OpenAICompatibleProvider",
     "ResilientModelProvider",
 ]

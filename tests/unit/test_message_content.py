@@ -27,6 +27,23 @@ class MessageContentTextTest(unittest.TestCase):
 
         self.assertEqual("", message_content_text(content))
 
+    def test_anthropic_tool_argument_deltas_are_not_display_text(self):
+        content = [
+            {"type": "text", "text": "checking"},
+            {"type": "input_json_delta", "partial_json": '{"city": "Kunming"}'},
+        ]
+
+        self.assertEqual("checking", message_content_text(content))
+
+    def test_anthropic_non_text_deltas_are_ignored(self):
+        content = [
+            {"type": "input_json_delta", "partial_json": '{"city": "Kunming"}'},
+            {"type": "thinking_delta", "thinking": "hidden"},
+            {"type": "signature_delta", "signature": "hidden"},
+        ]
+
+        self.assertEqual("", message_content_text(content))
+
     def test_unknown_blocks_fall_back_to_json(self):
         self.assertEqual(
             '{"type": "custom", "value": 3}',

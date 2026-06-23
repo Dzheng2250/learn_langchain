@@ -5,6 +5,8 @@ from uuid import UUID
 
 from langchain_core.messages import messages_from_dict, messages_to_dict
 
+from src.core.common.content import message_content_text
+
 from src.config.settings import (
     MEMORY_BOOTSTRAP_LIMIT,
     MEMORY_CONTEXT_CHAR_LIMIT,
@@ -183,6 +185,5 @@ class PostgresMemoryStore:
         }.get(message.__class__.__name__, "unknown")
 
     def _message_content(self, message) -> str:
-        """Return searchable text while preserving structured content as JSON."""
-        content = getattr(message, "content", "")
-        return content if isinstance(content, str) else json.dumps(content, ensure_ascii=False, default=str)
+        """Return searchable user-visible text for a message."""
+        return message_content_text(message)

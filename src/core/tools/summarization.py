@@ -6,6 +6,7 @@ from pathlib import Path
 from langchain_core.messages import HumanMessage, SystemMessage
 from langchain_core.tools import tool
 
+from src.core.common.content import message_content_text
 from src.config.settings import (
     LARGE_FILE_CHUNK_LINES,
     LARGE_FILE_MAP_WORKERS,
@@ -58,7 +59,7 @@ def create_summarize_large_file(root: Path, model_provider: ModelProvider):
                     HumanMessage(content=f"Question: {question}\nFile: {path}\nLines {start}-{end}:\n{content}"),
                 ]
             )
-            return f"Lines {start}-{end}:\n{response.content}"
+            return f"Lines {start}-{end}:\n{message_content_text(response)}"
 
         with ThreadPoolExecutor(max_workers=min(LARGE_FILE_MAP_WORKERS, len(chunks))) as executor:
             notes = list(executor.map(summarize, chunks))
@@ -69,6 +70,6 @@ def create_summarize_large_file(root: Path, model_provider: ModelProvider):
                 HumanMessage(content=f"Question: {question}\nFile: {path}\n\n{notes_text}"),
             ]
         )
-        return str(response.content)[:LARGE_FILE_SUMMARY_LIMIT]
+        return message_content_text(response)[:LARGE_FILE_SUMMARY_LIMIT]
 
     return summarize_large_file

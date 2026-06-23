@@ -1,5 +1,7 @@
 """Deterministic policy for deciding when memory extraction is worthwhile."""
 
+from src.core.common.content import message_content_text
+
 from src.config.settings import (
     MEMORY_EXTRACTION_ENABLED,
     MEMORY_EXTRACTION_HINT_KEYWORDS,
@@ -51,6 +53,5 @@ def turn_message_chars(turn_messages: list) -> int:
     """Return the approximate character count of one completed turn."""
     total_chars = 0
     for message in turn_messages:
-        content = getattr(message, "content", "")
-        total_chars += len(content) if isinstance(content, str) else len(repr(content))
+        total_chars += len(message_content_text(message))
     return total_chars

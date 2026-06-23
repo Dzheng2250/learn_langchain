@@ -1,5 +1,7 @@
 """Summary trigger policy for compact Session context."""
 
+from src.core.common.content import message_content_text
+
 
 class SummaryPolicy:
     """Decide when recent conversation state should be summarized."""
@@ -32,10 +34,5 @@ class SummaryPolicy:
     def _message_chars(messages: list) -> int:
         total_chars = 0
         for message in messages:
-            content = getattr(message, "content", "")
-            if isinstance(content, str):
-                total_chars += len(content)
-            else:
-                total_chars += len(repr(content))
+            total_chars += len(message_content_text(message))
         return total_chars
-

@@ -164,11 +164,11 @@ memory_extraction
 file_summary
 ```
 
-当前实现为 `OpenAICompatibleProvider`，底层使用 `ChatOpenAI` 连接兼容接口。
+当前默认实现为 `AnthropicProvider`，底层使用 `ChatAnthropic` 连接 Anthropic message/tool 格式。`OpenAICompatibleProvider` 仅保留为 legacy adapter。
 
 ### 无 LLM 配置诊断路径
 
-`OpenAICompatibleProvider.configuration_status()` 只检查本地配置，不发起网络请求。
+`AnthropicProvider.configuration_status()` 只检查本地配置，不发起网络请求。
 `AgentTurnService` 在创建 Workspace Runtime 和 LangGraph 前检查该状态：
 
 ```text
@@ -192,7 +192,7 @@ agent.chat
 
 维护规则：
 
-1. 业务模块不得直接实例化 `ChatOpenAI`。
+1. 业务模块不得直接实例化 `ChatAnthropic`、Anthropic SDK、`ChatOpenAI` 或 OpenAI SDK。
 2. 新增 LLM 工作负载时必须增加或复用 `LlmPurpose`。
 3. 模型重试、超时、供应商切换和用量统计应在 Provider 层实现。
 4. 测试通过注入 Fake Provider，不能依赖真实模型。

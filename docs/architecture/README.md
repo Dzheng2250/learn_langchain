@@ -59,6 +59,7 @@
 - [可恢复执行与预算控制](/docs/architecture/resumable-execution.md)
 - [私有任务规划](/docs/architecture/private-task-planning.md)
 - [Provider 错误处理](/docs/architecture/provider-error-handling.md)
+- [LLM Provider 边界](/docs/architecture/llm-provider-boundary.md)
 
 边界要求：
 

@@ -52,7 +52,7 @@ from src.core.errors.provider_failure import ProviderFailureService
 from src.core.execution import ExecutionLifecycleService
 from src.core.finalization import CompletedTurnCommitter, TurnFinalizer
 from src.core.handlers import AgentHandlers, CoreHandlers
-from src.core.llm.provider import OpenAICompatibleProvider
+from src.core.llm.provider import AnthropicProvider
 from src.core.llm.resilience import ResilientModelProvider
 from src.core.maintenance import (
     ExecutionRecoveryCoordinator,
@@ -105,7 +105,7 @@ class CoreContainer(containers.DeclarativeContainer):
 
     provider_error_handler = providers.Singleton(ProviderErrorHandler)
     llm_retry_settings = providers.Singleton(LlmRetrySettings.load)
-    base_model_provider = providers.Singleton(OpenAICompatibleProvider)
+    base_model_provider = providers.Singleton(AnthropicProvider)
     traced_model_provider = providers.Singleton(
         TracingModelProvider,
         inner=base_model_provider,

@@ -3,6 +3,7 @@
 import json
 import re
 
+from src.core.common.content import message_content_text
 from src.core.common.debug import debug_print, format_message
 from src.config.settings import MEMORY_EXTRACT_SOURCE_CHAR_LIMIT
 from src.core.telemetry import event_span
@@ -43,7 +44,7 @@ class MemoryCandidateExtractor:
         ):
             response = llm.invoke(build_memory_extraction_messages(source))
 
-        content = str(response.content).strip()
+        content = message_content_text(response).strip()
         try:
             parsed = json.loads(self._strip_json_fence(content))
         except json.JSONDecodeError:

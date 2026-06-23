@@ -43,7 +43,7 @@ class ProviderErrorParserRegistry:
         adapters: Iterable[ProviderErrorAdapter] | None = None,
     ) -> None:
         self.parsers = tuple(
-            (GenericProviderErrorParser(),) if parsers is None else parsers
+            (AnthropicErrorParser(),) if parsers is None else parsers
         )
         self.adapters = tuple(adapters or ())
 
@@ -101,7 +101,7 @@ class GenericProviderErrorParser:
             source = f"{source}+{retry_source}"
         return ProviderErrorEnvelope(
             category=category,
-            provider="openai_compatible" if status is not None or body else "unknown",
+            provider="provider_http" if status is not None or body else "unknown",
             provider_code=code,
             http_status=status,
             request_id=request_id,
@@ -112,8 +112,37 @@ class GenericProviderErrorParser:
         )
 
 
-class OpenAICompatibleErrorParser(GenericProviderErrorParser):
-    """Compatibility name for the generic OpenAI-compatible parser."""
+class AnthropicErrorParser(GenericProviderErrorParser):
+    """Classify Anthropic Messages API errors into provider-neutral categories."""
+
+    _ANTHROPIC_CODES = {
+        "authentication_error": ErrorCategory.AUTHENTICATION,
+        "permission_error": ErrorCategory.AUTHENTICATION,
+        "not_found_error": ErrorCategory.MODEL_NOT_FOUND,
+        "invalid_request_error": ErrorCategory.INVALID_REQUEST,
+        "rate_limit_error": ErrorCategory.RATE_LIMITED,
+        "overloaded_error": ErrorCategory.SERVICE_OVERLOADED,
+    }
+
+    def parse(self, exc: Exception) -> ProviderErrorEnvelope:
+        envelope = super().parse(exc)
+        code = (envelope.provider_code or "").casefold()
+        category = self._ANTHROPIC_CODES.get(code)
+        if category is None:
+            provider = "anthropic" if envelope.provider != "unknown" else envelope.provider
+            return replace(envelope, provider=provider)
+        retryable = category in {
+            ErrorCategory.RATE_LIMITED,
+            ErrorCategory.SERVICE_OVERLOADED,
+            ErrorCategory.SERVICE_UNAVAILABLE,
+        }
+        return replace(
+            envelope,
+            category=category,
+            provider="anthropic",
+            retryable_hint=retryable,
+            source="anthropic_error_type",
+        )
 
 
 class AliyunErrorParser:

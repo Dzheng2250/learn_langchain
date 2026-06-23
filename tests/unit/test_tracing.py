@@ -2,6 +2,7 @@ import json
 import threading
 import time
 import unittest
+from types import SimpleNamespace
 from contextvars import copy_context
 from datetime import date, timedelta
 from unittest.mock import patch
@@ -22,7 +23,7 @@ from src.core.tracing import (
     reset_trace_context,
 )
 from src.core.tracing.sanitization import MAX_DEPTH_MARKER, sanitize_trace_data
-from src.core.tracing.llm import LlmTraceCallback
+from src.core.tracing.llm import LlmTraceCallback, _response_summary
 
 
 class MemoryWriter:
@@ -201,9 +202,58 @@ class TracingTest(unittest.TestCase):
             value = json.loads(path.read_text(encoding="utf-8").strip())
             self.assertEqual("agent.test", value["kind"])
 
+
+    def test_llm_response_summary_uses_anthropic_response_metadata_usage(self):
+        message = SimpleNamespace(
+            response_metadata={
+                "stop_reason": "end_turn",
+                "usage": {
+                    "input_tokens": 354,
+                    "output_tokens": 70,
+                },
+            },
+            usage_metadata={},
+        )
+        response = SimpleNamespace(
+            llm_output={},
+            generations=[[SimpleNamespace(message=message)]],
+        )
+
+        usage, stop_reason = _response_summary(response)
+
+        self.assertEqual(354, usage["input_tokens"])
+        self.assertEqual(70, usage["output_tokens"])
+        self.assertEqual(424, usage["total_tokens"])
+        self.assertEqual("end_turn", stop_reason)
+
+    def test_llm_response_summary_prefers_usage_metadata(self):
+        message = SimpleNamespace(
+            response_metadata={
+                "usage": {
+                    "input_tokens": 11,
+                    "output_tokens": 7,
+                },
+            },
+            usage_metadata={
+                "input_tokens": 21,
+                "output_tokens": 13,
+                "total_tokens": 34,
+            },
+        )
+        response = SimpleNamespace(
+            llm_output={},
+            generations=[[SimpleNamespace(message=message)]],
+        )
+
+        usage, _stop_reason = _response_summary(response)
+
+        self.assertEqual(21, usage["input_tokens"])
+        self.assertEqual(13, usage["output_tokens"])
+        self.assertEqual(34, usage["total_tokens"])
+
     def test_llm_callback_records_summary_without_message_content(self):
         class Message:
-            response_metadata = {"finish_reason": "stop"}
+            response_metadata = {"stop_reason": "end_turn"}
             usage_metadata = {"input_tokens": 10, "output_tokens": 4, "total_tokens": 14}
 
         class Generation:
@@ -230,7 +280,7 @@ class TracingTest(unittest.TestCase):
         )
         self.assertEqual(2, writer.records[0].data["message_count"])
         self.assertEqual(10, writer.records[1].data["input_tokens"])
-        self.assertEqual("stop", writer.records[1].data["stop_reason"])
+        self.assertEqual("end_turn", writer.records[1].data["stop_reason"])
         self.assertEqual(writer.records[0].trace_id, writer.records[1].trace_id)
 
 

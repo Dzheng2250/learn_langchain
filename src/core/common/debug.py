@@ -1,6 +1,7 @@
 """Optional bounded debug rendering for model messages and internal values."""
 
 from src.config.settings import DEBUG_AGENT
+from src.core.common.content import message_content_text
 
 
 def is_debug_enabled() -> bool:
@@ -9,7 +10,7 @@ def is_debug_enabled() -> bool:
 
 
 def debug_print(title: str, value) -> None:
-    """打印 Agent 调试信息；设置 DEBUG_AGENT=0 可以关闭。"""
+    """Print Agent debug information when DEBUG_AGENT is enabled."""
     if not is_debug_enabled():
         return
     print(f"\n\n========== {title} ==========")
@@ -18,10 +19,10 @@ def debug_print(title: str, value) -> None:
 
 
 def format_message(message) -> str:
-    """把 LangChain 消息对象格式化成便于观察的文本。"""
+    """Format a LangChain message into bounded human-readable debug text."""
     lines = [
         f"type: {message.__class__.__name__}",
-        f"content: {repr(message.content)}",
+        f"content: {message_content_text(message)!r}",
     ]
 
     tool_calls = getattr(message, "tool_calls", None)
@@ -48,7 +49,7 @@ def format_message(message) -> str:
 
 
 def format_messages(messages) -> str:
-    """格式化完整消息列表。"""
+    """Format a complete message list for debug output."""
     return "\n\n".join(
         f"[{index}]\n{format_message(message)}"
         for index, message in enumerate(messages, start=1)

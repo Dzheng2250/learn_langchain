@@ -28,7 +28,7 @@ flowchart LR
 
     Core --> Agent[AgentTurnService]
     Agent --> Runtime[WorkspaceRuntime]
-    Runtime --> LLM[OpenAI-compatible LLM]
+    Runtime --> LLM[Anthropic LLM / legacy provider]
     Runtime --> Tools[Tool Registry]
     Runtime --> Graph[LangGraph]
 

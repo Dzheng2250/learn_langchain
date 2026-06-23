@@ -21,7 +21,7 @@ from src.core.telemetry import (
     install_event_bus,
     reset_context,
 )
-from src.core.llm.provider import LlmPurpose, OpenAICompatibleProvider
+from src.core.llm.provider import AnthropicProvider, LlmPurpose
 from src.core.memory.extractor import MemoryCandidateExtractor
 from src.core.streaming.events import stream_graph_events
 from src.core.tools.catalog import ToolAudience, ToolRegistry, ToolRisk, ToolSpec
@@ -89,16 +89,15 @@ class AgentExecutionArchitectureTest(unittest.TestCase):
             [purpose for purpose, _kwargs in provider.calls],
         )
 
-    def test_openai_compatible_provider_owns_vendor_model_construction(self):
+    def test_anthropic_provider_owns_default_vendor_model_construction(self):
         bound = object()
         model = Mock()
         model.bind_tools.return_value = bound
-        with patch("src.core.llm.provider.ChatOpenAI", return_value=model) as constructor:
-            result = OpenAICompatibleProvider(
+        with patch("src.core.llm.provider.ChatAnthropic", return_value=model) as constructor:
+            result = AnthropicProvider(
                 model="test-model",
                 api_key="key",
                 base_url="https://example.test",
-                stream_usage_enabled=True,
             ).create_chat_model(
                 LlmPurpose.PARENT_AGENT,
                 streaming=True,
@@ -108,45 +107,32 @@ class AgentExecutionArchitectureTest(unittest.TestCase):
 
         self.assertIs(bound, result)
         constructor.assert_called_once()
+        self.assertEqual("test-model", constructor.call_args.kwargs["model"])
+        self.assertEqual("key", constructor.call_args.kwargs["api_key"])
+        self.assertEqual("https://example.test", constructor.call_args.kwargs["base_url"])
+        self.assertTrue(constructor.call_args.kwargs["streaming"])
+        self.assertEqual(0.5, constructor.call_args.kwargs["temperature"])
         self.assertEqual(
             {"purpose": LlmPurpose.PARENT_AGENT.value},
             constructor.call_args.kwargs["metadata"],
         )
         self.assertEqual(0, constructor.call_args.kwargs["max_retries"])
-        self.assertTrue(constructor.call_args.kwargs["stream_usage"])
         model.bind_tools.assert_called_once_with(["tool"])
 
-    def test_non_streaming_model_does_not_request_stream_usage(self):
-        with patch("src.core.llm.provider.ChatOpenAI") as constructor:
-            OpenAICompatibleProvider(
+    def test_anthropic_provider_does_not_bind_tools_when_absent(self):
+        model = Mock()
+        with patch("src.core.llm.provider.ChatAnthropic", return_value=model) as constructor:
+            result = AnthropicProvider(
                 model="test-model",
                 api_key="key",
-                stream_usage_enabled=True,
             ).create_chat_model(LlmPurpose.MEMORY_EXTRACTION, streaming=False)
 
-        self.assertFalse(constructor.call_args.kwargs["stream_usage"])
-
-    def test_parent_graph_passes_runnable_config_to_model_call(self):
-        provider = RecordingProvider()
-        graph = create_parent_graph([], "", provider)
-
-        list(stream_graph_events(graph, [HumanMessage(content="hello")]))
-
-        self.assertTrue(provider.models)
-        self.assertIsNotNone(provider.models[0].received_configs[0])
-
-    def test_stream_usage_can_be_disabled_for_incompatible_provider(self):
-        with patch("src.core.llm.provider.ChatOpenAI") as constructor:
-            OpenAICompatibleProvider(
-                model="test-model",
-                api_key="key",
-                stream_usage_enabled=False,
-            ).create_chat_model(LlmPurpose.PARENT_AGENT, streaming=True)
-
-        self.assertFalse(constructor.call_args.kwargs["stream_usage"])
+        self.assertIs(model, result)
+        self.assertFalse(constructor.call_args.kwargs["streaming"])
+        model.bind_tools.assert_not_called()
 
     def test_provider_reports_missing_api_key_without_network_request(self):
-        status = OpenAICompatibleProvider(
+        status = AnthropicProvider(
             model="test-model",
             api_key="",
             base_url="https://example.test",
@@ -156,7 +142,7 @@ class AgentExecutionArchitectureTest(unittest.TestCase):
         self.assertEqual(("LEARN_AGENT_LLM_API_KEY",), status.missing)
 
     def test_provider_reports_configured_with_generic_api_key(self):
-        status = OpenAICompatibleProvider(
+        status = AnthropicProvider(
             model="test-model",
             api_key="configured",
         ).configuration_status()
@@ -165,13 +151,22 @@ class AgentExecutionArchitectureTest(unittest.TestCase):
         self.assertEqual((), status.missing)
 
     def test_provider_reports_missing_model_without_using_vendor_default(self):
-        status = OpenAICompatibleProvider(
+        status = AnthropicProvider(
             model="",
             api_key="configured",
         ).configuration_status()
 
         self.assertFalse(status.configured)
         self.assertEqual(("LEARN_AGENT_MODEL",), status.missing)
+
+    def test_parent_graph_passes_runnable_config_to_model_call(self):
+        provider = RecordingProvider()
+        graph = create_parent_graph([], "", provider)
+
+        list(stream_graph_events(graph, [HumanMessage(content="hello")]))
+
+        self.assertTrue(provider.models)
+        self.assertIsNotNone(provider.models[0].received_configs[0])
 
     def test_tool_registry_derives_audience_specific_views(self):
         registry = ToolRegistry()

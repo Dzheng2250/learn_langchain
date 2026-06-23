@@ -56,7 +56,7 @@
 
 ## 重试策略
 
-Core 显式依赖 `tenacity`，不手写复杂退避循环。`ChatOpenAI.max_retries` 被设置为 `0`，避免 SDK 隐式重试和 Core 重试叠加。
+Core 显式依赖 `tenacity`，不手写复杂退避循环。`ChatAnthropic.max_retries` 被设置为 `0`，legacy `ChatOpenAI.max_retries` 也保持为 `0`，避免 SDK 隐式重试和 Core 重试叠加。
 
 默认预算：
 

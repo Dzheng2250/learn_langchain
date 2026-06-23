@@ -24,7 +24,7 @@
    当前只接收三个已经组装好的协作者。生产装配唯一位于 `CoreContainer`；集成测试的
    自定义装配位于 `tests/support/agent_services.py`，不会回流到生产业务层。
    与 Agent 直接协作的 parent graph、Workspace runtime、subagent、上下文摘要、记忆提取和
-   文件摘要也已移除 `OpenAICompatibleProvider` fallback；`ModelProvider`、`ModelConfiguration`
+   文件摘要也已切换到默认 `AnthropicProvider`；`ModelProvider`、`ModelConfiguration`
    和 `LlmPurpose` 已移动到 `llm/contracts.py`。业务模块只导入契约，具体 provider 只在组合根创建。
 
    Agent Core 的请求与循环边界也已收紧：`AgentRequestStreamService` 通过 `AgentSessionStore`

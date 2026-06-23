@@ -22,7 +22,7 @@ from src.core.diagnostics import DiagnosticTurnService
 from src.core.errors import ProviderErrorHandler
 from src.core.errors.provider_failure import ProviderFailureService
 from src.core.execution import ExecutionLifecycleService
-from src.core.llm.provider import OpenAICompatibleProvider
+from src.core.llm.provider import AnthropicProvider
 from src.core.workspace.session_adapter import RepositoryAgentSessionStore
 from tests.support.model_providers import UnusedModelProvider
 
@@ -52,7 +52,7 @@ def build_agent_turn_service(
 ) -> AgentTurnService:
     """Assemble the full Agent graph for integration tests with selective fakes."""
     context_manager = AgentContextManager(UnusedModelProvider())
-    model_configuration = model_configuration or OpenAICompatibleProvider()
+    model_configuration = model_configuration or AnthropicProvider()
     lock_registry = lock_registry or SessionLockRegistry()
     run_limits = run_limits or RunLimits()
     turn_worker = turn_worker or TurnWorkerExecutor(max_workers=max_concurrent_turns)

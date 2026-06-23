@@ -161,7 +161,8 @@ class InterfaceBoundaryTest(unittest.TestCase):
         for path in core_root.rglob("*.py"):
             if path in allowed:
                 continue
-            if "OpenAICompatibleProvider(" in path.read_text(encoding="utf-8"):
+            source = path.read_text(encoding="utf-8")
+            if "AnthropicProvider(" in source:
                 violations.append(str(path.relative_to(REPOSITORY_ROOT)))
 
         self.assertEqual([], violations)
@@ -175,11 +176,35 @@ class InterfaceBoundaryTest(unittest.TestCase):
                     continue
                 if node.module != "src.core.llm.provider":
                     continue
-                if any(alias.name == "OpenAICompatibleProvider" for alias in node.names):
+                if any(alias.name == "AnthropicProvider" for alias in node.names):
                     violations.append(str(path.relative_to(REPOSITORY_ROOT)))
 
         self.assertEqual([], violations)
 
+
+    def test_business_modules_do_not_import_vendor_chat_models(self):
+        violations = []
+        core_root = REPOSITORY_ROOT / "src" / "core"
+        allowed = {
+            core_root / "llm" / "provider.py",
+        }
+        forbidden = {"langchain_anthropic", "anthropic", "langchain_openai", "openai"}
+        for path in core_root.rglob("*.py"):
+            if path in allowed:
+                continue
+            tree = ast.parse(path.read_text(encoding="utf-8-sig"))
+            for node in ast.walk(tree):
+                if isinstance(node, ast.Import):
+                    names = [alias.name for alias in node.names]
+                elif isinstance(node, ast.ImportFrom):
+                    names = [node.module or ""]
+                else:
+                    continue
+                for name in names:
+                    if any(name == item or name.startswith(f"{item}.") for item in forbidden):
+                        violations.append(f"{path.relative_to(REPOSITORY_ROOT)} imports {name}")
+
+        self.assertEqual([], violations)
     def test_application_layer_does_not_import_dependency_injector(self):
         violations = []
         for root in APPLICATION_PATHS:

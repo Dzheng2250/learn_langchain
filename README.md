@@ -35,7 +35,7 @@
 
 - Python 3.11 或更高版本。
 - Docker 与 Docker Compose。仅使用容器命令沙箱、PostgreSQL 可选功能或数据库迁移时需要。
-- OpenAI 兼容模型 API。仅验证基础设施时可以暂不配置。
+- Anthropic API。仅验证基础设施时可以暂不配置。
 
 ### 1. 安装项目
 
@@ -55,7 +55,7 @@ python -c "from shutil import copyfile; copyfile('.env.example', '.env')"
 
 ```dotenv
 LEARN_AGENT_LLM_API_KEY=your-api-key
-LEARN_AGENT_LLM_BASE_URL=https://your-openai-compatible-endpoint/v1
+# LEARN_AGENT_LLM_BASE_URL=https://api.anthropic.com
 ```
 
 未配置 API 密钥时，仍可启动 Core 并发起会话。请求会完整经过 CLI、JSON-RPC、Workspace、
@@ -132,8 +132,8 @@ Core 首次启动时会自动创建本地 SQLite Schema。若启用了 PostgreSQ
 
 | 变量 | 默认值 | 用途 |
 |---|---|---|
-| `LEARN_AGENT_LLM_API_KEY` | 空 | OpenAI 兼容模型 API 密钥 |
-| `LEARN_AGENT_LLM_BASE_URL` | 空 | OpenAI 兼容 API 地址；留空时使用客户端默认地址 |
+| `LEARN_AGENT_LLM_API_KEY` | 空 | Anthropic API 密钥 |
+| `LEARN_AGENT_LLM_BASE_URL` | 空 | Anthropic API 地址；留空时使用 `ChatAnthropic` 默认地址 |
 | `LEARN_AGENT_MODEL` | `required (no default)` | 模型名称 |
 | `LEARN_AGENT_DB_HOST` | `127.0.0.1` | PostgreSQL 地址 |
 | `LEARN_AGENT_DB_PORT` | `5432` | PostgreSQL 端口 |
@@ -150,7 +150,7 @@ Core 首次启动时会自动创建本地 SQLite Schema。若启用了 PostgreSQ
 全部参数的默认值、单位、调整影响和风险见[配置参数参考](/docs/reference/configuration-reference.md)。
 完整部署方式、已有 Docker 数据目录复用、故障排查和安全边界见[部署指南](/docs/operations/deployment.md)。
 
-旧变量 `ALIYUN_API_KEY` 和 `ALIYUN_BASE_URL` 暂时保留兼容，但已弃用；通用变量优先。
+旧变量 `ALIYUN_API_KEY` 和 `ALIYUN_BASE_URL` 已废弃，不属于默认 Anthropic 运行路径；请使用通用变量。
 
 ## Workspace 隔离
 

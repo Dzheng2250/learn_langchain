@@ -9,6 +9,7 @@ from uuid import uuid4
 from langchain_core.messages import messages_from_dict, messages_to_dict
 
 from src.config.settings import RECENT_MESSAGE_LIMIT
+from src.core.common.content import message_content_text
 from src.core.telemetry import emit_event
 
 if TYPE_CHECKING:
@@ -177,9 +178,4 @@ class SQLiteConversationHistoryStore:
         return role
 
     def _message_content(self, message) -> str:
-        content = getattr(message, "content", "")
-        return (
-            content
-            if isinstance(content, str)
-            else json.dumps(content, ensure_ascii=False, default=str)
-        )
+        return message_content_text(message)

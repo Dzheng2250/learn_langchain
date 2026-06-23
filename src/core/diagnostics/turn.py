@@ -67,11 +67,12 @@ class DiagnosticTurnService:
                 level="warning",
             )
             response = (
-                "Core 基础服务运行正常：CLI 与 daemon 已成功通信，Workspace 和 Session 已解析，"
-                "数据库可正常创建并读取会话。\n\n"
-                "当前未配置模型 API 密钥，因此本次请求不会写入对话历史、递增 turn_index，"
-                "也不会调用 LLM 或工具。请设置 `LEARN_AGENT_LLM_API_KEY`；使用 OpenAI 兼容服务时可同时设置 "
-                "`LEARN_AGENT_LLM_BASE_URL`，然后重新初始化用户配置并重启 Core。"
+                "Core infrastructure is running normally: CLI and daemon can communicate, "
+                "the workspace and session resolve, and local state can be read.\n\n"
+                "The model API key is not configured, so this diagnostic request did not "
+                "write conversation history, increment turn_index, or call the LLM/tools. "
+                "Set `LEARN_AGENT_LLM_API_KEY`; if the provider requires a custom endpoint, "
+                "also set `LEARN_AGENT_LLM_BASE_URL`, then reinitialize user config and restart Core."
             )
             yield {"event": "token", "data": {"content": response}}
             emit_event(

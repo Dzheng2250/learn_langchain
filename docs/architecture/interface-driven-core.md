@@ -81,7 +81,7 @@ Application Service
 | `StateUnitOfWork` | 把一次成功 Turn 的多项状态修改放进同一个原子提交 |
 | `StateUnitOfWorkFactory` | 为具体后端创建 Unit of Work |
 | `StateInitializer` | 在 daemon 启动时初始化权威状态 schema，不暴露完整 Store |
-| `ModelProvider / ModelConfiguration` | 定义在 `llm/contracts.py` 的供应商无关模型能力；具体 `ChatOpenAI` 构造留在 adapter 实现 |
+| `ModelProvider / ModelConfiguration` | 定义在 `llm/contracts.py` 的供应商无关模型能力；具体 `ChatAnthropic` 或 legacy `ChatOpenAI` 构造留在 adapter 实现 |
 
 旧的 `src/core/state/contracts.py` 已停止定义业务端口，仅保留弃用说明。前台、后台维护和 checkpoint 能力统一从 `src/core/ports/` 导入，避免项目同时维护两套接口命名空间。
 
@@ -214,7 +214,7 @@ Agent 执行链路也遵循同一原则：`AgentTurnService` 只保留面向 RPC
 maintenance、runtime graph 和 worker 的依赖组装全部由 `CoreContainer` 完成。
 `create_parent_graph()`、Workspace runtime、子 Agent、文件摘要、上下文摘要和记忆提取
 都要求显式传入 `ModelProvider`，并只从 `src/core/llm/contracts.py` 导入协议。
-`ChatOpenAI` 与 `OpenAICompatibleProvider` 留在 `llm/provider.py`，具体 provider 只允许由
+`ChatAnthropic`、`AnthropicProvider`、legacy `ChatOpenAI` 与 `OpenAICompatibleProvider` 留在 `llm/provider.py`，具体 provider 只允许由
 `CoreContainer` 创建，业务模块不再导入实现模块或提供隐式 fallback，
 `AgentRequestStreamService` 通过 `AgentSessionStore` 获取 Workspace/Session 身份，并通过
 `DiagnosticTurnStreamer`、`ExecutionLifecycleController`、`RuntimeGraphProvider` 和

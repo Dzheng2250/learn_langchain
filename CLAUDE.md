@@ -51,7 +51,7 @@ src/
     state/       SQLite schema, migrations, repositories (execution, workspace, checkpoint)
     workspace/   Workspace identity, runtime factory/cache
     tools/       Tool registry, implementations, ObservedToolNode wrapper
-    llm/         ModelProvider (OpenAI-compatible), model configuration
+    llm/         ModelProvider (Anthropic default, OpenAI-compatible legacy), model configuration
     context/     Short-term context management
     memory/      Message archival and long-term memory extraction
     database/    Optional PostgreSQL connection and legacy migration
@@ -127,8 +127,8 @@ Set `.env` variables (see `.env.example`):
 
 | Variable | Purpose |
 |---|---|
-| `LEARN_AGENT_LLM_API_KEY` | OpenAI-compatible API key |
-| `LEARN_AGENT_LLM_BASE_URL` | API base URL |
+| `LEARN_AGENT_LLM_API_KEY` | Anthropic API key |
+| `LEARN_AGENT_LLM_BASE_URL` | Optional Anthropic-compatible API base URL |
 | `LEARN_AGENT_MODEL` | Model name (required; no default) |
 | `LEARN_AGENT_CORE_PORT` | Core daemon port (default: 18765) |
 

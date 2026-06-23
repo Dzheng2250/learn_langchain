@@ -91,6 +91,22 @@ class SQLiteStateAdapterTest(unittest.TestCase):
         self.assertEqual(3, len(message_ids))
         self.assertEqual(len(set(message_ids)), len(message_ids))
 
+
+    def test_conversation_history_content_projection_extracts_text_blocks(self):
+        self.archive_and_save(
+            1,
+            [AIMessage(content=[{"type": "text", "text": "block answer"}])],
+            AgentContextState(),
+        )
+
+        with self.database.connect() as conn:
+            row = conn.execute(
+                "SELECT content, raw FROM messages WHERE session_id=?",
+                (str(self.session.session_id),),
+            ).fetchone()
+
+        self.assertEqual("block answer", row["content"])
+        self.assertIn("block answer", row["raw"])
     def test_conversation_append_turn_requires_unit_of_work_transaction(self):
         completed = CompletedTurn(
             session=self.session,

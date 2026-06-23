@@ -1,8 +1,12 @@
-"""OpenAI-compatible model provider implementation."""
+"""Concrete LangChain model provider implementations."""
 
-from langchain_openai import ChatOpenAI
+from langchain_anthropic import ChatAnthropic
 
-from src.config.settings import LLM_API_KEY, LLM_BASE_URL, LLM_STREAM_USAGE_ENABLED, MODEL
+from src.config.settings import (
+    LLM_API_KEY,
+    LLM_BASE_URL,
+    MODEL,
+)
 from src.core.llm.contracts import (
     LlmConfigurationStatus,
     LlmPurpose,
@@ -11,8 +15,8 @@ from src.core.llm.contracts import (
 )
 
 
-class OpenAICompatibleProvider:
-    """Build ChatOpenAI clients for an OpenAI-compatible endpoint."""
+class AnthropicProvider:
+    """Build ChatAnthropic clients for the default Anthropic Messages API."""
 
     def __init__(
         self,
@@ -20,12 +24,10 @@ class OpenAICompatibleProvider:
         model: str = MODEL,
         api_key: str | None = None,
         base_url: str | None = None,
-        stream_usage_enabled: bool = LLM_STREAM_USAGE_ENABLED,
     ) -> None:
         self.model = model
         self.api_key = api_key if api_key is not None else LLM_API_KEY
         self.base_url = base_url if base_url is not None else LLM_BASE_URL or None
-        self.stream_usage_enabled = stream_usage_enabled
 
     def configuration_status(self) -> LlmConfigurationStatus:
         """Check required local configuration without contacting the provider."""
@@ -47,19 +49,18 @@ class OpenAICompatibleProvider:
         temperature: float = 0,
         tools: list | None = None,
     ):
-        """Create a ChatOpenAI client and optionally bind the supplied tools."""
+        """Create a ChatAnthropic client and optionally bind the supplied tools."""
         status = self.configuration_status()
         if not status.configured:
             raise RuntimeError(
                 "LLM configuration is incomplete: " + ", ".join(status.missing)
             )
-        model = ChatOpenAI(
+        model = ChatAnthropic(
             model=self.model,
             api_key=self.api_key,
             base_url=self.base_url,
             temperature=temperature,
             streaming=streaming,
-            stream_usage=streaming and self.stream_usage_enabled,
             metadata={"purpose": purpose.value},
             max_retries=0,
         )
@@ -67,9 +68,9 @@ class OpenAICompatibleProvider:
 
 
 __all__ = [
+    "AnthropicProvider",
     "LlmConfigurationStatus",
     "LlmPurpose",
     "ModelConfiguration",
     "ModelProvider",
-    "OpenAICompatibleProvider",
 ]

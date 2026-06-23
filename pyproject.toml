@@ -9,7 +9,7 @@ description = "A local LangChain and LangGraph learning agent"
 requires-python = ">=3.11"
 dependencies = [
     "langchain-core",
-    "langchain-openai",
+    "langchain-anthropic",
     "langgraph",
     "langgraph-checkpoint-sqlite",
     "pydantic>=2",
