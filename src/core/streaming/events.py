@@ -4,10 +4,12 @@ from langchain_core.messages import AIMessageChunk
 from langchain_core.messages import HumanMessage
 from langgraph.errors import GraphRecursionError
 
+from src.core.common.content import message_content_text
+
 from src.core.agent.models import AgentRunContext, RunLimits, StopReason
 from src.core.errors import ProviderErrorHandler
 from src.core.streaming.failures import graph_failure_event
-from src.core.streaming.message_events import step_events_from_message
+from src.core.streaming.message_events import step_events_from_message, tool_calls_from_message
 from src.core.telemetry import emit_event
 from src.core.agent.budget import ToolBudgetExceeded
 from src.core.llm.retry_context import (
@@ -61,13 +63,13 @@ def stream_graph_events(
         for stream_mode, chunk in app.stream(inputs, **stream_options):
             if stream_mode == "messages":
                 message_chunk, _metadata = chunk
-                if isinstance(message_chunk, AIMessageChunk) and message_chunk.content:
+                if isinstance(message_chunk, AIMessageChunk) and message_content_text(message_chunk):
                     mark_attempt_output_emitted()
                     attempt_id = current_attempt_id()
                     yield {
                         "event": "token",
                         "data": {
-                            "content": message_chunk.content,
+                            "content": message_content_text(message_chunk),
                             **({"attempt_id": attempt_id} if attempt_id else {}),
                         },
                     }
@@ -79,7 +81,7 @@ def stream_graph_events(
                 seen_message_count = len(state_messages)
 
                 for message in new_messages:
-                    tool_calls = getattr(message, "tool_calls", None) or []
+                    tool_calls = tool_calls_from_message(message)
                     tool_call_count += len(tool_calls)
                     if tool_call_count > limits.max_tool_calls:
                         emit_event(

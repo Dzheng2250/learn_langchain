@@ -1,5 +1,7 @@
 """Convert completed LangGraph messages into stable step events."""
 
+from src.core.common.content import message_content_text
+
 TOOL_RESULT_PREVIEW_LIMIT = 600
 PLANNING_TOOL_PREVIEW_LIMIT = 8000
 DELEGATION_RESULT_PREVIEW_LIMIT = 6000
@@ -8,10 +10,7 @@ VERBOSE_RESULT_TOOLS = {"task_plan", "task_update", "task_list", "task_get"}
 
 def message_text(message) -> str:
     """Return message content as text for event payloads."""
-    content = getattr(message, "content", "")
-    if isinstance(content, str):
-        return content
-    return repr(content)
+    return message_content_text(message)
 
 
 def message_preview(message, limit: int = 600) -> str:
@@ -32,11 +31,41 @@ def tool_result_limit(message) -> int:
     return TOOL_RESULT_PREVIEW_LIMIT
 
 
+def tool_calls_from_message(message) -> list[dict]:
+    """Return normalized tool calls from LangChain fields or Anthropic blocks."""
+    tool_calls = getattr(message, "tool_calls", None) or []
+    if tool_calls:
+        return list(tool_calls)
+    content = getattr(message, "content", None)
+    if not isinstance(content, list):
+        return []
+    normalized = []
+    for block in content:
+        if not isinstance(block, dict):
+            continue
+        block_type = str(block.get("type") or "").casefold()
+        if block_type not in {"tool_use", "tool_call"}:
+            continue
+        args = block.get("input")
+        if args is None:
+            args = block.get("args")
+        if args is None:
+            args = {}
+        normalized.append(
+            {
+                "name": block.get("name"),
+                "args": args,
+                "id": block.get("id"),
+            }
+        )
+    return normalized
+
+
 def step_events_from_message(message) -> list[dict]:
     """Convert completed graph messages into step-level events."""
     message_type = message.__class__.__name__
 
-    tool_calls = getattr(message, "tool_calls", None)
+    tool_calls = tool_calls_from_message(message)
     if tool_calls:
         return [
             {
@@ -79,4 +108,3 @@ def step_events_from_message(message) -> list[dict]:
         ]
 
     return []
-
