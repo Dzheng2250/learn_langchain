@@ -164,6 +164,7 @@ response completed != maintenance completed
 |---|---|
 | Agent Turn 不阻塞 asyncio 网络主循环 | 已实现：同步 Turn 在专用线程池执行 |
 | PostgreSQL Telemetry 后台批量写入 | 已实现：`BufferedEventSink` |
+| 本地结构化 Telemetry 与业务状态写锁隔离 | 已实现：独立 `telemetry/events.db` |
 | Telemetry 队列满不阻塞生产者 | 已实现：`put_nowait()` 并丢弃 |
 | EventBus 关闭不阻塞 asyncio 主循环 | 已实现：Core 通过工作线程关闭 |
 | 派生维护不延迟 CLI 恢复输入 | 已实现：持久化 `maintenance_jobs` |
@@ -171,8 +172,9 @@ response completed != maintenance completed
 | 上下文压缩后台执行并带版本检查 | 已实现：摘要任务与 `summary_through_turn` CAS |
 | 慢客户端发送超时 | **未实现** |
 | 任意工具级抢占式取消 | **未实现**：Python 不能安全终止任意同步工具线程；当前提供 daemon 级 `stop --force` 逃生口，后续应为长耗时工具实现协作取消或进程隔离 |
-| IO 型 Console/JSONL Sink 默认缓冲 | **未实现** |
-| 业务数据库池与 Telemetry 池资源隔离 | **未实现** |
+| IO 型 JSONL/SQLite Sink 默认缓冲 | 已实现；Console 仅显式调试时启用 |
+| 业务状态库与本地 Telemetry 写入隔离 | 已实现：使用不同 SQLite 数据库 |
+| PostgreSQL 业务池与 Telemetry 池资源隔离 | **未实现**；当前 PostgreSQL 仅为可选 Event Sink |
 | 完整延迟指标和回归门禁 | **未实现** |
 
 上述未实现项属于明确工程债务。后续优化不得以降低 Session 一致性或错误可观测性为代价。

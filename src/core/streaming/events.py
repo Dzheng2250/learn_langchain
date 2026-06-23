@@ -10,6 +10,10 @@ from src.core.streaming.failures import graph_failure_event
 from src.core.streaming.message_events import step_events_from_message
 from src.core.telemetry import emit_event
 from src.core.agent.budget import ToolBudgetExceeded
+from src.core.llm.retry_context import (
+    current_attempt_id,
+    mark_attempt_output_emitted,
+)
 
 
 def stream_graph_events(
@@ -58,10 +62,13 @@ def stream_graph_events(
             if stream_mode == "messages":
                 message_chunk, _metadata = chunk
                 if isinstance(message_chunk, AIMessageChunk) and message_chunk.content:
+                    mark_attempt_output_emitted()
+                    attempt_id = current_attempt_id()
                     yield {
                         "event": "token",
                         "data": {
                             "content": message_chunk.content,
+                            **({"attempt_id": attempt_id} if attempt_id else {}),
                         },
                     }
             elif stream_mode == "values":

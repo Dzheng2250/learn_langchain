@@ -32,6 +32,53 @@ class AgentEventRendererTest(unittest.TestCase):
             )
         self.assertEqual("final answer", output.getvalue())
 
+    def test_retry_events_mark_stale_attempt_and_next_retry(self):
+        output = io.StringIO()
+        renderer = AgentEventRenderer()
+        with redirect_stdout(output):
+            renderer.render(
+                {
+                    "event": "token",
+                    "data": {"content": "draft", "attempt_id": "attempt-1"},
+                }
+            )
+            renderer.render(
+                {
+                    "event": "model_attempt_invalidated",
+                    "data": {"attempt": 1, "error_category": "service_unavailable"},
+                }
+            )
+            renderer.render(
+                {
+                    "event": "model_retry_scheduled",
+                    "data": {
+                        "next_attempt": 2,
+                        "max_attempts": 3,
+                        "delay_seconds": 1.25,
+                    },
+                }
+            )
+
+        rendered = output.getvalue()
+        self.assertIn("draft", rendered)
+        self.assertIn("[model_attempt_stale: attempt 1, service_unavailable]", rendered)
+        self.assertIn("[model_retry: attempt 2/3 in 1.25s]", rendered)
+        self.assertFalse(renderer.received_token)
+        self.assertIsNone(renderer.current_attempt_id)
+
+    def test_retry_exhausted_is_rendered_as_progress_marker(self):
+        output = io.StringIO()
+        renderer = AgentEventRenderer()
+        with redirect_stdout(output):
+            renderer.render(
+                {
+                    "event": "model_retry_exhausted",
+                    "data": {"error_category": "rate_limited"},
+                }
+            )
+
+        self.assertIn("[model_retry_exhausted: rate_limited]", output.getvalue())
+
     def test_task_plan_start_renders_plan_details(self):
         output = io.StringIO()
         renderer = AgentEventRenderer()

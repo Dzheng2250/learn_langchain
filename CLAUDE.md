@@ -129,7 +129,7 @@ Set `.env` variables (see `.env.example`):
 |---|---|
 | `LEARN_AGENT_LLM_API_KEY` | OpenAI-compatible API key |
 | `LEARN_AGENT_LLM_BASE_URL` | API base URL |
-| `LEARN_AGENT_MODEL` | Model name (default: deepseek-v4-flash) |
+| `LEARN_AGENT_MODEL` | Model name (required; no default) |
 | `LEARN_AGENT_CORE_PORT` | Core daemon port (default: 18765) |
 
 ### CLI Daemon Lifecycle

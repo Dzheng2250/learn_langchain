@@ -29,7 +29,14 @@ class OpenAICompatibleProvider:
 
     def configuration_status(self) -> LlmConfigurationStatus:
         """Check required local configuration without contacting the provider."""
-        missing = () if str(self.api_key or "").strip() else ("LEARN_AGENT_LLM_API_KEY",)
+        missing = tuple(
+            name
+            for name, value in (
+                ("LEARN_AGENT_LLM_API_KEY", self.api_key),
+                ("LEARN_AGENT_MODEL", self.model),
+            )
+            if not str(value or "").strip()
+        )
         return LlmConfigurationStatus(configured=not missing, missing=missing)
 
     def create_chat_model(
@@ -41,6 +48,11 @@ class OpenAICompatibleProvider:
         tools: list | None = None,
     ):
         """Create a ChatOpenAI client and optionally bind the supplied tools."""
+        status = self.configuration_status()
+        if not status.configured:
+            raise RuntimeError(
+                "LLM configuration is incomplete: " + ", ".join(status.missing)
+            )
         model = ChatOpenAI(
             model=self.model,
             api_key=self.api_key,
@@ -49,6 +61,7 @@ class OpenAICompatibleProvider:
             streaming=streaming,
             stream_usage=streaming and self.stream_usage_enabled,
             metadata={"purpose": purpose.value},
+            max_retries=0,
         )
         return model.bind_tools(tools) if tools else model
 

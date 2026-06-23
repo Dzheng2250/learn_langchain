@@ -134,7 +134,7 @@ Core 首次启动时会自动创建本地 SQLite Schema。若启用了 PostgreSQ
 |---|---|---|
 | `LEARN_AGENT_LLM_API_KEY` | 空 | OpenAI 兼容模型 API 密钥 |
 | `LEARN_AGENT_LLM_BASE_URL` | 空 | OpenAI 兼容 API 地址；留空时使用客户端默认地址 |
-| `LEARN_AGENT_MODEL` | `deepseek-v4-flash` | 模型名称 |
+| `LEARN_AGENT_MODEL` | `required (no default)` | 模型名称 |
 | `LEARN_AGENT_DB_HOST` | `127.0.0.1` | PostgreSQL 地址 |
 | `LEARN_AGENT_DB_PORT` | `5432` | PostgreSQL 端口 |
 | `LEARN_AGENT_DB_NAME` | `learn_agent` | 数据库名 |

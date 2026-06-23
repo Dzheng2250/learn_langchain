@@ -48,7 +48,8 @@ learn-agent/
     checkpoints.db    # LangGraph 执行断点
     artifacts/        # 大型工具结果或文件内容
     telemetry/
-      events.jsonl    # 观测事件
+      events.db       # 默认结构化 Telemetry，保留期可配置
+      events.jsonl    # 可选 JSONL 兼容输出
 ```
 
 可使用 `LEARN_AGENT_STATE_DIR` 覆盖 `state/` 所在目录。
@@ -57,6 +58,7 @@ learn-agent/
 
 - `state.db` 保存用户可理解的业务事实，例如消息、记忆和 Session。
 - `checkpoints.db` 保存 LangGraph 内部恢复执行所需的状态。
+- `telemetry/events.db` 保存 best-effort 诊断事件；它不参与恢复，并通过独立写锁避免影响业务提交。
 - 即使以后替换 LangGraph，也不需要重写 Session 数据模型。
 
 ## 主要数据结构

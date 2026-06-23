@@ -112,12 +112,14 @@ class AgentExecutionArchitectureTest(unittest.TestCase):
             {"purpose": LlmPurpose.PARENT_AGENT.value},
             constructor.call_args.kwargs["metadata"],
         )
+        self.assertEqual(0, constructor.call_args.kwargs["max_retries"])
         self.assertTrue(constructor.call_args.kwargs["stream_usage"])
         model.bind_tools.assert_called_once_with(["tool"])
 
     def test_non_streaming_model_does_not_request_stream_usage(self):
         with patch("src.core.llm.provider.ChatOpenAI") as constructor:
             OpenAICompatibleProvider(
+                model="test-model",
                 api_key="key",
                 stream_usage_enabled=True,
             ).create_chat_model(LlmPurpose.MEMORY_EXTRACTION, streaming=False)
@@ -136,6 +138,7 @@ class AgentExecutionArchitectureTest(unittest.TestCase):
     def test_stream_usage_can_be_disabled_for_incompatible_provider(self):
         with patch("src.core.llm.provider.ChatOpenAI") as constructor:
             OpenAICompatibleProvider(
+                model="test-model",
                 api_key="key",
                 stream_usage_enabled=False,
             ).create_chat_model(LlmPurpose.PARENT_AGENT, streaming=True)
@@ -143,16 +146,32 @@ class AgentExecutionArchitectureTest(unittest.TestCase):
         self.assertFalse(constructor.call_args.kwargs["stream_usage"])
 
     def test_provider_reports_missing_api_key_without_network_request(self):
-        status = OpenAICompatibleProvider(api_key="", base_url="https://example.test").configuration_status()
+        status = OpenAICompatibleProvider(
+            model="test-model",
+            api_key="",
+            base_url="https://example.test",
+        ).configuration_status()
 
         self.assertFalse(status.configured)
         self.assertEqual(("LEARN_AGENT_LLM_API_KEY",), status.missing)
 
     def test_provider_reports_configured_with_generic_api_key(self):
-        status = OpenAICompatibleProvider(api_key="configured").configuration_status()
+        status = OpenAICompatibleProvider(
+            model="test-model",
+            api_key="configured",
+        ).configuration_status()
 
         self.assertTrue(status.configured)
         self.assertEqual((), status.missing)
+
+    def test_provider_reports_missing_model_without_using_vendor_default(self):
+        status = OpenAICompatibleProvider(
+            model="",
+            api_key="configured",
+        ).configuration_status()
+
+        self.assertFalse(status.configured)
+        self.assertEqual(("LEARN_AGENT_MODEL",), status.missing)
 
     def test_tool_registry_derives_audience_specific_views(self):
         registry = ToolRegistry()

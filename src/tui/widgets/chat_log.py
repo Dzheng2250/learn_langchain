@@ -39,6 +39,17 @@ class ChatLog(RichLog):
                 self._entries.append(line)
         self._redraw()
 
+    def mark_tokens_stale(self, reason: str) -> None:
+        """Keep a failed draft for diagnosis but mark it as non-authoritative."""
+        if self._token_buf:
+            self._entries.append(
+                "[dim]INCOMPLETE MODEL DRAFT (STALE)\n"
+                f"{self._token_buf}[/dim]"
+            )
+            self._token_buf = ""
+        self._entries.append(f"[yellow]{reason}[/yellow]")
+        self._redraw()
+
     def _render_token_buffer(self) -> None:
         """Render committed log entries plus the current streamed response.
 

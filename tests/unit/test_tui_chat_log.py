@@ -55,6 +55,47 @@ class TuiChatLogTest(unittest.TestCase):
 
         self.assertEqual(["answer", "[done]"], log.lines)
 
+    def test_mark_tokens_stale_keeps_draft_as_incomplete_entry(self):
+        log = self._fake_log()
+
+        ChatLog.write_token(log, "partial draft")
+        ChatLog.mark_tokens_stale(log, "retrying after provider error")
+
+        self.assertEqual("", log._token_buf)
+        self.assertTrue(any("INCOMPLETE MODEL DRAFT" in line for line in log.lines))
+        self.assertTrue(any("partial draft" in line for line in log.lines))
+        self.assertTrue(any("retrying after provider error" in line for line in log.lines))
+
+    def test_tui_retry_invalidation_marks_current_stream_stale(self):
+        log = self._fake_log()
+        screen = ChatScreen.__new__(ChatScreen)
+        screen._streamed_response_active = True
+
+        def query_one(_self, _widget_type):
+            return log
+
+        screen.query_one = MethodType(query_one, screen)
+
+        asyncio.run(
+            ChatScreen._on_event(
+                screen,
+                {"event": "token", "data": {"content": "draft"}},
+            )
+        )
+        asyncio.run(
+            ChatScreen._on_event(
+                screen,
+                {
+                    "event": "model_attempt_invalidated",
+                    "data": {"attempt": 1, "error_category": "timeout"},
+                },
+            )
+        )
+
+        self.assertFalse(screen._streamed_response_active)
+        self.assertTrue(any("INCOMPLETE MODEL DRAFT" in line for line in log.lines))
+        self.assertTrue(any("timeout" in line for line in log.lines))
+
     def test_agent_message_after_tokens_is_not_rendered_twice(self):
         log = self._fake_log()
         screen = ChatScreen.__new__(ChatScreen)

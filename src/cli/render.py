@@ -134,6 +134,7 @@ class AgentEventRenderer:
     received_token: bool = False
     done_announced: bool = False
     error_message: str | None = None
+    current_attempt_id: str | None = None
 
     def render(self, params: dict) -> None:
         """Render one ``agent.event`` notification without changing business state."""
@@ -142,8 +143,32 @@ class AgentEventRenderer:
         if event == "token":
             content = data.get("content", "")
             if content:
+                self.current_attempt_id = data.get("attempt_id") or self.current_attempt_id
                 self.received_token = True
                 print(content, end="", flush=True)
+        elif event == "model_attempt_invalidated":
+            attempt = data.get("attempt", "?")
+            category = data.get("error_category", "provider_error")
+            print(
+                f"\n[model_attempt_stale: attempt {attempt}, {category}]\n"
+                "The response above is incomplete and must not be used.",
+                flush=True,
+            )
+            self.received_token = False
+            self.current_attempt_id = None
+        elif event == "model_retry_scheduled":
+            next_attempt = data.get("next_attempt", "?")
+            maximum = data.get("max_attempts", "?")
+            delay = float(data.get("delay_seconds", 0))
+            print(
+                f"\n[model_retry: attempt {next_attempt}/{maximum} in {delay:.2f}s]",
+                flush=True,
+            )
+        elif event == "model_retry_exhausted":
+            print(
+                f"\n[model_retry_exhausted: {data.get('error_category', 'unknown')}]",
+                flush=True,
+            )
         elif event == "step":
             step_type = data.get("type", "step")
             if step_type == "agent_message" and not self.received_token:

@@ -3,6 +3,10 @@
 from src.core.agent.contracts import EventCallback, ExecutionControl
 from src.core.agent.request_stream import AgentRequestStreamService
 from src.core.agent.result import TurnResultBuilder
+from src.core.llm.retry_context import (
+    bind_retry_event_callback,
+    reset_retry_event_callback,
+)
 
 
 class AgentSyncTurnRunner:
@@ -24,17 +28,21 @@ class AgentSyncTurnRunner:
     ) -> dict:
         """Consume one foreground turn stream."""
         result = TurnResultBuilder(run_id=run_id, default_error="Agent turn failed.")
-        for item in self.request_stream_service.stream_turn(
-            workspace_root,
-            session_name,
-            user_input,
-            run_id=result.run_id,
-            control=control,
-            goal_mode=goal_mode,
-        ):
-            if on_event:
-                on_event(item)
-            result.observe(item)
+        token = bind_retry_event_callback(on_event)
+        try:
+            for item in self.request_stream_service.stream_turn(
+                workspace_root,
+                session_name,
+                user_input,
+                run_id=result.run_id,
+                control=control,
+                goal_mode=goal_mode,
+            ):
+                if on_event:
+                    on_event(item)
+                result.observe(item)
+        finally:
+            reset_retry_event_callback(token)
         return result.build()
 
     def resume(
@@ -49,14 +57,18 @@ class AgentSyncTurnRunner:
     ) -> dict:
         """Consume one resumed execution stream."""
         result = TurnResultBuilder(run_id=run_id, default_error="Agent resume failed.")
-        for item in self.request_stream_service.stream_resume(
-            workspace_root,
-            session_name,
-            instruction=instruction,
-            run_id=result.run_id,
-            control=control,
-        ):
-            if on_event:
-                on_event(item)
-            result.observe(item)
+        token = bind_retry_event_callback(on_event)
+        try:
+            for item in self.request_stream_service.stream_resume(
+                workspace_root,
+                session_name,
+                instruction=instruction,
+                run_id=result.run_id,
+                control=control,
+            ):
+                if on_event:
+                    on_event(item)
+                result.observe(item)
+        finally:
+            reset_retry_event_callback(token)
         return result.build()

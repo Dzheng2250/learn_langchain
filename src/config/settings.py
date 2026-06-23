@@ -26,7 +26,7 @@ BASH_PATH = "bash"
 
 # Shared OpenAI-compatible model configuration. The generic LEARN_AGENT names
 # take precedence; ALIYUN aliases remain only for backward compatibility.
-MODEL = env_str("LEARN_AGENT_MODEL", "deepseek-v4-flash")
+MODEL = env_str("LEARN_AGENT_MODEL", "")
 MODEL_CONTEXT_LIMIT = env_int("LEARN_AGENT_MODEL_CONTEXT_LIMIT", 128_000)
 LLM_API_KEY = env_str("LEARN_AGENT_LLM_API_KEY", env_str("ALIYUN_API_KEY", ""))
 LLM_BASE_URL = env_str("LEARN_AGENT_LLM_BASE_URL", env_str("ALIYUN_BASE_URL", ""))
@@ -116,16 +116,28 @@ MEMORY_EXTRACT_SOURCE_CHAR_LIMIT = 12000
 
 AGENT_EVENTS_ENABLED = True
 # Event sinks observe business behavior and must never determine its result.
+AGENT_EVENTS_SQLITE_ENABLED = env_bool("LEARN_AGENT_EVENTS_SQLITE_ENABLED", True)
+AGENT_EVENTS_SQLITE_PATH = env_str("LEARN_AGENT_EVENTS_SQLITE_PATH", "")
+AGENT_EVENTS_SQLITE_RETENTION_DAYS = env_int(
+    "LEARN_AGENT_EVENTS_SQLITE_RETENTION_DAYS",
+    30,
+)
 AGENT_EVENTS_POSTGRES_ENABLED = env_bool("LEARN_AGENT_EVENTS_POSTGRES_ENABLED", False)
 AGENT_EVENTS_CONSOLE_ENABLED = False
 AGENT_EVENTS_FILE_ENABLED = env_bool("LEARN_AGENT_EVENTS_FILE_ENABLED", True)
 AGENT_EVENTS_FILE_PATH = env_str("LEARN_AGENT_EVENTS_FILE_PATH", "")
-AGENT_EVENTS_PAYLOAD_PREVIEW_LIMIT = 1000
-AGENT_EVENTS_ASYNC_WRITE = True
+AGENT_EVENTS_PAYLOAD_PREVIEW_LIMIT = env_int(
+    "LEARN_AGENT_EVENTS_PAYLOAD_PREVIEW_LIMIT",
+    1000,
+)
+AGENT_EVENTS_ASYNC_WRITE = env_bool("LEARN_AGENT_EVENTS_ASYNC_WRITE", True)
 # PostgreSQL event writes are queued and flushed by size or elapsed interval.
-AGENT_EVENTS_BATCH_SIZE = 50
-AGENT_EVENTS_FLUSH_INTERVAL_SECONDS = 1.0
-AGENT_EVENTS_QUEUE_MAX_SIZE = 1000
+AGENT_EVENTS_BATCH_SIZE = env_int("LEARN_AGENT_EVENTS_BATCH_SIZE", 50)
+AGENT_EVENTS_FLUSH_INTERVAL_SECONDS = env_float(
+    "LEARN_AGENT_EVENTS_FLUSH_INTERVAL_SECONDS",
+    1.0,
+)
+AGENT_EVENTS_QUEUE_MAX_SIZE = env_int("LEARN_AGENT_EVENTS_QUEUE_MAX_SIZE", 1000)
 
 # Cross-layer daemon trace. Trace is best-effort diagnostic data and never a
 # source of truth for Session state, recovery, billing, or compliance.

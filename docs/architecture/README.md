@@ -113,3 +113,8 @@
 4. 不把 Decision、历史 Review、部署命令或 API 字段清单混入架构正文。
 5. 更新本文、[文档中心](/docs/README.md) 和
    [文档登记表](/docs/governance/document-register.md)。
+
+
+## Provider 错误恢复补充
+
+- [通用 LLM 错误恢复](/docs/architecture/provider-error-recovery.md)：说明模型调用的通用错误解析、自动重试、流式草稿失效和 Execution 恢复语义。

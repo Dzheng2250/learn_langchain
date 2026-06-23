@@ -15,6 +15,7 @@ from src.core.container import CoreContainer
 from src.core.diagnostics import DiagnosticTurnService
 from src.core.execution import ExecutionLifecycleService
 from src.core.session import SessionLifecycleService
+from src.core.telemetry.sinks import NoopEventSink
 from src.core.transport.socket_server import SocketServer
 
 
@@ -83,6 +84,14 @@ class CoreContainerTest(unittest.TestCase):
             container.workspace_repository().database,
             container.state_database(),
         )
+
+    def test_runtime_file_opt_out_disables_local_telemetry_sinks(self):
+        container = self._container()
+
+        bus = container.event_bus()
+
+        self.assertEqual(1, len(bus.sinks))
+        self.assertIsInstance(bus.sinks[0], NoopEventSink)
 
     def test_overrides_transport_factory(self):
         container = self._container()

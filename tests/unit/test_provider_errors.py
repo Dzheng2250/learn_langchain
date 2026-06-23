@@ -1,4 +1,6 @@
 import unittest
+from datetime import datetime, timezone
+from types import SimpleNamespace
 
 from src.core.errors import (
     AliyunErrorParser,
@@ -8,6 +10,7 @@ from src.core.errors import (
     ParsedProviderError,
     ProviderErrorHandler,
     ProviderErrorParserRegistry,
+    GenericProviderErrorParser,
 )
 
 
@@ -36,7 +39,7 @@ class ProviderErrorParserTest(unittest.TestCase):
         self.assertEqual(ErrorCategory.CONTENT_REJECTED, resolution.category)
         self.assertEqual(ErrorAction.TERMINATE, resolution.action)
         self.assertFalse(resolution.retryable)
-        self.assertEqual("aliyun", resolution.provider)
+        self.assertEqual("openai_compatible", resolution.provider)
         self.assertNotIn("sensitive provider detail", resolution.public_message)
 
     def test_text_only_aliyun_error_is_recognized(self):
@@ -97,6 +100,55 @@ class ProviderErrorParserTest(unittest.TestCase):
 
     def test_aliyun_parser_ignores_unrecognized_errors(self):
         self.assertIsNone(AliyunErrorParser().parse(RuntimeError("ordinary failure")))
+
+    def test_retry_after_header_and_request_id_are_preserved(self):
+        error = FakeHttpError(429, {"error": {"type": "rate_limit_error"}})
+        error.response = SimpleNamespace(
+            status_code=429,
+            headers={"Retry-After": "1.5", "x-request-id": "request-1"},
+            json=lambda: error.body,
+        )
+
+        parsed = GenericProviderErrorParser().parse(error)
+
+        self.assertEqual(ErrorCategory.RATE_LIMITED, parsed.category)
+        self.assertEqual(1.5, parsed.retry_after_seconds)
+        self.assertEqual("request-1", parsed.request_id)
+
+    def test_text_retry_hint_and_nested_exception_are_parsed(self):
+        inner = RuntimeError("Rate limit exceeded. Please try again in 250ms.")
+        inner.status_code = 429
+        outer = RuntimeError("model invocation failed")
+        outer.__cause__ = inner
+
+        parsed = GenericProviderErrorParser().parse(outer)
+
+        self.assertEqual(ErrorCategory.RATE_LIMITED, parsed.category)
+        self.assertAlmostEqual(0.25, parsed.retry_after_seconds)
+
+    def test_usage_quota_and_validation_errors_are_not_retryable(self):
+        cases = (
+            (429, "usage_limit_reached", ErrorCategory.USAGE_LIMIT),
+            (429, "insufficient_quota", ErrorCategory.QUOTA_EXHAUSTED),
+            (422, "validation_error", ErrorCategory.INVALID_REQUEST),
+        )
+        for status, code, category in cases:
+            with self.subTest(code=code):
+                resolution = ProviderErrorHandler().resolve(
+                    FakeHttpError(status, {"error": {"code": code}})
+                )
+                self.assertEqual(category, resolution.category)
+                self.assertFalse(resolution.retryable)
+
+    def test_context_and_model_errors_are_classified(self):
+        context = ProviderErrorHandler().resolve(
+            FakeHttpError(400, {"error": {"code": "context_length_exceeded"}})
+        )
+        missing = ProviderErrorHandler().resolve(
+            FakeHttpError(404, {"error": {"code": "model_not_found"}})
+        )
+        self.assertEqual(ErrorCategory.CONTEXT_LENGTH_EXCEEDED, context.category)
+        self.assertEqual(ErrorCategory.MODEL_NOT_FOUND, missing.category)
 
 
 if __name__ == "__main__":

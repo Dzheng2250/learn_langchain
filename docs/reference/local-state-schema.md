@@ -157,6 +157,10 @@ uninitialized -> available -> cleanup_pending -> cleaned
 | `projection_outbox` | 未来把本地业务变化投影到 PostgreSQL | 已预留，默认不启用 |
 | `imported_events` | 保存从旧系统迁移来的事件 | 迁移兼容用途 |
 
+`imported_events` 是一次性迁移快照，不接收 Core 运行期事件。实时结构化 Telemetry 位于独立的
+`state/telemetry/events.db.telemetry_events`。它与权威 `state.db` 分离，避免高频诊断写入
+争用 Session/Execution 的提交锁；该数据库损坏或写入失败也不得影响 Agent 业务结果。
+
 `maintenance_jobs` 和 `projection_outbox` 不能合并：
 
 - `maintenance_jobs` 会改变本地派生状态，例如写入摘要、记忆或清理 checkpoint，失败后需要在本机重试。

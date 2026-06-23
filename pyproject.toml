@@ -20,6 +20,7 @@ dependencies = [
     "textual>=8.0",
     "rich>=13.0",
     "dependency-injector",
+    "tenacity>=8.2",
 ]
 
 [project.scripts]

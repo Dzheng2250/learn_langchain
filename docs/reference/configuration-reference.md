@@ -44,10 +44,16 @@ learn-agent start
 |---|---:|---|
 | `LEARN_AGENT_LLM_API_KEY` | 空 | OpenAI 兼容模型 API 密钥。为空时进入无状态诊断模式，不执行真实 Agent Turn。 |
 | `LEARN_AGENT_LLM_BASE_URL` | 空 | OpenAI 兼容 API 地址。留空时使用客户端默认地址。 |
-| `LEARN_AGENT_MODEL` | `deepseek-v4-flash` | 传给模型服务的模型名称，必须与服务端支持的名称一致。 |
+| `LEARN_AGENT_MODEL` | `required (no default)` | 传给模型服务的模型名称，必须与服务端支持的名称一致。 |
 | `LEARN_AGENT_MODEL_CONTEXT_LIMIT` | `128000` | 模型上下文窗口大小（token），用于 TUI 显示上下文使用百分比。不影响实际提交给模型的 token 数量。 |
 | `LEARN_AGENT_SUMMARY_TRIGGER_TOKEN_LIMIT` | `5000` | 上下文 token 数超过此值时触发自动压缩。测试阶段默认 5K，生产环境建议设为模型上下文窗口的 80%。 |
 | `LEARN_AGENT_LLM_STREAM_USAGE_ENABLED` | `true` | 流式调用时请求服务商返回 Token usage。若兼容接口拒绝 `stream_options.include_usage`，设为 `false`。 |
+| `LEARN_AGENT_LLM_RETRY_ENABLED` | `true` | 是否启用 Core 统一 LLM 重试。启用后由 `ResilientModelProvider` 负责重试，SDK 内置重试保持关闭，避免重复重试。 |
+| `LEARN_AGENT_LLM_FOREGROUND_MAX_ATTEMPTS` | `3` | 前台 Agent、子 Agent 和文件总结模型调用的最大尝试次数。内容审查、认证、无效请求等确定性错误不会重试。 |
+| `LEARN_AGENT_LLM_BACKGROUND_MAX_ATTEMPTS` | `2` | 后台摘要和长期记忆提取等维护任务的模型调用最大尝试次数。耗尽后交回维护队列按任务级策略重试。 |
+| `LEARN_AGENT_LLM_RETRY_BASE_DELAY_SECONDS` | `1` | 无服务端等待提示时的指数退避起始秒数。 |
+| `LEARN_AGENT_LLM_RETRY_MAX_DELAY_SECONDS` | `30` | 单次模型重试等待的最大秒数；服务端 `Retry-After` 也会被此值截断。 |
+| `LEARN_AGENT_LLM_RETRY_JITTER_RATIO` | `0.1` | 本地退避等待的随机抖动比例，用于避免多个请求同时恢复后再次撞到限流。 |
 
 旧变量 `ALIYUN_API_KEY` 与 `ALIYUN_BASE_URL` 仅作为兼容回退，新配置应使用通用名称。
 
@@ -147,21 +153,20 @@ System Trace 默认启用，只保存经过脱敏和截断的跨层摘要。完�
 
 | 环境变量 | 默认值 | 含义与影响 |
 |---|---:|---|
+| `LEARN_AGENT_EVENTS_SQLITE_ENABLED` | `true` | 将结构化 Telemetry 异步写入独立的本地 SQLite 数据库。 |
+| `LEARN_AGENT_EVENTS_SQLITE_PATH` | 空 | 显式指定 Telemetry SQLite 路径；为空时使用 `state/telemetry/events.db`。 |
+| `LEARN_AGENT_EVENTS_SQLITE_RETENTION_DAYS` | `30` | Core 启动时删除超过该天数的本地 Telemetry。 |
 | `LEARN_AGENT_EVENTS_FILE_ENABLED` | `true` | 将事件异步写入本地 JSONL。 |
 | `LEARN_AGENT_EVENTS_FILE_PATH` | 空 | 显式指定事件 JSONL 路径；为空时使用本地状态目录下的默认路径。 |
 | `LEARN_AGENT_EVENTS_POSTGRES_ENABLED` | `false` | 启用 PostgreSQL Event Sink；启用后 PostgreSQL 成为可选运行依赖。 |
+| `LEARN_AGENT_EVENTS_ASYNC_WRITE` | `true` | 使用有界后台队列和批量写入；生产环境不应关闭。 |
+| `LEARN_AGENT_EVENTS_BATCH_SIZE` | `50` | 单次 SQLite/JSONL/PostgreSQL 批量写入的最大事件数。 |
+| `LEARN_AGENT_EVENTS_FLUSH_INTERVAL_SECONDS` | `1.0` | 批次未满时的最大等待时间。 |
+| `LEARN_AGENT_EVENTS_QUEUE_MAX_SIZE` | `1000` | 每个缓冲 Sink 的队列容量；满时丢弃新事件而不阻塞 Agent。 |
+| `LEARN_AGENT_EVENTS_PAYLOAD_PREVIEW_LIMIT` | `1000` | payload 中单个预览值的字符上限。 |
 
 PostgreSQL Event Sink 当前要求目标数据库已经具有 `agent_events` 表；普通 Core 启动不会自动创建
-PostgreSQL Schema。若只是需要本地观测记录，应保持该选项关闭并使用默认 JSONL Sink。
-
-以下 Telemetry 策略当前是源码常量，尚不能通过环境变量覆盖：
-
-| 常量 | 默认值 | 含义 |
-|---|---:|---|
-| `AGENT_EVENTS_PAYLOAD_PREVIEW_LIMIT` | `1000` | payload 预览字符上限。 |
-| `AGENT_EVENTS_BATCH_SIZE` | `50` | 后台 Sink 单批事件数量。 |
-| `AGENT_EVENTS_FLUSH_INTERVAL_SECONDS` | `1.0` | 未满批次时的最大刷新间隔。 |
-| `AGENT_EVENTS_QUEUE_MAX_SIZE` | `1000` | 进程内观测队列容量。 |
+PostgreSQL Schema。若只是需要本地结构化观测记录，应保持该选项关闭并使用默认 SQLite Sink。
 
 队列越大，短时突发承载能力越高，但进程异常退出时可能丢失更多尚未落盘的观测事件。
 

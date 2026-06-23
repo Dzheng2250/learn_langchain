@@ -50,6 +50,25 @@ def render_event(params: dict[str, Any]) -> str | None:
     if event == "paused":
         return _render_paused(data)
 
+    if event == "model_retry_scheduled":
+        return (
+            "[yellow]Model request will retry: "
+            f"attempt {data.get('next_attempt', '?')}/{data.get('max_attempts', '?')} "
+            f"in {float(data.get('delay_seconds', 0)):.2f}s.[/yellow]"
+        )
+
+    if event == "model_attempt_invalidated":
+        return (
+            "The preceding model draft is incomplete and stale "
+            f"({data.get('error_category', 'provider_error')})."
+        )
+
+    if event == "model_retry_exhausted":
+        return (
+            "[red]Model retry budget exhausted: "
+            f"{data.get('error_category', 'unknown')}.[/red]"
+        )
+
     return None
 
 

@@ -41,11 +41,12 @@ def create_optional_postgres_pool():
     return create_pool() if AGENT_EVENTS_POSTGRES_ENABLED else None
 
 
-def create_default_event_bus(pool, trace_recorder):
-    """Build the default event bus with optional trace mirroring."""
+def create_default_event_bus(pool, trace_recorder, config: CoreConfig):
+    """Build the default event bus according to process file ownership."""
     return create_event_bus(
         pool,
         include_trace_sink=trace_recorder is not None,
+        include_local_sinks=config.manage_runtime_files,
     )
 
 

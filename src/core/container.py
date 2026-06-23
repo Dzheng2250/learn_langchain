@@ -3,6 +3,7 @@
 from dependency_injector import containers, providers
 
 from src.config.maintenance import MaintenanceSettings
+from src.config.llm import LlmRetrySettings
 from src.config.settings import (
     CORE_AGENT_WORKERS,
     MAX_AUTO_SLICES_PER_GRANT,
@@ -52,6 +53,7 @@ from src.core.execution import ExecutionLifecycleService
 from src.core.finalization import CompletedTurnCommitter, TurnFinalizer
 from src.core.handlers import AgentHandlers, CoreHandlers
 from src.core.llm.provider import OpenAICompatibleProvider
+from src.core.llm.resilience import ResilientModelProvider
 from src.core.maintenance import (
     ExecutionRecoveryCoordinator,
     MaintenanceRepository,
@@ -98,17 +100,25 @@ class CoreContainer(containers.DeclarativeContainer):
         create_default_event_bus,
         pool=postgres_pool,
         trace_recorder=trace_recorder,
+        config=config,
     )
 
+    provider_error_handler = providers.Singleton(ProviderErrorHandler)
+    llm_retry_settings = providers.Singleton(LlmRetrySettings.load)
     base_model_provider = providers.Singleton(OpenAICompatibleProvider)
-    model_provider = providers.Singleton(
+    traced_model_provider = providers.Singleton(
         TracingModelProvider,
         inner=base_model_provider,
+    )
+    model_provider = providers.Singleton(
+        ResilientModelProvider,
+        inner=traced_model_provider,
+        settings=llm_retry_settings,
+        error_handler=provider_error_handler,
     )
     run_limits = providers.Factory(RunLimits)
     memory_enabled = providers.Object(MEMORY_ENABLED)
     maintenance_settings = providers.Singleton(MaintenanceSettings.load)
-    provider_error_handler = providers.Factory(ProviderErrorHandler)
     session_lock_registry = providers.Singleton(SessionLockRegistry)
     turn_worker = providers.Factory(
         TurnWorkerExecutor,

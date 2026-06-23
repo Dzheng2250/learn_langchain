@@ -71,6 +71,22 @@ def _document_anchors(path: Path) -> set[str]:
     return anchors
 
 
+def _has_status(text: str, status: str = "Current") -> bool:
+    """Accept both repaired UTF-8 headers and older mojibake headers."""
+    return f"文档状态：{status}" in text or f"�ĵ�״̬��{status}" in text
+
+
+def _has_any_status(text: str) -> bool:
+    return "文档状态：" in text or "�ĵ�״̬��" in text
+
+
+def _has_boundaries(text: str) -> bool:
+    return (
+        ("## 本文负责" in text and "## 本文不负责" in text)
+        or ("## ���ĸ���" in text and "## ���Ĳ�����" in text)
+    )
+
+
 class DocumentationStructureTest(unittest.TestCase):
     """Keep public contracts discoverable after documentation changes."""
 

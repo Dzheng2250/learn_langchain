@@ -397,10 +397,18 @@ class ChatScreen(Screen):
 
     async def _on_event(self, params: dict[str, Any]) -> None:
         """Callback invoked for each ``agent.event`` notification."""
+        event = params.get("event")
+        if event == "model_attempt_invalidated":
+            data = params.get("data", {})
+            self.query_one(ChatLog).mark_tokens_stale(
+                "The preceding model draft is incomplete and stale "
+                f"({data.get('error_category', 'provider_error')})."
+            )
+            self._streamed_response_active = False
+            return
         markup = render_event(params)
         if markup is None:
             return
-        event = params.get("event")
         if event == "token":
             self._streamed_response_active = True
             self.query_one(ChatLog).write_token(markup)
