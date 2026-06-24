@@ -89,27 +89,46 @@ Saga / 恢复协调原则一致：跨数据库清理是可重试的辅助动作�
 设计上默认使用归档而不是硬删除，是为了避免误操作导致无法追溯。只有用户明确传入 `hard_delete=true` 或 CLI
 `--hard` 时，系统才执行不可恢复的数据删除。
 
-### 1.4 短期上下文与摘要字段
+### 1.4 短期上下文、摘要窗口与血统
 
 `sessions` 中与上下文有关的字段：
 
 | 字段 | 含义 |
 |---|---|
-| `summary` | 已压缩的旧对话摘要 |
-| `recent_messages` | 最近若干条原始消息 |
+| `active_context_window_id` | 当前 Session 正在使用的上下文窗口 |
+| `summary` | 兼容缓存；不再是摘要权威来源 |
+| `recent_messages` | 最近若干条原始消息缓存 |
 | `turn_index` | 已成功提交的最后一轮编号 |
-| `summary_through_turn` | 当前摘要已经覆盖到哪一轮 |
+| `summary_through_turn` | 兼容缓存；当前权威值来自 active context window |
 | `version` | Session 发生过多少次状态更新，供诊断和未来并发控制使用 |
 | `archived_at` | 为空表示 Session 可继续使用；非空表示已归档，只可查询状态，不可继续对话 |
 
-`summary_through_turn` 是摘要 CAS 的比较边界。例如：
+`context_windows` 保存不可变的摘要血统。每次后台压缩成功都会插入一个新窗口，并把
+`sessions.active_context_window_id` 指向它。旧窗口不会被覆盖，因此可以追溯“这次摘要基于哪个上一代摘要、覆盖了哪段 turn”。
+
+| 字段 | 含义 |
+|---|---|
+| `window_id` | 当前窗口 ID |
+| `first_window_id` | 同一条线性压缩链的根窗口 |
+| `previous_window_id` | 上一代窗口；根窗口为空 |
+| `summary_text` | 该窗口使用的摘要文本 |
+| `summary_through_turn` | 该摘要已经覆盖到哪一轮 |
+| `compacted_from_turn` / `compacted_through_turn` | 本次窗口新增压缩的 turn 区间 |
+| `opened_at_turn` | 窗口创建时 Session 已完成到哪一轮 |
+| `closed_at_turn` | 下一代窗口取代它时关闭到哪一轮 |
+| `source_message_count` | 本次压缩读取的原始消息数量 |
+
+前台构造 prompt 时使用：
 
 ```text
-当前 summary_through_turn = 10
-任务 A 计划把摘要推进到第 15 轮
-任务 B 更快，先把摘要推进到第 18 轮
-任务 A 写回时仍要求数据库值为 10，因此更新失败，不会覆盖任务 B
+active context window 的 summary_text
+  + messages 中 turn_index > summary_through_turn 的原始消息 tail
+  + 当前检索到的长期记忆
+  + 当前用户输入
 ```
+
+后台摘要 CAS 不再只比较 `sessions.summary_through_turn`，而是要求
+`sessions.active_context_window_id` 仍等于任务开始时读取到的窗口 ID。这样旧维护任务即使晚完成，也只能被拒绝，不能覆盖新的上下文窗口。
 
 ### 1.5 可恢复执行
 

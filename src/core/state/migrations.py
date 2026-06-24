@@ -1,7 +1,7 @@
 """Idempotent additive migrations for the authoritative local state database."""
 
 
-LATEST_SCHEMA_VERSION = 6
+LATEST_SCHEMA_VERSION = 7
 
 
 def apply_local_migrations(conn) -> None:
@@ -60,7 +60,20 @@ def apply_local_migrations(conn) -> None:
     if current_version < 6:
         _ensure_column(conn, "sessions", "archived_at", "TEXT")
         _record_migration(conn, 6, "session_archive_marker")
+    if current_version < 7:
+        _ensure_context_window_lineage(conn)
+        _record_migration(conn, 7, "context_window_lineage")
 
+
+
+def _table_exists(conn, table: str) -> bool:
+    """Return whether a table exists in the current migration fixture."""
+    return bool(
+        conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?",
+            (table,),
+        ).fetchone()
+    )
 
 def _record_migration(conn, version: int, name: str) -> None:
     """Record one completed additive migration inside the caller transaction."""
@@ -78,10 +91,135 @@ def _ensure_column(conn, table: str, column: str, declaration: str) -> None:
     """Add one trusted, statically declared column when it is absent."""
     existing = {row["name"] for row in conn.execute(f"PRAGMA table_info({table})")}
     if not existing:
-        # Table does not exist — skip (e.g. in-memory test fixtures)
+        # Table does not exist; skip (e.g. in-memory test fixtures).
         return
     if column not in existing:
         conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {declaration}")
+
+
+def _ensure_context_window_lineage(conn) -> None:
+    """Add immutable context summary lineage and deterministic message ordering."""
+    has_messages = _table_exists(conn, "messages")
+    has_sessions = _table_exists(conn, "sessions")
+    _ensure_column(conn, "messages", "message_ordinal", "INTEGER")
+    _ensure_column(conn, "sessions", "active_context_window_id", "TEXT")
+    if not has_sessions:
+        return
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS context_windows (
+            window_id TEXT PRIMARY KEY,
+            workspace_id TEXT NOT NULL,
+            session_id TEXT NOT NULL,
+            branch_id TEXT,
+            first_window_id TEXT NOT NULL,
+            previous_window_id TEXT,
+            summary_text TEXT NOT NULL DEFAULT '',
+            summary_through_turn INTEGER NOT NULL DEFAULT 0,
+            compacted_from_turn INTEGER NOT NULL DEFAULT 0,
+            compacted_through_turn INTEGER NOT NULL DEFAULT 0,
+            opened_at_turn INTEGER NOT NULL DEFAULT 0,
+            closed_at_turn INTEGER,
+            source_message_count INTEGER NOT NULL DEFAULT 0,
+            input_tokens INTEGER NOT NULL DEFAULT 0,
+            output_tokens INTEGER NOT NULL DEFAULT 0,
+            model TEXT NOT NULL DEFAULT '',
+            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY(workspace_id, session_id)
+                REFERENCES sessions(workspace_id, session_id) ON DELETE CASCADE,
+            FOREIGN KEY(branch_id) REFERENCES branches(branch_id) ON DELETE SET NULL,
+            FOREIGN KEY(previous_window_id) REFERENCES context_windows(window_id) ON DELETE SET NULL
+        )
+        """
+    )
+    if has_messages:
+        conn.execute(
+            """
+            UPDATE messages
+            SET message_ordinal = (
+                SELECT COUNT(*)
+                FROM messages AS earlier
+                WHERE earlier.workspace_id = messages.workspace_id
+                  AND earlier.session_id = messages.session_id
+                  AND earlier.rowid <= messages.rowid
+            )
+            WHERE message_ordinal IS NULL
+            """
+        )
+        conn.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_messages_session
+            ON messages(workspace_id, session_id, turn_index, message_ordinal)
+            """
+        )
+        conn.execute(
+            """
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_messages_session_ordinal_unique
+            ON messages(workspace_id, session_id, message_ordinal)
+            """
+        )
+    conn.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_context_windows_session
+        ON context_windows(workspace_id, session_id, created_at)
+        """
+    )
+    session_columns = {row["name"] for row in conn.execute("PRAGMA table_info(sessions)")}
+    required_session_columns = {
+        "workspace_id",
+        "session_id",
+        "active_branch_id",
+        "summary",
+        "summary_through_turn",
+        "turn_index",
+        "active_context_window_id",
+    }
+    if not required_session_columns.issubset(session_columns):
+        return
+    source_count_sql = (
+        """
+        (
+            SELECT COUNT(*) FROM messages m
+            WHERE m.workspace_id = s.workspace_id
+              AND m.session_id = s.session_id
+              AND m.turn_index <= COALESCE(s.summary_through_turn, 0)
+        )
+        """
+        if has_messages
+        else "0"
+    )
+    conn.execute(
+        f"""
+        INSERT OR IGNORE INTO context_windows(
+            window_id, workspace_id, session_id, branch_id, first_window_id,
+            previous_window_id, summary_text, summary_through_turn,
+            compacted_from_turn, compacted_through_turn, opened_at_turn,
+            source_message_count
+        )
+        SELECT
+            'root-' || s.session_id,
+            s.workspace_id,
+            s.session_id,
+            s.active_branch_id,
+            'root-' || s.session_id,
+            NULL,
+            COALESCE(s.summary, ''),
+            COALESCE(s.summary_through_turn, 0),
+            CASE WHEN COALESCE(s.summary_through_turn, 0) > 0 THEN 1 ELSE 0 END,
+            COALESCE(s.summary_through_turn, 0),
+            COALESCE(s.turn_index, 0),
+            {source_count_sql}
+        FROM sessions s
+        WHERE s.active_context_window_id IS NULL
+        """
+    )
+    conn.execute(
+        """
+        UPDATE sessions
+        SET active_context_window_id = 'root-' || session_id
+        WHERE active_context_window_id IS NULL
+        """
+    )
 
 
 def _ensure_state_validation_triggers(conn) -> None:

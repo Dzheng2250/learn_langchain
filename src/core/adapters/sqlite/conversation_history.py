@@ -62,6 +62,14 @@ class SQLiteConversationHistoryStore:
                 (branch_id,),
             ).fetchone()
             head = branch["head_message_id"] if branch else None
+        ordinal_row = conn.execute(
+            """
+            SELECT COALESCE(MAX(message_ordinal), 0) AS max_ordinal
+            FROM messages WHERE workspace_id=? AND session_id=?
+            """,
+            (str(session.workspace.workspace_id), str(session.session_id)),
+        ).fetchone()
+        next_ordinal = int(ordinal_row["max_ordinal"] or 0) + 1
         ids = []
         for message in messages:
             message_id = str(uuid4())
@@ -70,8 +78,9 @@ class SQLiteConversationHistoryStore:
                 """
                 INSERT INTO messages(
                     message_id, workspace_id, session_id, branch_id, parent_message_id,
-                    execution_id, role, content, message_type, raw, turn_index
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    execution_id, role, content, message_type, raw, turn_index,
+                    message_ordinal
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     message_id,
@@ -85,10 +94,12 @@ class SQLiteConversationHistoryStore:
                     message.__class__.__name__,
                     json.dumps(raw, ensure_ascii=False, default=str),
                     turn_index,
+                    next_ordinal,
                 ),
             )
             ids.append(message_id)
             head = message_id
+            next_ordinal += 1
         if branch_id and head:
             conn.execute(
                 """
@@ -106,7 +117,7 @@ class SQLiteConversationHistoryStore:
                 """
                 SELECT message_id, raw FROM messages
                 WHERE workspace_id=? AND session_id=? AND turn_index=?
-                ORDER BY rowid
+                ORDER BY turn_index, message_ordinal
                 """,
                 (
                     str(session.workspace.workspace_id),
@@ -124,7 +135,7 @@ class SQLiteConversationHistoryStore:
                 """
                 SELECT raw FROM messages
                 WHERE workspace_id=? AND session_id=?
-                ORDER BY rowid DESC
+                ORDER BY message_ordinal DESC
                 LIMIT ?
                 """,
                 (

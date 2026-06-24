@@ -652,8 +652,8 @@ class ProviderErrorResolutionIntegrationTest(unittest.TestCase):
                 """
                 INSERT INTO messages(
                     message_id, workspace_id, session_id, role, message_type,
-                    content, raw, turn_index
-                ) VALUES (?, ?, ?, 'human', 'HumanMessage', 'hello', '{}', 1)
+                    content, raw, turn_index, message_ordinal
+                ) VALUES (?, ?, ?, 'human', 'HumanMessage', 'hello', '{}', 1, 1)
                 """,
                 (
                     "message-delete-me",
