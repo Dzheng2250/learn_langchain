@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 from typing import Any
 
+from textual import events
 from textual.binding import Binding
 from textual.screen import Screen
 from textual.widgets import Footer
@@ -32,6 +33,10 @@ class ChatScreen(Screen):
         Binding("ctrl+c", "cancel", "Cancel"),
         Binding("ctrl+d", "quit", "Quit"),
         Binding("ctrl+enter", "submit", "Send"),
+        Binding("pageup", "log_page_up", "Log Page Up", show=False),
+        Binding("pagedown", "log_page_down", "Log Page Down", show=False),
+        Binding("home", "log_home", "Log Home", show=False),
+        Binding("end", "log_end", "Log End", show=False),
     ]
 
     CSS = """
@@ -71,6 +76,9 @@ class ChatScreen(Screen):
         self._streamed_response_active = False
         self._inflight_task: asyncio.Task[Any] | None = None
         self._inflight_client: AsyncCoreClient | None = None
+        self._event_queue: asyncio.Queue[dict[str, Any] | None] = asyncio.Queue(maxsize=2000)
+        self._event_worker_task: asyncio.Task[Any] | None = None
+        self._input_task: asyncio.Task[Any] | None = None
 
     def compose(self):
         yield StatusBar()
@@ -84,7 +92,17 @@ class ChatScreen(Screen):
         status_bar = self.query_one(StatusBar)
         status_bar.set_connecting(self._config.core_host, self._config.core_port)
         status_bar.set_session(self._session_name)
+        self._ensure_event_worker()
         self.run_worker(self._connect_and_check(), exclusive=True, name="connect")
+
+    def on_unmount(self) -> None:
+        """Stop the queued event renderer when the screen is removed."""
+        task = self._event_worker_task
+        if task is not None and not task.done():
+            task.cancel()
+        input_task = self._input_task
+        if input_task is not None and not input_task.done():
+            input_task.cancel()
 
     # ── auth & workspace ───────────────────────────────────────────
 
@@ -172,10 +190,7 @@ class ChatScreen(Screen):
                     "[yellow]● Session has a paused execution — "
                     "send /resume to continue or /discard to cancel.[/yellow]"
                 )
-            ctx_tokens = result.get("context_tokens", 0)
-            if ctx_tokens:
-                status_bar = self.query_one(StatusBar)
-                status_bar.set_usage(int(ctx_tokens))
+            self._update_context_usage(result)
         except CoreUnavailableError:
             status_bar = self.query_one(StatusBar)
             status_bar.set_disconnected("daemon not running")
@@ -187,6 +202,21 @@ class ChatScreen(Screen):
 
     # ── input handling ──────────────────────────────────────────────
 
+    def on_mouse_scroll_up(self, _event: events.MouseScrollUp) -> None:
+        """Route wheel-up events outside the log to the chat history."""
+        log = self.query_one(ChatLog)
+        log.pause_auto_scroll()
+        log.scroll_up(animate=False)
+
+    def on_mouse_scroll_down(self, _event: events.MouseScrollDown) -> None:
+        """Route wheel-down events outside the log to the chat history."""
+        log = self.query_one(ChatLog)
+        log.scroll_down(animate=False)
+        try:
+            log.call_after_refresh(log._resume_if_at_bottom)
+        except Exception:
+            log._resume_if_at_bottom()
+
     async def action_submit(self) -> None:
         """Submit the current input (Ctrl+Enter)."""
         bar = self.query_one(InputBar)
@@ -197,7 +227,21 @@ class ChatScreen(Screen):
         if not text:
             return
         bar.text = ""
-        await self._handle_input(text)
+        self._start_input_task(text)
+
+    def _start_input_task(self, text: str) -> None:
+        """Start command/chat handling without blocking Textual message dispatch."""
+        task = asyncio.create_task(self._run_input_task(text))
+        self._input_task = task
+
+    async def _run_input_task(self, text: str) -> None:
+        """Run one submitted input and surface unexpected failures in the log."""
+        try:
+            await self._handle_input(text)
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            self._log_error(f"TUI input handling failed: {exc}")
 
     async def _handle_input(self, text: str) -> None:
         """Dispatch user input: command or chat message."""
@@ -241,6 +285,7 @@ class ChatScreen(Screen):
                 bar = self.query_one(StatusBar)
                 bar.set_session(args)
                 self._log_note(f"Switched to session: {args}")
+                await self._check_session_status()
             else:
                 self._log_note(f"Current session: {self._session_name}")
         elif cmd == "clear":
@@ -264,6 +309,7 @@ class ChatScreen(Screen):
         self._busy = True
         current_task = asyncio.current_task()
         log = self.query_one(ChatLog)
+        log.force_scroll_to_bottom()
         status_bar = self.query_one(StatusBar)
         mode_tag = " [bold cyan]goal[/bold cyan]" if goal_mode else ""
         log.write_event(f"[bold]▶ sending{ mode_tag }[/bold]")
@@ -306,6 +352,7 @@ class ChatScreen(Screen):
         except Exception as exc:
             log.write_event(f"[red]Unexpected error: {exc}[/red]")
         else:
+            await self._wait_for_event_queue()
             self._handle_result(result)
         finally:
             await client.close()
@@ -320,6 +367,7 @@ class ChatScreen(Screen):
         self._busy = True
         current_task = asyncio.current_task()
         log = self.query_one(ChatLog)
+        log.force_scroll_to_bottom()
         log.write_event("[bold]▶ resuming execution[/bold]")
 
         client = AsyncCoreClient(
@@ -358,6 +406,7 @@ class ChatScreen(Screen):
         except Exception as exc:
             log.write_event(f"[red]Unexpected error: {exc}[/red]")
         else:
+            await self._wait_for_event_queue()
             self._handle_result(result)
         finally:
             await client.close()
@@ -396,7 +445,53 @@ class ChatScreen(Screen):
     # ── event streaming ─────────────────────────────────────────────
 
     async def _on_event(self, params: dict[str, Any]) -> None:
-        """Callback invoked for each ``agent.event`` notification."""
+        """Queue ``agent.event`` notifications so IPC bursts do not drive UI directly."""
+        queue = getattr(self, "_event_queue", None)
+        if queue is None:
+            await self._render_event(params)
+            return
+        self._ensure_event_worker()
+        await queue.put(params)
+        await self._yield_to_textual()
+
+    def _ensure_event_worker(self) -> None:
+        """Start the background UI event consumer for real mounted screens."""
+        if not hasattr(self, "_event_queue"):
+            return
+        task = self._event_worker_task
+        if task is None or task.done():
+            self._event_worker_task = asyncio.create_task(self._drain_event_queue())
+
+    async def _drain_event_queue(self) -> None:
+        """Render queued Core events outside the socket read loop."""
+        while True:
+            params = await self._event_queue.get()
+            try:
+                if params is None:
+                    return
+                try:
+                    await self._render_event(params)
+                except Exception as exc:
+                    self._log_event_render_failure(exc)
+            finally:
+                self._event_queue.task_done()
+            await self._yield_to_textual()
+
+    def _log_event_render_failure(self, exc: Exception) -> None:
+        """Report event-render failures without killing the queue consumer."""
+        try:
+            self.query_one(ChatLog).write_event(f"[red]TUI event render failed: {exc}[/red]")
+        except Exception:
+            pass
+
+    async def _wait_for_event_queue(self) -> None:
+        """Wait until all Core notifications already received by TUI are rendered."""
+        queue = getattr(self, "_event_queue", None)
+        if queue is not None:
+            await queue.join()
+
+    async def _render_event(self, params: dict[str, Any]) -> None:
+        """Render one already-queued ``agent.event`` notification."""
         event = params.get("event")
         if event == "model_attempt_invalidated":
             data = params.get("data", {})
@@ -412,28 +507,31 @@ class ChatScreen(Screen):
         if event == "token":
             self._streamed_response_active = True
             self.query_one(ChatLog).write_token(markup)
-        else:
-            data = params.get("data", {})
-            if (
-                event == "step"
-                and data.get("type") == "agent_message"
-                and self._streamed_response_active
-            ):
-                self.query_one(ChatLog).flush_tokens()
-                self._streamed_response_active = False
-                return
-            log = self.query_one(ChatLog)
-            log.write_event(markup)
+            return
+
+        data = params.get("data", {})
+        if (
+            event == "step"
+            and data.get("type") == "agent_message"
+            and self._streamed_response_active
+        ):
+            self.query_one(ChatLog).flush_tokens()
             self._streamed_response_active = False
-            if event == "done":
-                status = data.get("status")
-                self._handle_done(status, data)
+            return
+        log = self.query_one(ChatLog)
+        log.write_event(markup)
+        self._streamed_response_active = False
+        if event == "done":
+            status = data.get("status")
+            self._handle_done(status, data)
+
+    async def _yield_to_textual(self) -> None:
+        """Let Textual process scroll, mouse, and keyboard events between stream frames."""
+        await asyncio.sleep(0.001)
 
     def _handle_done(self, status: str | None, data: dict[str, Any]) -> None:
         """Handle done event status and context usage."""
-        ctx_tokens = data.get("context_tokens", 0)
-        if ctx_tokens:
-            self.query_one(StatusBar).set_usage(int(ctx_tokens))
+        self._update_context_usage(data)
         if status == "paused":
             self._paused_execution = True
             self.query_one(StatusBar).set_paused(True)
@@ -459,9 +557,7 @@ class ChatScreen(Screen):
         tool_calls = result.get("tool_call_count", 0)
         slices = result.get("slices_used", 0)
         dur = result.get("durability", "")
-        ctx_tokens = result.get("context_tokens", 0)
-        if ctx_tokens:
-            self.query_one(StatusBar).set_usage(int(ctx_tokens))
+        self._update_context_usage(result)
         summary = (
             f"[dim]{status}[/dim]  "
             f"reason: {stop_reason}  "
@@ -472,6 +568,21 @@ class ChatScreen(Screen):
         self.query_one(ChatLog).write_event(summary)
 
     # ── helpers ─────────────────────────────────────────────────────
+
+
+    def _update_context_usage(self, payload: dict[str, Any]) -> None:
+        """Update status-bar context usage when Core reports a snapshot.
+
+        ``context_tokens`` may legitimately be 0 after reset or archive. Checking
+        truthiness would leave stale usage visible, so only field presence matters.
+        """
+        if "context_tokens" not in payload:
+            return
+        try:
+            context_tokens = int(payload.get("context_tokens") or 0)
+        except (TypeError, ValueError):
+            return
+        self.query_one(StatusBar).set_usage(context_tokens)
 
     def _log_error(self, message: str) -> None:
         self.query_one(ChatLog).write_event(f"[red]{message}[/red]")
@@ -492,6 +603,31 @@ class ChatScreen(Screen):
             self._streamed_response_active = False
 
     # ── key actions ─────────────────────────────────────────────────
+
+    def action_log_page_up(self) -> None:
+        """Scroll chat history upward regardless of input focus."""
+        log = self.query_one(ChatLog)
+        log.pause_auto_scroll()
+        log.scroll_page_up(animate=False)
+
+    def action_log_page_down(self) -> None:
+        """Scroll chat history downward and resume following at the bottom."""
+        log = self.query_one(ChatLog)
+        log.scroll_page_down(animate=False)
+        try:
+            log.call_after_refresh(log._resume_if_at_bottom)
+        except Exception:
+            log._resume_if_at_bottom()
+
+    def action_log_home(self) -> None:
+        """Jump to the beginning of chat history."""
+        log = self.query_one(ChatLog)
+        log.pause_auto_scroll()
+        log.scroll_home(animate=False)
+
+    def action_log_end(self) -> None:
+        """Jump to latest chat output and resume follow-tail."""
+        self.query_one(ChatLog).force_scroll_to_bottom()
 
     def action_cancel(self) -> None:
         """Cancel the current operation (Ctrl+C)."""
@@ -518,4 +654,7 @@ class ChatScreen(Screen):
 
     def action_quit(self) -> None:
         """Quit the TUI (Ctrl+D)."""
+        task = getattr(self, "_event_worker_task", None)
+        if task is not None and not task.done():
+            task.cancel()
         self.app.exit()

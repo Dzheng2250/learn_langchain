@@ -205,24 +205,87 @@ Textual `Label` 子类，一行式状态展示：
 
 ### 2.6 ChatLog ([`widgets/chat_log.py`](/src/tui/widgets/chat_log.py))
 
-Textual `RichLog` 子类，核心挑战是**流式 token 渲染不产生额外换行**。
+Textual `VerticalScroll` 子类，负责把 Core 推送的流式事件展示成用户可读日志。
+
+#### 关键问题
+
+服务端到前端的 token 事件是 JSON-RPC notification，token 内容位于 JSON 字段中：
+
+```json
+{"event":"token","data":{"content":"..."}}
+```
+
+因此换行、空格和普通文本不会因为 TCP/NDJSON 传输天然丢失。之前出现“长输出卡顿、空格或标记显示异常”的主要原因在 TUI 渲染层：
+
+1. `RichLog` 适合追加日志，但没有稳定的公开 API 用来替换最后一条已写入内容。
+2. 为了避免每个 token 独立成行，旧实现采用 `clear()` + 重放全部历史 + `refresh()`；长回答会变成近似 `O(N^2)` 的重绘成本。
+3. 如果流式中间态直接交给 Rich markup/Markdown 解析，`[bold]`、JSON 片段或特殊空白可能被当作格式语法解释。
+4. 单纯依赖 timer 节流也不可靠：当 token notification 密集到达时，事件循环可能一直忙于读取和处理事件，timer 回调要等到流结束附近才运行，用户仍然看不到中间态。
+
+#### 当前渲染策略
+
+ChatLog 使用 append-only widget 模型：
+
+| 阶段 | 数据状态 | 渲染方式 | 目的 |
+|---|---|---|---|
+| 流式尾部 | 回答正在生成 | 一个活动 `Static` widget，内容用 `rich.text.Text` 原地更新 | 每个 token 到达后立即更新当前尾部，同时保留空格和原始字符 |
+| 阶段性稳定块 | 已形成完整段落或尾部过长 | 将稳定前缀提交为 `rich.markdown.Markdown` widget | 在回答未结束前就显示列表、标题、代码块等 Markdown 结构 |
+| 最终态 | 收到完整 agent message 或 `flush_tokens()` | 将剩余尾部提交为 Markdown/纯文本 entry | 完整回答结束后补齐最后一段排版 |
+| 超长最终块 | 单块内容超过渲染阈值 | 继续使用纯文本 | 避免极长 Markdown 一次性解析导致 UI 卡顿 |
+| 结构事件 | 工具调用、错误、状态 | 新增独立 `Static` widget，使用 TUI renderer 产生的 Rich markup | 保持事件样式，不混入普通 token 文本 |
+
+这意味着：
+
+- 用户在生成过程中能看到内容持续更新，而不是等完整回答结束。
+- 已完成段落会阶段性变成 Markdown，当前仍在生成的尾部保持纯文本，避免解析半截语法。
+- 完整回答到达后，剩余尾部会再提交一次，得到最终排版。
+- 已提交历史不再因为新 token 到来而反复重绘。
+- 只有用户已经位于底部时才自动跟随新输出；用户向上滚动查看历史后，流式刷新不会把滚动条强行拉回底部。
 
 #### 数据模型
 
+```python
+_entries: list[_LogEntry]        # 已提交日志条目，每条记录自己的渲染 mode
+_token_buf: str                  # 当前流式回复的累积内容
+_active_token_widget: Static | None  # 正在更新的回答尾部
+_stream_committed_length: int      # 已阶段性提交为 Markdown 的前缀长度
 ```
-_entries: list[str]    # 已提交的日志条目（事件、工具调用、用户消息等）
-_token_buf: str        # 当前流式回复的累积内容
-```
+
+`_LogEntry.mode` 有三种：
+
+| mode | 用途 |
+|---|---|
+| `markup` | TUI renderer 生成的可信 Rich 标记，例如工具调用、错误、状态 |
+| `plain` | 流式中间态或失败草稿，按字面显示 |
+| `markdown` | 完整 AI 回复，完成后一次性 Markdown 渲染 |
 
 #### 三种写入操作
 
 | 方法 | 何时调用 | 行为 |
 |---|---|---|
-| `write_token(content)` | 每个 token chunk | 追加到 `_token_buf` 后触发渲染 |
-| `write_event(markup)` | 非 token 事件（step、done、error） | 先 flush tokens，再将事件加入 entries 并全量重绘 |
-| `flush_tokens()` | agent_message 在 token 流之后 | 将 `_token_buf` 转为正式 entry |
+| `write_token(content)` | 每个 token chunk | 追加到 `_token_buf`，必要时提交稳定 Markdown 前缀，再更新当前尾部 widget |
+| `write_event(markup)` | 非 token 事件（step、done、error） | 先提交当前 token，再追加独立事件 widget |
+| `flush_tokens()` | agent_message 到达或其他事件前 | 将剩余尾部提交为最终 Markdown/纯文本 entry |
 
-渲染策略见 §3.1。
+#### 性能与滚动边界
+
+TUI 不应让每个 token 都触发完整历史重绘和整段 Markdown 解析，也不能让 Textual 的消息处理器直接等待完整流式 RPC。当前实现分三层解耦：`action_submit()` 只创建后台输入任务并立即返回，让鼠标和键盘消息可以继续被 Textual 派发；`ChatScreen._on_event()` 再把 Core notification 放入 TUI 事件队列，由后台 consumer 渲染，避免 socket 读取循环直接驱动 UI；`ChatLog.write_token()` 只追加到内存缓冲，`ChatLog` 再以固定帧率批量 `render_pending_tokens()`，因此 Core 的推送速率不会直接决定 layout 次数。渲染帧只更新当前尾部 widget，并在段落边界或尾部过长时提交稳定 Markdown 前缀；长回答不会重放已提交历史，也不会等到最后才出现所有 Markdown 排版。如果单块超过阈值，则回退纯文本以保证交互性。
+
+自动滚动遵循 follow-tail 规则：如果用户正在底部，新增 token 会继续跟随到底部；如果用户通过鼠标滚轮、键盘、触控板或拖动滚动条向上查看历史，ChatLog 会先记录“暂停自动跟随”的意图，然后把滚轮事件继续交给 Textual/ScrollView 的真实滚动处理；如果滚轮发生在输入框等非日志区域，ChatScreen 会把滚动转发给 ChatLog。暂停状态优先级高于底部采样，避免滚动刚发生但 layout 还没更新时被下一帧 token 重新拉回底部。实现上有两个短窗口：用户滚动后设置“暂停自动跟随”窗口，窗口内即使布局临时报告“已经在底部”，`scroll_end()` 也不会执行；发送新消息或 resume 时设置“强制跟随”窗口，因为 Textual 的 `scroll_end()` 需要等后续 layout 才会稳定，不能让紧随其后的旧 `scroll_y/max_scroll_y` 采样把 follow-tail 误关掉。强制跟随不是永久锁，只要用户在这之后滚动，`watch_scroll_y()` 会立即取消强制跟随并以用户滚动为准。底部判断优先使用 `scroll_y/max_scroll_y` 数值，因为 `is_vertical_scroll_end` 在布局未稳定时可能出现滞后。用户手动回到底部后，下一次输出会恢复自动跟随；每次发送新消息或 resume 时会显式回到底部并重新开启 follow-tail。这样长输出期间用户可以自由查看前文。
+
+后续若要进一步优化，可在活动 widget 内做更细的分段或虚拟滚动，但不应回到每个 token 全量重绘的实现。
+
+#### 为什么不直接回到 RichLog
+
+`RichLog` 是 Textual 的高性能追加日志控件，适合结构事件、系统日志和不可变行追加。但当前 AI 回复需要一个“正在生成的活动块”：同一条回答在流式阶段不断增长，完成后还要转成 Markdown。`RichLog` 没有稳定的公开 API 来替换最后一条已写入记录；如果每个 token 都 `write()`，会重新引入碎片行和排版错位。因此当前折中方案是：
+
+- 使用 Textual `VerticalScroll` 管理真实滚动。
+- 使用 `set_interval()` 作为渲染泵，限制 UI 刷新频率。
+- 只把当前回答尾部作为可变 widget，历史条目保持 append-only。
+- 不覆盖 Textual 的滚动 action/watch；滚动快捷键由 `ChatScreen` 统一转发到日志区域。
+
+这不是把框架能力重写一遍，而是在 Textual 原语之上补足“活动流式回答块”这一 RichLog 不直接支持的交互。
+
 
 ### 2.7 InputBar ([`widgets/input_bar.py`](/src/tui/widgets/input_bar.py))
 
