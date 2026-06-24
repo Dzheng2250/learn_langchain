@@ -4,6 +4,17 @@
 > 权威范围：Telemetry Event、EventBus、Recorder 和 Sink 设计
 > 维护触发：Telemetry 模型、订阅、缓冲或 Sink 生命周期变化
 
+## 本文负责
+
+- Telemetry Event、EventBus、Recorder、Sink 和缓冲写入的内部设计。
+- 领域事件的可靠性、脱敏和生命周期边界。
+
+## 本文不负责
+
+- 不定义 System Trace；见系统 Trace 文档。
+- 不定义业务状态或前端流式事件。
+
+
 > 本文解释领域 Telemetry Event。跨 IPC、Agent、LLM 和 Tool 的统一排障时间线见
 > [`/docs/architecture/system-tracing.md`](/docs/architecture/system-tracing.md)。Trace 不替代 Telemetry，Telemetry 也不是业务状态的
 > 权威来源。
@@ -21,7 +32,7 @@
 | 通道 | 用途 | 消费者 | 生命周期 | 是否持久化 |
 |---|---|---|---|---|
 | Response Event | 实时展示当前请求的 token、step、error、done | 当前 CLI 客户端 | 单次 JSON-RPC 请求 | 否 |
-| Telemetry Event | 审计、诊断、性能分析和故障排查 | PostgreSQL、JSONL、控制台 | Core 进程 | 可配置 |
+| Telemetry Event | 审计、诊断、性能分析和故障排查 | SQLite、PostgreSQL、JSONL、控制台 | Core 进程 | 可配置 |
 
 客户端断开后，Response Event 停止发送，但已经开始的 Agent Turn 继续执行并产生
 Telemetry Event。
@@ -39,8 +50,8 @@ ObservedToolNode
   -> 创建 TelemetryEvent
   -> EventBus.publish(...)
   -> BufferedEventSink
-  -> PostgresEventSink.emit_batch(...)
-  -> agent_events 表
+  -> SQLiteEventSink.emit_batch(...)
+  -> telemetry/events.db.telemetry_events
 ```
 
 对应代码：
@@ -62,7 +73,9 @@ flowchart LR
     Bus --> Console["Console Sink"]
     Bus --> File["JSONL Sink"]
     Bus --> Buffer["Buffered Sink<br/>队列 + 批量"]
+    Buffer --> SQLite["SQLite Sink<br/>默认本地结构化存储"]
     Buffer --> Postgres["Postgres Sink"]
+    SQLite --> LocalTable["telemetry_events"]
     Postgres --> Table["agent_events"]
 ```
 
@@ -119,11 +132,69 @@ publish(event)
 | `NoopEventSink` | 丢弃事件 | 用于禁用或测试 |
 | `ConsoleEventSink` | 输出调试信息 | 不持久化 |
 | `JsonlFileEventSink` | 每个事件追加一行 JSON | 简单，但高频事件会产生文件 IO |
+| `SQLiteEventSink` | 批量写入独立 `telemetry/events.db` | 默认开启、可查询；不争用权威 `state.db` |
 | `PostgresEventSink` | 同步写入一个事件批次 | 复用 Core 共享连接池 |
 | `BufferedEventSink` | 后台队列聚合后写入下游 Sink | 降低请求延迟，但进程崩溃或队列满时可能丢失事件 |
 
-`BufferedEventSink` 与 PostgreSQL 解耦。它负责并发和批处理；`PostgresEventSink` 只负责
-数据库写入。
+`BufferedEventSink` 与具体数据库解耦。它负责并发和批处理；SQLite/PostgreSQL Sink 只负责
+各自的数据库写入。SQLite Sink 初始化或批量写入失败只记录调试信息，不得阻止 Core 启动或
+改变 Agent Turn 结果。
+
+本地存在两类容易混淆的事件表：
+
+- `state.db.imported_events`：旧 PostgreSQL 数据迁移时生成的一次性历史快照，不会继续增长。
+- `telemetry/events.db.telemetry_events`：当前 Core 运行期间持续写入的结构化 Telemetry。
+
+Telemetry 使用独立数据库，是因为 SQLite 同一数据库同一时刻只能有一个写事务。将高频观测写入
+`state.db` 会与消息、Session 和 Execution 的关键提交争用锁，可能重新引入回答结束后的卡顿。
+
+### 高频写入模型
+
+正常一次 Turn 会产生 Turn、LLM、Tool、提交和维护边界事件，但不会为每个 token 写 Telemetry。
+生产者调用 `emit_event()` 时只完成清洗和 `queue.put_nowait()`，数据库操作由后台线程执行：
+
+```text
+Agent worker
+  -> put_nowait(event)          # 不等待数据库
+  -> 立即继续业务
+
+Telemetry worker
+  -> 最多聚合 50 条或等待 1 秒
+  -> 单事务 executemany()
+  -> 独立 telemetry/events.db
+```
+
+默认队列容量为 1000。队列满时丢弃新事件并写调试日志，不允许反向阻塞 Agent。批量大小、刷新间隔、
+队列容量和保留天数均可通过环境变量调整。单机规模显著增加时，应先观察丢弃计数和写入耗时，再调大
+队列或批次；不能直接改为前台同步写入。
+
+### 查询本地事件
+
+`telemetry_events` 可直接按 run、Session、事件类型和时间查询：
+
+```sql
+-- 一次 run 的完整领域事件顺序
+SELECT event_id, created_at, event_type, source, level, duration_ms, payload
+FROM telemetry_events
+WHERE run_id = ?
+ORDER BY event_id;
+
+-- 某个 Session 最近的错误
+SELECT created_at, event_type, source, message, payload
+FROM telemetry_events
+WHERE session_id = ? AND level = 'error'
+ORDER BY event_id DESC
+LIMIT 100;
+
+-- 工具调用边界
+SELECT created_at, event_type, json_extract(payload, '$.tool') AS tool, payload
+FROM telemetry_events
+WHERE run_id = ? AND event_type IN ('tool_started', 'tool_finished', 'tool_failed')
+ORDER BY event_id;
+```
+
+`event_id` 表示该数据库中的落盘顺序；跨层精确时序仍应结合 System Trace 的
+`trace_id / sequence / monotonic_ns`。
 
 ## 4. 生命周期
 
@@ -131,8 +202,7 @@ publish(event)
 
 ```text
 CoreApp.__init__
-  -> create_pool()
-  -> create_event_bus(shared_pool)
+  -> create_event_bus(SQLite sink, optional shared PostgreSQL pool)
 
 CoreApp.start()
   -> install_event_bus(bus)
@@ -201,6 +271,8 @@ with event_span("memory_extract", "memory_store"):
 - Telemetry 是 best-effort 观测，不是业务事务日志。
 - 队列满时新事件会被丢弃并输出调试信息。
 - Core 进程被强制终止时，未刷新的队列事件可能丢失。
+- 本地 SQLite Sink 默认保留 30 天，Core 启动时清理更早记录。
+- SQLite Telemetry DB 不是 Session/Execution 权威状态，损坏时不影响任务恢复。
 - `agent_events` 写入失败不会让 Agent Turn 失败。
 - 事件 payload 会按敏感字段名称脱敏，并按配置限制长度。
 - `src/core/hooks` 目前仅作为旧导入路径兼容层，新代码不得继续依赖它。

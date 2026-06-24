@@ -25,4 +25,5 @@ from .sinks import (
     JsonlFileEventSink,
     NoopEventSink,
     PostgresEventSink,
+    SQLiteEventSink,
 )

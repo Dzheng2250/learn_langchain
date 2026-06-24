@@ -1,55 +1,22 @@
 """Unit of Work for one completed Agent Turn."""
 
 from src.core.finalization.models import CompletedTurn
-from src.core.maintenance.repository import MaintenanceRepository
-from src.core.state.contracts import StateStore
-from src.core.state.database import LocalStateDatabase
-from src.core.state.executions import ExecutionRepository
+from src.core.ports import StateUnitOfWorkFactory
 
 
 class CompletedTurnCommitter:
-    """Atomically commit business facts and their required maintenance tasks."""
+    """Atomically commit business facts through an injected persistence port."""
 
-    def __init__(
-        self,
-        database: LocalStateDatabase,
-        execution_repository: ExecutionRepository,
-        maintenance_repository: MaintenanceRepository,
-    ) -> None:
-        self.database = database
-        self.execution_repository = execution_repository
-        self.maintenance_repository = maintenance_repository
+    def __init__(self, unit_of_work_factory: StateUnitOfWorkFactory) -> None:
+        self.unit_of_work_factory = unit_of_work_factory
 
-    def commit(self, store: StateStore, completed: CompletedTurn) -> list[str]:
+    def commit(self, completed: CompletedTurn) -> list[str]:
         """Commit messages, Session state, Execution state, and outbox jobs."""
-        with self.database.transaction() as conn:
-            message_ids = store.append_messages_in_transaction(
-                conn,
-                completed.session,
-                completed.turn_index,
-                completed.messages,
-                execution_id=completed.execution_id,
-            )
-            store.save_fast_session_in_transaction(
-                conn,
-                completed.session,
-                completed.state,
-                completed.turn_index,
-            )
-            if completed.execution_id:
-                if completed.slice_id:
-                    self.execution_repository.finish_slice_in_transaction(
-                        conn,
-                        completed.slice_id,
-                        completed.execution_id,
-                        graph_steps_used=completed.graph_steps_used,
-                        usage=completed.usage,
-                    )
-                self.execution_repository.complete_in_transaction(
-                    conn,
-                    completed.session,
-                    completed.execution_id,
-                )
+        with self.unit_of_work_factory.begin() as uow:
+            message_ids = uow.history.append_turn(completed)
+            uow.sessions.save_fast_context(completed)
+            uow.executions.finish_completed_turn(completed)
             for job in completed.jobs:
-                self.maintenance_repository.enqueue_in_transaction(conn, job)
+                uow.maintenance.enqueue(job)
+            uow.commit()
         return message_ids

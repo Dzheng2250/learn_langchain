@@ -4,6 +4,17 @@
 > 权威范围：系统级组件、进程、存储和主要数据流
 > 维护触发：新增核心进程、权威存储或跨层调用关系
 
+## 本文负责
+
+- 系统级进程、组件、权威存储和端到端主要数据流。
+- 为专项架构文档提供首要入口。
+
+## 本文不负责
+
+- 不解释函数级调用链、表字段或 RPC payload。
+- 不记录设计取舍历史或部署步骤。
+
+
 本文是架构文档的首要入口。它只描述全局结构；函数级调用链和专项机制通过链接下钻。
 
 ## 1. 系统组成
@@ -17,7 +28,7 @@ flowchart LR
 
     Core --> Agent[AgentTurnService]
     Agent --> Runtime[WorkspaceRuntime]
-    Runtime --> LLM[OpenAI-compatible LLM]
+    Runtime --> LLM[Anthropic LLM / legacy provider]
     Runtime --> Tools[Tool Registry]
     Runtime --> Graph[LangGraph]
 

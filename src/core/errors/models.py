@@ -1,6 +1,7 @@
 """Stable provider-error vocabulary shared by parsers and Agent execution."""
 
 from dataclasses import dataclass
+from datetime import datetime
 from enum import StrEnum
 
 
@@ -11,7 +12,15 @@ class ErrorCategory(StrEnum):
     INVALID_REQUEST = "invalid_request"
     AUTHENTICATION = "authentication"
     RATE_LIMITED = "rate_limited"
+    USAGE_LIMIT = "usage_limit"
+    QUOTA_EXHAUSTED = "quota_exhausted"
+    SERVICE_OVERLOADED = "service_overloaded"
     SERVICE_UNAVAILABLE = "service_unavailable"
+    TIMEOUT = "timeout"
+    CONNECTION_FAILED = "connection_failed"
+    STREAM_INTERRUPTED = "stream_interrupted"
+    CONTEXT_LENGTH_EXCEEDED = "context_length_exceeded"
+    MODEL_NOT_FOUND = "model_not_found"
     NETWORK = "network"
     UNKNOWN = "unknown"
 
@@ -24,13 +33,21 @@ class ErrorAction(StrEnum):
 
 
 @dataclass(frozen=True)
-class ParsedProviderError:
-    """Sanitized facts extracted from one provider-specific exception."""
+class ProviderErrorEnvelope:
+    """Sanitized provider-neutral facts extracted from one exception chain."""
 
     category: ErrorCategory
     provider: str = "unknown"
     provider_code: str = ""
     http_status: int | None = None
+    request_id: str = ""
+    retry_after_seconds: float | None = None
+    retry_at: datetime | None = None
+    retryable_hint: bool | None = None
+    source: str = "unknown"
+
+
+ParsedProviderError = ProviderErrorEnvelope
 
 
 @dataclass(frozen=True)
@@ -44,6 +61,10 @@ class ErrorResolution:
     provider: str = "unknown"
     provider_code: str = ""
     http_status: int | None = None
+    request_id: str = ""
+    retry_after_seconds: float | None = None
+    retry_at: datetime | None = None
+    source: str = "unknown"
 
     def event_data(self) -> dict:
         """Return safe structured fields suitable for streaming and telemetry."""
@@ -54,4 +75,8 @@ class ErrorResolution:
             "provider": self.provider,
             "provider_code": self.provider_code,
             "http_status": self.http_status,
+            "request_id": self.request_id,
+            "retry_after_seconds": self.retry_after_seconds,
+            "retry_at": self.retry_at.isoformat() if self.retry_at else None,
+            "error_source": self.source,
         }

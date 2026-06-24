@@ -3,7 +3,7 @@
 from dataclasses import dataclass
 
 from src.config.settings import SUBAGENT_MAX_STEPS
-from src.core.llm.provider import ModelProvider, OpenAICompatibleProvider
+from src.core.llm.contracts import ModelProvider
 from src.core.subagent.graph import create_delegate_tool
 from src.core.tasks.service import TaskPlanningService
 from src.core.tasks.tools import create_task_tools
@@ -27,13 +27,13 @@ class WorkspaceToolset:
 
 def create_workspace_toolset(
     workspace: WorkspaceContext,
-    model_provider: ModelProvider | None = None,
+    model_provider: ModelProvider,
     *,
     subagent_max_steps: int = SUBAGENT_MAX_STEPS,
     task_service: TaskPlanningService | None = None,
 ) -> WorkspaceToolset:
     """Create, classify, and freeze all tools available in one Workspace."""
-    provider = model_provider or OpenAICompatibleProvider()
+    provider = model_provider
     read_file, read_entire, read_lite = create_workspace_file_tools(workspace.root)
     list_skills, read_skill, skill_store = create_skill_tools(workspace.root)
     summarize = create_summarize_large_file(workspace.root, provider)

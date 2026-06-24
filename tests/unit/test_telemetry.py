@@ -1,4 +1,12 @@
+import json
+import sqlite3
+import threading
+import time
 import unittest
+from contextlib import closing
+from datetime import datetime, timedelta, timezone
+from pathlib import Path
+from unittest.mock import patch
 from uuid import uuid4
 
 from langchain_core.messages import AIMessage
@@ -9,6 +17,8 @@ from src.core.telemetry import (
     BaseEventSink,
     BufferedEventSink,
     EventBus,
+    NoopEventSink,
+    SQLiteEventSink,
     TelemetryEvent,
     bind_context,
     event_span,
@@ -24,18 +34,42 @@ from src.core.telemetry import (
     record_tool_started,
     sanitize_payload,
 )
+from src.core.telemetry import factory as telemetry_factory
 from src.core.tools.observed import ObservedToolNode
+from tests.support.paths import REPOSITORY_ROOT
 
+
+def _workspace_sqlite_path_or_skip(testcase, prefix: str) -> Path:
+    """Return a writable SQLite path or skip under restricted Windows sandboxes."""
+    root = REPOSITORY_ROOT / ".test_tmp"
+    root.mkdir(exist_ok=True)
+    path = root / f"{prefix}{uuid4().hex}.db"
+    try:
+        with closing(sqlite3.connect(path)) as conn:
+            conn.execute("CREATE TABLE __probe(value INTEGER)")
+            conn.commit()
+    except (OSError, PermissionError, sqlite3.Error) as exc:
+        try:
+            path.unlink(missing_ok=True)
+        except OSError:
+            pass
+        testcase.skipTest(f"SQLite file databases are unavailable in this sandbox: {exc}")
+    path.unlink(missing_ok=True)
+    return path
 
 class MemorySink(BaseEventSink):
+    """Test sink that keeps emitted telemetry in memory."""
+
     def __init__(self) -> None:
-        self.events = []
+        self.events: list[TelemetryEvent] = []
 
     def emit(self, event: TelemetryEvent) -> None:
         self.events.append(event)
 
 
 class FailingSink(BaseEventSink):
+    """Test sink that verifies sink failures are isolated."""
+
     def emit(self, event: TelemetryEvent) -> None:
         raise RuntimeError("sink failed")
 
@@ -310,6 +344,141 @@ class TelemetryTest(unittest.TestCase):
         sink.close()
 
         self.assertEqual(["one", "two"], [event.event_type for event in target.events])
+
+    def test_sqlite_sink_persists_queryable_events_and_prunes_expired_rows(self) -> None:
+        path = _workspace_sqlite_path_or_skip(self, "learn-agent-telemetry-")
+        self.addCleanup(path.unlink, missing_ok=True)
+        now = datetime.now(timezone.utc)
+        sink = SQLiteEventSink(path, retention_days=30)
+        sink.emit_batch(
+            [
+                TelemetryEvent(
+                    "expired",
+                    "test",
+                    created_at=now - timedelta(days=31),
+                ),
+                TelemetryEvent(
+                    "turn_finished",
+                    "agent_service",
+                    payload={"stop_reason": "completed"},
+                    workspace_id=uuid4(),
+                    session_id=uuid4(),
+                    turn_index=3,
+                    run_id="run-1",
+                    created_at=now,
+                ),
+            ]
+        )
+
+        # Retention is enforced during process-level sink initialization.
+        SQLiteEventSink(path, retention_days=30)
+        with closing(sqlite3.connect(path)) as conn:
+            rows = conn.execute(
+                """
+                SELECT event_type, run_id, turn_index, payload
+                FROM telemetry_events ORDER BY event_id
+                """
+            ).fetchall()
+
+        self.assertEqual(1, len(rows))
+        self.assertEqual(("turn_finished", "run-1", 3), rows[0][:3])
+        self.assertEqual("completed", json.loads(rows[0][3])["stop_reason"])
+
+    def test_sqlite_sink_initialization_failure_falls_back_without_stopping_core(self) -> None:
+        with (
+            patch.object(telemetry_factory, "AGENT_EVENTS_SQLITE_ENABLED", True),
+            patch.object(telemetry_factory, "AGENT_EVENTS_FILE_ENABLED", False),
+            patch.object(telemetry_factory, "AGENT_EVENTS_POSTGRES_ENABLED", False),
+            patch.object(
+                telemetry_factory,
+                "SQLiteEventSink",
+                side_effect=OSError("read-only path"),
+            ),
+        ):
+            bus = telemetry_factory.create_event_bus()
+
+        self.addCleanup(bus.close)
+        self.assertEqual(1, len(bus.sinks))
+        self.assertIsInstance(bus.sinks[0], NoopEventSink)
+
+    def test_event_bus_factory_wires_sqlite_as_default_structured_sink(self) -> None:
+        path = _workspace_sqlite_path_or_skip(self, "learn-agent-telemetry-factory-")
+        self.addCleanup(path.unlink, missing_ok=True)
+        with (
+            patch.object(telemetry_factory, "AGENT_EVENTS_SQLITE_ENABLED", True),
+            patch.object(telemetry_factory, "AGENT_EVENTS_SQLITE_PATH", str(path)),
+            patch.object(telemetry_factory, "AGENT_EVENTS_ASYNC_WRITE", False),
+            patch.object(telemetry_factory, "AGENT_EVENTS_FILE_ENABLED", False),
+            patch.object(telemetry_factory, "AGENT_EVENTS_POSTGRES_ENABLED", False),
+        ):
+            bus = telemetry_factory.create_event_bus()
+        bus.publish(TelemetryEvent("turn_started", "test", run_id="run-factory"))
+        bus.close()
+
+        with closing(sqlite3.connect(path)) as conn:
+            row = conn.execute(
+                "SELECT event_type, run_id FROM telemetry_events"
+            ).fetchone()
+
+        self.assertEqual(("turn_started", "run-factory"), row)
+
+    def test_buffered_sqlite_sink_handles_burst_without_blocking_producers(self) -> None:
+        path = _workspace_sqlite_path_or_skip(self, "learn-agent-telemetry-burst-")
+        self.addCleanup(path.unlink, missing_ok=True)
+        sink = BufferedEventSink(
+            SQLiteEventSink(path),
+            batch_size=100,
+            flush_interval_seconds=0.01,
+            queue_max_size=2000,
+        )
+
+        started = time.perf_counter()
+        for index in range(1000):
+            sink.emit(
+                TelemetryEvent(
+                    "tool_finished",
+                    "burst-test",
+                    run_id=f"run-{index // 100}",
+                )
+            )
+        producer_seconds = time.perf_counter() - started
+        sink.flush()
+        sink.close()
+
+        with closing(sqlite3.connect(path)) as conn:
+            count = conn.execute(
+                "SELECT count(*) FROM telemetry_events"
+            ).fetchone()[0]
+
+        self.assertEqual(1000, count)
+        self.assertLess(producer_seconds, 0.5)
+
+    def test_slow_batch_sink_does_not_block_event_producer(self) -> None:
+        entered = threading.Event()
+        release = threading.Event()
+
+        class SlowBatchSink(MemorySink):
+            def emit_batch(self, events) -> None:
+                entered.set()
+                release.wait(timeout=1)
+                self.events.extend(events)
+
+        target = SlowBatchSink()
+        sink = BufferedEventSink(
+            target,
+            batch_size=1,
+            flush_interval_seconds=0.01,
+            queue_max_size=10,
+        )
+        started = time.perf_counter()
+        sink.emit(TelemetryEvent("turn_started", "test"))
+        producer_seconds = time.perf_counter() - started
+
+        self.assertTrue(entered.wait(timeout=1))
+        self.assertLess(producer_seconds, 0.05)
+        release.set()
+        sink.close()
+        self.assertEqual(1, len(target.events))
 
 
 if __name__ == "__main__":

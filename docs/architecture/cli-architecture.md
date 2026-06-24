@@ -1,4 +1,4 @@
-# CLI 架构优化方案
+# CLI 架构
 
 > 文档状态：Current
 > 权威范围：CLI 命令模块、配置、客户端和 daemon 生命周期管理内部设计
@@ -8,6 +8,19 @@
 > 当前 CLI 在每次 `chat` 时识别最近 Git 根目录，并将 `workspace_root` 与
 > `session_name` 发送给用户级 Core daemon。详细设计见
 > [`/docs/decisions/workspace-isolation-and-migration.md`](/docs/decisions/workspace-isolation-and-migration.md)。
+
+## 本文负责
+
+- CLI 命令模块、配置对象、同步 RPC client、daemon 管理和终端渲染的内部职责。
+- CLI 模块之间允许和禁止的依赖方向。
+- CLI 异常如何转换为用户可理解的错误。
+
+## 本文不负责
+
+- 不维护完整命令和参数清单；见 [CLI 命令参考](/docs/api/cli-reference.md)。
+- 不维护 RPC、事件或鉴权字段；见 `/docs/api/`。
+- 不解释双进程方案的历史取舍；见 [CLI / Core 设计决策](/docs/decisions/cli-core-json-rpc.md)。
+- 不解释 Core 内部 Agent、状态库或工具实现；见 `/docs/architecture/`。
 
 ## 目标
 
@@ -115,7 +128,7 @@ src/
 ## 调用流程
 
 完整的 CLI、RPC、Agent、工具、记忆和数据库时序见
-[Agent 完整数据流动示意图](/docs/architecture/agent-execution-architecture.md#完整数据流动示意图)。
+[Agent 完整数据流动示意图](/docs/architecture/agent-execution-call-chain.md#完整数据流动示意图)。
 
 ```text
 learn-agent chat
@@ -138,479 +151,38 @@ learn-agent chat
 5. `render.py` 只负责展示，不发送 RPC。
 6. 命令 handler 返回进程退出码，错误由 `main.py` 统一展示。
 
-## 设计优缺点
+## 设计取舍
 
-### 优点
+CLI / Core 双进程、命令模块化、独立 IPC 契约和 daemon 生命周期管理的选择原因、替代方案与代价，
+统一记录在 [CLI / Core 双进程与 JSON-RPC 设计决策](/docs/decisions/cli-core-json-rpc.md)。
 
-#### 1. CLI 命令职责清晰
+本文只记录当前 CLI 内部结构，不重复维护设计优缺点清单。
 
-每个命令独立存放在 `cli/commands/`，参数定义和执行逻辑位于同一个模块中。
+## 当前功能边界
 
-收益：
+当前支持能力由以下权威文档维护：
 
-- 新增命令时不需要持续修改大型 `main.py`。
-- `start`、`chat` 等命令可以独立测试。
-- 阅读代码时可以直接定位到对应命令。
-- 不同命令的依赖不会全部堆积到主入口。
+- CLI 命令、参数和退出行为：[CLI 命令参考](/docs/api/cli-reference.md)。
+- TCP、NDJSON、鉴权和连接生命周期：[Core IPC 协议](/docs/api/ipc-protocol.md)。
+- RPC 方法、参数和结果：[RPC 方法参考](/docs/api/rpc-reference.md)。
+- Agent 流式通知：[Agent 流式事件参考](/docs/api/streaming-events.md)。
+- 配置变量和默认值：[配置参数参考](/docs/reference/configuration-reference.md)。
+- 安全措施和限制：[安全模型](/docs/architecture/security-model.md)。
+- 尚未实现能力：[路线图与已知限制](/docs/product/roadmap-and-known-limitations.md)。
 
-相比在 `main.py` 中使用大量 `if/elif`，这种结构更适合命令数量持续增长的项目。
+CLI 架构文档不再复制上述清单，避免命令、RPC 或配置变化后出现多个互相冲突的版本。
 
-#### 2. CLI 与 Core 解耦
-
-CLI 不再导入 `core.agent`、`core.memory`、`core.tools` 或 Core 私有 Bus 模型。
-
-收益：
-
-- CLI 只能通过公开 IPC 协议调用 Core，边界更加明确。
-- 后续增加 TUI、Web 客户端时可以复用相同协议。
-- Core 内部重构不会直接破坏 CLI。
-- 更容易验证“任务只在 daemon 中执行”。
-
-#### 3. IPC 协议成为独立契约
-
-JSON-RPC 请求、响应和事件模型放在 `src/ipc/`，由 CLI 和 Core 共同依赖。
-
-收益：
-
-- 请求与响应结构只有一个定义来源。
-- Pydantic 可以在发送端和接收端进行一致验证。
-- 协议模型可以独立测试。
-- 未来可以增加协议版本或为其他客户端生成文档。
-
-#### 4. 配置加载时机明确
-
-CLI 入口首先加载并验证配置，再执行任何命令。
-
-收益：
-
-- 配置错误会在连接或启动 daemon 前暴露。
-- 同一个不可变配置对象贯穿命令、client 和 daemon 管理逻辑。
-- 避免不同模块分别读取配置后产生不一致。
-- 测试时可以直接构造配置对象。
-
-#### 5. daemon 生命周期对用户更友好
-
-CLI 提供 `start / status / stop`，用户不需要手动管理后台 Python 进程。
-
-收益：
-
-- 启动后通过 `core.ping` 确认服务真正可用。
-- 停止时通过 JSON-RPC 请求 Core 正常关闭。
-- PID、token 和日志文件集中存放。
-- 后续可以增加日志查看、重启和诊断命令。
-
-#### 6. 更适合测试
-
-命令 handler、RPC client、IPC 模型和 Core server 都有明确边界。
-
-收益：
-
-- 命令测试可以 mock daemon/client，不需要调用真实 LLM。
-- IPC 测试可以使用假的 Agent service。
-- Core Agent 测试不依赖 CLI。
-- 容易定位失败属于命令、协议、传输还是业务层。
-
-### 缺点与代价
-
-#### 1. 文件和抽象数量增加
-
-简单功能被拆分为多个模块：
-
-```text
-main
-command
-client
-ipc model
-router
-server
-service
-```
-
-代价：
-
-- 初学者需要理解更多层次才能追踪完整调用链。
-- 对只有一两个命令的小型脚本而言可能过度设计。
-- 修改一个跨层功能时可能需要同时调整多个文件。
-
-因此文档、命名和依赖规则必须保持准确，否则模块拆分只会变成形式上的复杂度。
-
-#### 2. IPC 增加运行复杂度
-
-CLI 与 Core 不再是普通函数调用，而是两个独立进程。
-
-代价：
-
-- 需要处理端口占用、daemon 未启动、连接断开和超时。
-- 需要管理 token、PID 和日志文件。
-- 调试时需要同时观察 CLI 与 Core。
-- 协议变更必须考虑客户端与 daemon 的兼容性。
-
-#### 3. JSON-RPC 模型需要持续维护
-
-公开协议成为稳定契约后，修改字段不能只考虑当前代码。
-
-代价：
-
-- 新增或修改 RPC 方法时需要同步更新模型、handler、client 和测试。
-- 未来 CLI 与 daemon 版本不一致时，需要协议版本协商或兼容策略。
-- 流式事件结构若缺少约束，会逐渐退化为不透明的 `dict`。
-
-#### 4. 当前配置采用环境覆盖与代码默认值
-
-部署参数和密钥可由操作系统环境变量或用户级 `.env` 提供，`src/config/settings.py` 保存可提交的
-开发默认值与尚未开放覆盖的内部策略常量。
-
-代价：
-
-- 环境变量缺少 TOML 一类配置文件的层次结构。
-- 配置在模块导入时解析，运行中的 daemon 不支持热更新。
-- 内部策略常量仍集中在 `settings.py`，尚未全部转换为严格配置模型。
-
-加载优先级和数据库部署方式见 [`/docs/operations/deployment.md`](/docs/operations/deployment.md)。
-
-#### 5. daemon 管理仍是应用自行实现
-
-当前 CLI 使用 `subprocess.Popen` 管理后台进程。
-
-代价：
-
-- 异常崩溃后可能留下旧 PID 或 token 文件。
-- 操作系统重启后不会自动恢复。
-- Windows、Linux 和 macOS 的后台进程行为存在差异。
-- 不具备 systemd、Windows Service 等系统服务管理器的可靠性。
-
-当前方案适合本地开发型 Agent。若未来作为长期稳定服务运行，应考虑接入操作系统服务管理器。
-
-#### 6. CLI 命令注册仍需要手动维护
-
-新增命令模块后，仍需在 `cli/commands/__init__.py` 中注册。
-
-代价：
-
-- 忘记注册时命令不会出现在 CLI 中。
-- 命令很多时注册列表会增长。
-
-现阶段显式注册更容易理解和检查。只有命令数量非常多时，才值得考虑插件式自动发现。
-
-#### 7. 顶层包名 `src` 不够标准
-
-当前导入路径为：
-
-```python
-from src.cli.client import CoreClient
-```
-
-代价：
-
-- `src` 是目录布局概念，不适合作为正式 Python 包名。
-- 安装后的公共导入路径缺少项目辨识度。
-- 容易与其他项目或工具中的 `src` 包发生概念混淆。
-
-长期应迁移为：
-
-```text
-src/learn_agent/
-```
-
-并使用：
-
-```python
-from learn_agent.cli.client import CoreClient
-```
-
-### 适用范围
-
-当前设计适合以下情况：
-
-- Agent 需要作为后台服务持续运行。
-- 未来会同时支持 CLI、TUI 或其他客户端。
-- CLI 命令和 RPC 方法会继续增加。
-- 需要流式输出、会话管理、工具调用和安全边界。
-
-如果项目只是一个一次性命令脚本，或者始终只有一个简单入口，则没有必要使用完整的双进程、IPC 和命令模块结构。
-
-当前项目已经具备长期运行 Agent 的需求，因此这些额外复杂度是合理的，但后续应避免为了“看起来分层”而继续增加没有实际职责的抽象。
-
-## 当前支持的功能边界
-
-本节描述当前代码已经实现的能力，不代表未来规划。
-
-### CLI 当前支持
-
-CLI 当前提供五组命令：
-
-```text
-learn-agent start
-learn-agent stop
-learn-agent stop --force
-learn-agent status
-learn-agent chat
-learn-agent session status
-learn-agent session resume
-learn-agent session discard
-```
-
-#### `start`
-
-当前支持：
-
-- 检查 Core daemon 是否已经运行。
-- 创建 `.agent_runtime/` 运行目录。
-- 生成随机本地鉴权 token。
-- 使用独立后台进程启动 Core。
-- 将 CLI 已验证的 host 和 port 传给 Core。
-- 轮询 `core.ping`，确认 Core 真正启动成功。
-- 将 Core 标准输出和错误写入 daemon 日志。
-
-当前不支持：
-
-- daemon 崩溃后自动重启。
-- 操作系统启动时自动启动。
-- 多个 Core 实例管理。
-- 自定义 daemon 名称或 profile。
-- 启动过程中展示结构化进度。
-
-#### `status`
-
-当前支持：
-
-- 使用 token 调用 `core.ping`。
-- 显示 Core 是否运行。
-- 显示 Core uptime。
-
-当前不支持：
-
-- 显示 PID、监听地址、版本兼容状态或活跃任务数。
-- 显示数据库、LLM、Docker 等依赖健康状态。
-- 区分 token 错误、端口占用和 daemon 未运行。
-
-#### `stop`
-
-当前支持：
-
-- 使用 JSON-RPC 调用 `core.shutdown`。
-- 等待 daemon 停止响应。
-- 清理 PID 和 token 文件。
-
-当前不支持：
-
-- 强制终止卡死进程。
-- 指定关闭超时。
-- 在关闭前列出或取消活跃任务。
-- 操作系统信号与 JSON-RPC shutdown 的统一状态报告。
-
-#### `chat`
-
-当前支持：
-
-- 使用默认 session 或 `--session` 指定会话。
-- 单次提问：
-
-  ```text
-  learn-agent chat "问题"
-  ```
-
-- 交互式连续输入：
-
-  ```text
-  learn-agent chat
-  ```
-
-- 忽略空输入。
-- 使用 `exit` 或 `quit` 离开交互模式。
-- 展示 LLM token 流。
-- 展示工具调用开始和结果步骤。
-- 展示 Agent 错误。
-
-当前不支持：
-
-- 任务取消。
-- 客户端断线后重新订阅流式结果。
-- 聊天历史列表、会话创建、重命名或删除命令。
-- Markdown 富文本、颜色、进度条或 TUI 展示。
-- 上传文件、图片或其他多模态输入。
-- 从 CLI 选择模型、工具权限或 Agent 类型。
-
-#### `session`
-
-`session` 命令用于查看和控制当前 Workspace 中尚未完成的 Execution：
-
-```text
-learn-agent session status --session default
-learn-agent session resume --session default
-learn-agent session resume --session default --instruction "先只完成测试修复"
-learn-agent session discard --session default
-```
-
-当前支持：
-
-- 查询待恢复 Execution、checkpoint 状态和后台维护任务数量。
-- 使用新的 Grant 从 LangGraph checkpoint 继续未完成任务。
-- 为恢复执行附加一条补充指令。
-- 丢弃待恢复 Execution，同时保留审计记录。
-
-当前不支持：
-
-- 列出 Workspace 中所有 Session。
-- 恢复 checkpoint 缺失或被标记为不可恢复的 Execution。
-- 修改历史消息后从任意旧节点创建分支。
-- 取消正在执行中的 Grant。
-
-### CLI 配置边界
-
-CLI 当前只读取并验证：
-
-```text
-LEARN_AGENT_CORE_HOST
-LEARN_AGENT_CORE_PORT
-LEARN_AGENT_CORE_CONNECT_TIMEOUT_SECONDS
-LEARN_AGENT_DAEMON_STARTUP_TIMEOUT_SECONDS
-LEARN_AGENT_DAEMON_STOP_TIMEOUT_SECONDS
-LEARN_AGENT_RUNTIME_DIR
-DEFAULT_SESSION_ID
-```
-
-CLI 不负责读取或解释：
-
-```text
-模型名称和模型密钥
-数据库连接配置
-工具配置
-记忆提取策略
-上下文压缩策略
-Hook sink 配置
-Docker 沙盒配置
-```
-
-这些业务配置由 Core daemon 使用。
-
-配置优先级为“进程环境变量 > 用户级 `.env` > `src/config/settings.py` 默认值”。CLI 不支持
-TOML 或任意命令行配置覆盖；仅由明确的命令参数覆盖对应操作参数。
-
-### RPC Client 当前支持
-
-`CoreClient` 当前支持：
-
-- 同步、单请求单连接调用模型。
-- 每次请求创建独立 TCP 连接。
-- 为请求生成唯一 `request_id`。
-- 自动读取本地 token 并加入请求参数。
-- 发送单行 NDJSON JSON-RPC 请求。
-- 验证 JSON-RPC 成功响应和错误响应。
-- 接收与当前请求关联的 `agent.event` 流式通知。
-- 将通知传给调用方提供的回调函数。
-
-当前不支持：
-
-- 异步 client；未来 TUI 应新增独立 async client，而不是阻塞事件循环。
-- 长连接和连接池。
-- 同一连接并发发送多个请求。
-- 自动重试。
-- 请求取消。
-- 断线重连和事件续传。
-- 客户端与 daemon 的协议版本协商。
-- TLS 或远程网络连接。
-
-### IPC 协议当前支持
-
-当前 RPC 方法：
-
-```text
-core.ping
-core.shutdown
-agent.chat
-session.status
-session.resume
-session.discard
-```
-
-当前服务端通知：
-
-```text
-agent.event
-```
-
-当前 `agent.event` 可携带：
-
-```text
-token
-step
-error
-done
-```
-
-当前协议能力：
-
-- JSON-RPC 2.0 请求、成功响应和错误响应。
-- NDJSON 消息分帧。
-- Pydantic 严格模型验证。
-- 最大消息长度限制。
-- 本地 token 鉴权。
-- 标准 parse error、invalid request、method not found、invalid params 和 internal error。
-
-当前协议限制：
-
-- 事件内部 `data` 仍然是通用字典，没有为每类事件建立严格模型。
-- 没有协议版本、功能协商或兼容性声明。
-- 没有批量 JSON-RPC 请求。
-- 不支持 JSON-RPC notification 形式的客户端请求。
-- 仅支持本机回环地址。
-
-### Core daemon 当前支持
-
-Core 当前支持：
-
-- 监听本机 TCP 回环地址。
-- 验证 JSON-RPC 请求、参数和 token。
-- 根据 RPC method 分发 handler。
-- 使用 `AgentTurnService` 执行完整 Agent turn。
-- 同一个 session 串行执行。
-- 不同 session 并行执行。
-- 流式返回 token、步骤、错误和完成事件。
-- 保存会话上下文、消息和长期记忆。
-- 接收正常 shutdown 请求。
-
-当前不支持：
-
-- Core 集群或多实例协调。
-- 分布式 session 锁。
-- 任务队列、任务恢复和任务重放。
-- 活跃任务查询。
-- 优雅取消正在运行的 LLM 或工具调用。
-- 权限角色，不同合法客户端拥有相同 RPC 权限。
-- 远程客户端访问。
-
-### 安全边界
-
-当前安全措施：
-
-- Core 只允许绑定回环地址。
-- CLI 启动时验证 host 必须是回环地址。
-- daemon 使用随机 token。
-- 每个 RPC 请求必须通过 token 鉴权。
-- token 文件不会提交到 Git。
-- 请求进入 Agent 前必须通过协议和参数验证。
-
-当前安全限制：
-
-- token 对本机当前用户可见，不是完整用户身份认证系统。
-- 没有请求级权限模型。
-- 没有 TLS。
-- 没有 token 轮换和失效机制。
-- daemon 生命周期管理不是操作系统服务级隔离。
-- Agent 工具本身的安全性仍依赖工具层和容器沙盒。
-
-### 模块职责边界
+## 模块职责边界
 
 ```text
 cli/main.py
-    只负责配置加载、命令注册、参数解析和统一错误处理。
+    负责配置加载、命令注册、参数解析和统一错误处理。
 
 cli/commands/
     负责各命令参数和用户工作流。
 
 cli/client.py
-    负责 JSON-RPC 请求与流式通知接收。
+    负责同步 JSON-RPC 请求与流式通知接收。
 
 cli/daemon.py
     负责 Core 后台进程生命周期。
@@ -619,16 +191,10 @@ cli/render.py
     负责终端展示。
 
 ipc/
-    负责 CLI 与 Core 共享的协议模型和本地凭据。
-
-core/bus/
-    负责服务端分帧、路由、连接和响应。
-
-core/agent/service.py
-    负责一次 Agent turn 的业务编排。
+    负责 CLI、TUI 与 Core 共享的协议模型和本地凭据。
 ```
 
-以下依赖不允许出现：
+禁止的依赖方向：
 
 ```text
 CLI -> Core Agent / Memory / Tools
@@ -637,7 +203,6 @@ IPC -> Core Agent
 Render -> RPC Client
 Tool -> CLI
 ```
-
 ## 异常与容错策略
 
 CLI 不直接向用户暴露 socket、JSON、Pydantic 或文件系统异常。底层异常会先转换为稳定的 CLI 领域异常，再由入口或交互命令决定如何展示和恢复。

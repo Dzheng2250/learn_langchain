@@ -8,7 +8,7 @@ from langgraph.prebuilt import tools_condition
 from src.config.settings import FILE_READ_CHUNK_LINES
 from src.core.common.debug import debug_print, format_message, format_messages
 from src.core.telemetry import emit_event, record_error
-from src.core.llm.provider import LlmPurpose, ModelProvider, OpenAICompatibleProvider
+from src.core.llm.contracts import LlmPurpose, ModelProvider
 from src.core.prompts import build_parent_system_prompt
 from src.core.tasks.context import ToolExecutionContext
 from src.core.tools.observed import ObservedToolNode
@@ -17,15 +17,14 @@ from src.core.tools.observed import ObservedToolNode
 def create_parent_graph(
     parent_tools: list,
     skill_manifest: str,
-    model_provider: ModelProvider | None = None,
+    model_provider: ModelProvider,
     *,
     checkpointer=None,
     risk_by_name=None,
     task_planning_enabled: bool = False,
 ):
     """Create one compiled graph permanently bound to a WorkspaceRuntime."""
-    provider = model_provider or OpenAICompatibleProvider()
-    llm_with_tools = provider.create_chat_model(
+    llm_with_tools = model_provider.create_chat_model(
         LlmPurpose.PARENT_AGENT,
         temperature=0.7,
         streaming=True,

@@ -6,25 +6,31 @@ from src.core.errors.models import (
     ErrorCategory,
     ErrorResolution,
     ParsedProviderError,
+    ProviderErrorEnvelope,
 )
 from src.core.errors.parsers import (
     AliyunErrorParser,
-    OpenAICompatibleErrorParser,
+    AnthropicErrorParser,
     ProviderErrorParser,
+    ProviderErrorAdapter,
     ProviderErrorParserRegistry,
+    GenericProviderErrorParser,
 )
 from src.core.errors.policy import DefaultErrorResolutionPolicy, ErrorResolutionPolicy
 
 __all__ = [
     "AliyunErrorParser",
+    "AnthropicErrorParser",
     "DefaultErrorResolutionPolicy",
     "ErrorAction",
     "ErrorCategory",
     "ErrorResolution",
     "ErrorResolutionPolicy",
-    "OpenAICompatibleErrorParser",
     "ParsedProviderError",
     "ProviderErrorHandler",
+    "ProviderErrorEnvelope",
+    "ProviderErrorAdapter",
+    "GenericProviderErrorParser",
     "ProviderErrorParser",
     "ProviderErrorParserRegistry",
 ]

@@ -8,6 +8,19 @@
 跨 `state.db` / `checkpoints.db` 的一致性机制见
 [`/docs/architecture/database-state-and-consistency.md`](/docs/architecture/database-state-and-consistency.md)。
 
+## 本文负责
+
+- 完整消息、短期上下文和长期记忆三者的领域职责。
+- 每轮上下文与记忆如何加载、压缩、提取和注入。
+- Workspace 记忆隔离、触发策略、过滤和保存规则。
+
+## 本文不负责
+
+- 不维护数据库表、字段、外键或索引；见 [本地状态数据库 Schema 参考](/docs/reference/local-state-schema.md)。
+- 不维护后台任务、Outbox、CAS 和跨库一致性通用规则；见数据库一致性架构文档。
+- 不维护完整事件字段清单；见 [Telemetry Event 系统](/docs/architecture/event-system.md)。
+- 不维护产品路线图；见 [路线图与已知限制](/docs/product/roadmap-and-known-limitations.md)。
+
 ## 三类数据不能混为一谈
 
 当前项目将记忆相关数据分为三层：
@@ -46,64 +59,16 @@ Workspace
 - `memory_sources` 的记忆侧使用 Workspace 复合外键；消息侧当前只校验全局唯一 `message_id`。
   正常写入路径只使用当前 Session 的来源消息，但数据库层尚未完全强制消息来源属于同一 Workspace。
 
-## 数据库结构
+## 数据归属
 
-```mermaid
-flowchart LR
-    Workspace["workspaces"]
-    Session["sessions<br/>summary / recent_messages / turn_index"]
-    Message["messages<br/>完整消息归档"]
-    Memory["memories<br/>长期记忆"]
-    Source["memory_sources<br/>记忆来源"]
+记忆相关数据的所有权保持不变：
 
-    Workspace --> Session
-    Session --> Message
-    Workspace --> Memory
-    Memory --> Source
-    Message --> Source
+- 完整消息和短期上下文绑定 Session。
+- 长期记忆绑定 Workspace，可被同一 Workspace 的多个 Session 检索。
+- 记忆来源关联已提交消息，用于审计提取依据。
 
-    classDef identity fill:#dce9ff,stroke:#5b85c5,color:#222;
-    classDef short fill:#e2f0d9,stroke:#6f9f55,color:#222;
-    classDef durable fill:#fff3cd,stroke:#d6a100,color:#222;
-    class Workspace identity;
-    class Session short;
-    class Message,Memory,Source durable;
-```
-
-### `sessions`
-
-每个 Workspace 内的 Session 名称唯一。主要字段：
-
-- `summary`：旧对话的压缩摘要。
-- `recent_messages`：近期原始消息，使用 LangChain message JSON 格式。
-- `turn_index`：已成功保存的轮次数。
-
-### `messages`
-
-保存每轮完整消息，包括 user、assistant 和 tool 消息。`content` 用于普通查询和审计，`raw`
-保存可恢复的 LangChain message 结构，`turn_index` 标识消息属于哪一轮。
-
-上下文压缩只修改 `sessions` 中的有限上下文，不会删除 `messages` 中的完整历史。
-
-当前普通 Agent Turn 只有在 LangGraph 返回 `done` 后才归档消息。如果 Graph 在完成前返回错误，
-该失败轮次不会写入完整消息归档。无 LLM 诊断请求不会写入消息归档。
-
-### `memories`
-
-保存从历史轮次提取出的稳定知识：
-
-- `kind`：例如项目事实、用户偏好、架构决策或任务状态。
-- `content`：记忆主体。
-- `tags`：结构化标签。
-- `importance`：重要度。
-- `confidence`：置信度。
-- `archived_at`：归档标记；检索会排除已归档记忆。
-
-### `memory_sources`
-
-将长期记忆关联到来源消息，用于追踪记忆来源。当前记忆侧复合外键可以阻止记忆本身跨 Workspace，
-消息侧的 Workspace 复合约束仍属于后续 Schema 加固项。
-
+完整表关系、字段和约束统一维护在
+[本地状态数据库 Schema 参考](/docs/reference/local-state-schema.md)。
 ## 每轮如何加载
 
 ### 正常 Agent Turn
@@ -247,88 +212,41 @@ recent_messages: list
 
 ## 事件与可观测性
 
-| 事件 | 含义 |
-|---|---|
-| `memory_retrieved` | 已执行长期记忆检索 |
-| `memory_saved` | 记忆事务提交成功 |
-| `memory_failed` | 提取或保存失败 |
-| `maintenance_job_failed` | 记忆或摘要后台任务执行失败 |
-| `maintenance_job_succeeded` | 后台维护任务完成 |
-| `context_summary_skipped` | 未达到压缩阈值或诊断模式跳过 |
-| `context_summarize_triggered` | 开始压缩旧上下文 |
-| `context_summarized` | 摘要更新成功 |
-| `context_summary_failed` | 摘要失败并执行降级 |
+记忆检索、提取、保存、失败以及上下文摘要都会发布 Telemetry Event，并继承当前
+`workspace_id / session_id / turn_index / run_id` 上下文。
 
-Agent Turn 事件携带 `workspace_id / session_id / turn_index / run_id`，用于追踪一次执行中的记忆
-活动。
+事件名称、payload 白名单、Sink 和可靠性边界统一维护在
+[Telemetry Event 系统](/docs/architecture/event-system.md)。本篇只规定：`memory_saved` 必须在记忆事务
+提交成功后发布，观测事件不能成为业务成功条件。
 
-## 重启与恢复
+## 持久化与恢复边界
 
-Core 重启后不会依赖进程内消息列表恢复会话。下一轮请求会从 `state.db` 加载：
+Core 重启后会从 `state.db` 重新加载 Session 的摘要、近期消息、轮次和当前 Workspace 的长期记忆，
+不依赖进程内消息列表。完整消息仍保存在消息归档中。
 
-- Session 的 `summary`、`recent_messages` 和 `turn_index`。
-- 当前 Workspace 中与本轮问题相关的长期记忆。
+成功 Turn 的消息、近期上下文和维护任务必须原子提交；摘要和长期记忆允许后台滞后并重试。
+通用事务、checkpoint 和恢复规则见
+[本地数据库设计与一致性机制](/docs/architecture/database-state-and-consistency.md)。
 
-完整历史仍保存在 `state.db.messages`，但当前 CLI 尚未提供完整历史展示或任意历史消息重新装载到
-上下文的命令。
-
-## 当前一致性边界
-
-### 已保证
-
-- 同一 Session 通过 Session UUID 锁串行执行。
-- 长期记忆及来源关系在同一个数据库事务中保存。
-- `memory_saved` 只在记忆事务提交成功后发布。
-- Session、消息和记忆查询均带 Workspace 边界；`memory_sources` 消息侧复合外键仍需补充。
-
-### 尚未保证
-
-当前成功 Turn 使用统一 Unit of Work：
-
-```text
-begin transaction
-  append turn messages
-  update recent_messages / turn_index / branch head
-  finish Execution
-  enqueue context_summary / memory_extract / checkpoint_cleanup
-commit
-  -> 返回 done
-  -> MaintenanceScheduler 后台认领
-```
-
-摘要和记忆允许短暂滞后；完整消息、近期上下文和维护任务必须一起提交。`state.db` 与
-`checkpoints.db` 无法使用一个事务，Execution checkpoint 状态和启动恢复协调器负责最终收敛。
-
-## 当前能力边界与演进方向
-
-当前不支持：
-
-- 全局用户记忆和跨 Workspace 记忆共享。
-- pgvector 语义检索。
-- 记忆显式查看、编辑、归档和删除命令。
-- Session 完整历史列表与恢复命令。
-- 长期记忆冲突检测、过期策略和自动衰减。
-- 维护任务详情查询、手动重试和历史清理命令。
-
-推荐演进顺序：
-
-1. 增加 Session 历史查询和记忆查看/删除命令。
-2. 抽象 `MemoryRetriever` Strategy，引入 Workspace 过滤后的 pgvector 混合检索。
-3. 增加记忆冲突、过期、归档和来源可信度策略。
-4. 增加维护任务查询、重试、保留和积压告警。
+当前未支持的全局记忆、语义检索、记忆管理命令和冲突衰减策略统一登记在
+[路线图与已知限制](/docs/product/roadmap-and-known-limitations.md)，本篇不再维护独立路线图。
 
 ## 代码入口与测试
 
 | 关注点 | 主要实现 |
 |---|---|
-| 单轮加载与执行编排 | `src/core/agent/service.py`、`coordinator.py` |
-| 最小原子提交 | `src/core/finalization/` |
-| 摘要与记忆后台任务 | `src/core/maintenance/` |
-| 短期上下文构造与压缩 | `src/core/context/manager.py` |
-| Session、消息与长期记忆 facade | `src/core/state/store.py` |
-| 数据访问 Repository | `src/core/state/` |
+| 单轮上下文与记忆装配 | `src/core/context/loader.py::ConversationContextLoader` |
+| 前台记忆读取端口 | `src/core/ports/state.py::MemoryRetrievalStore` |
+| SQLite 记忆召回 adapter | `src/core/adapters/sqlite/memory_store.py::SQLiteMemoryRetrievalStore` |
+| SQLite 记忆写入 adapter | `src/core/adapters/sqlite/memory_write_store.py::SQLiteMemoryWriteStore` |
+| 摘要策略与执行 | `src/core/context/manager.py`、`summary_policy.py`、`summary_executor.py` |
+| 后台摘要与记忆提取 | `src/core/maintenance/handlers.py` |
 | 长期记忆提取策略 | `src/core/memory/policy.py`、`extractor.py` |
-| 数据库表和约束 | `src/core/state/schema.sql` |
+| 成功 Turn 最小提交 | `src/core/finalization/` |
+| Schema 事实 | `src/core/state/schema.sql`、`docs/reference/local-state-schema.md` |
+
+兼容 `LocalStateStore` 仍存在，但不再作为新记忆能力的首选扩展点。新增检索或存储实现应通过
+`MemoryRetrievalStore` 等端口接入。
 
 关键测试：
 

@@ -1,8 +1,18 @@
 # Agent 流式事件参考
 
 > 文档状态：Current
-> 权威范围：`agent.chat` 和 `session.resume` 的服务端流式通知契约
+> 权威范围：`agent.chat` 与 `session.resume` 的服务端流式通知契约
 > 维护触发：新增、删除或修改流式事件
+
+## 本文负责
+
+- 定义 `agent.event` 的外层字段、事件顺序和 payload。
+- 说明 CLI、TUI 或第三方前端如何处理 token、工具步骤、模型重试、错误和 done。
+
+## 本文不负责
+
+- 不解释 Agent 为什么产生某个事件；见 [Agent 执行架构](/docs/architecture/agent-execution-architecture.md)。
+- 不定义 Telemetry Event 或 System Trace；见 [Event 系统](/docs/architecture/event-system.md) 和 [System Trace](/docs/architecture/system-tracing.md)。
 
 `agent.chat` 和 `session.resume` 执行期间，Core 使用 JSON-RPC notification 推送事件：
 
@@ -23,32 +33,83 @@
 
 | 字段 | 含义 |
 |---|---|
-| `request_id` | 对应原始 JSON-RPC 请求 ID |
-| `run_id` | Core 为本次 chat/resume 创建的运行 ID |
-| `event` | 事件类型 |
-| `data` | 该事件的具体数据 |
+| `request_id` | 对应原始 JSON-RPC 请求 ID。 |
+| `run_id` | Core 为本次 chat/resume 创建的运行 ID。 |
+| `event` | 事件类型。 |
+| `data` | 事件 payload。前端必须忽略未知字段。 |
 
-客户端必须使用 `request_id` 过滤通知；不能假设一条连接之外不存在其他请求。
+客户端必须用 `request_id` 过滤通知，不能假设单连接内只有一个请求。
 
 ## 事件顺序
 
 ```text
-0..N 个 token / step
+0..N 个 token / step / model_retry_*
   -> done 或 error
   -> 最终 JSON-RPC success response
 ```
 
-当前实现中 `done` 和 `error` 是终止事件。最终 JSON-RPC 响应用于确认 RPC handler 已结束，并携带聚合后的最终结果。
+`done` 和 `error` 是终止事件。最终 JSON-RPC 响应用于确认 handler 已结束，并携带聚合后的最终结果。
 
 ## `token`
 
-增量模型文本：
+模型增量文本：
 
 ```json
-{"event":"token","data":{"content":"部分文本"}}
+{"event":"token","data":{"content":"部分文本","attempt_id":"..."}}
 ```
 
-并非所有 Provider 都保证产生 token。前端应支持只收到完整 `step.agent_message` 的情况。
+| 字段 | 含义 |
+|---|---|
+| `content` | 增量文本。 |
+| `attempt_id` | 可选。当前 LLM 尝试 ID；模型重试时会变化。 |
+
+并非所有 Provider 都保证产生 token。前端必须支持只收到完整 `step.agent_message` 的情况。
+
+## 模型重试事件
+
+Core 会在当前 LLM 调用内部处理短期限流、网络中断和临时服务不可用。重试事件只描述当前模型调用，不代表整个 Agent Turn 已经失败。
+
+### `model_retry_scheduled`
+
+```json
+{
+  "event": "model_retry_scheduled",
+  "data": {
+    "purpose": "parent_agent",
+    "attempt": 1,
+    "next_attempt": 2,
+    "max_attempts": 3,
+    "delay_seconds": 1.5,
+    "error_category": "service_unavailable",
+    "request_id": "provider-request-id"
+  }
+}
+```
+
+前端应显示“模型临时失败，稍后重试”，不要提示用户手动 resume。
+
+### `model_attempt_invalidated`
+
+如果一次模型尝试已经输出了部分 token，随后该尝试失败并进入重试，Core 会发送：
+
+```json
+{"event":"model_attempt_invalidated","data":{"attempt":1,"error_category":"timeout"}}
+```
+
+前端处理规则：
+
+- 不删除已经展示的草稿。
+- 将草稿标记为 stale/incomplete，说明它不是最终回答。
+- 后续成功尝试的 token 才能作为当前回复继续展示。
+- stale 草稿不得写入正式对话历史。
+
+### `model_retry_exhausted`
+
+```json
+{"event":"model_retry_exhausted","data":{"error_category":"rate_limited","attempt":3}}
+```
+
+表示当前 LLM 调用的模型级重试预算耗尽。随后 Core 会根据错误类别发送 `error` 或 `done(status=paused|terminated)`。
 
 ## `step`
 
@@ -74,7 +135,7 @@
 }
 ```
 
-`args` 当前可能包含工具参数。前端不得长期保存或公开展示未经处理的参数，因为其中可能含路径或用户内容。
+`args` 是经过前端可见策略处理的参数预览，可能被截断或脱敏。前端不应长期保存未处理参数，因为其中可能包含路径或用户内容。
 
 ### 工具调用结果
 
@@ -98,11 +159,11 @@
 {"event":"step","data":{"type":"agent_message","content":"完整回答"}}
 ```
 
-当前 CLI 仅在没有收到 token 时将其作为输出兜底，避免重复显示回答。
+CLI/TUI 仅在没有收到 token 时将其作为输出兜底，避免重复显示回答。
 
 ## `done`
 
-表示 Agent 已完成、暂停或完成诊断：
+表示 Agent 已完成、暂停或终止：
 
 ```json
 {
@@ -118,24 +179,15 @@
 }
 ```
 
-常见 `stop_reason`：
+常见 `status`：
 
-```text
-completed
-llm_not_configured
-graph_step_limit
-tool_call_limit
-budget_limit
-grant_wall_time_limit
-client_disconnected
-graph_error
-turn_error
-```
+| status | 含义 |
+|---|---|
+| `ok` | 本次请求完成。 |
+| `paused` | Execution 仍可恢复，需要 `session.resume`。 |
+| `terminated` | 本轮被 Core 主动终止。若 `auto_recovered=true`，Session 已回到上一轮成功提交状态。 |
 
-`status: paused` 表示本次请求结束，但 Execution 仍可通过 `session.status` 和 `session.resume` 继续。
-`status: terminated` 表示本次请求已经被 Core 主动终止。典型场景是模型服务商拒绝了当前输入
-或请求参数。若 `auto_recovered=true`，表示本轮失败输入没有写入会话历史，Session 已恢复到上一轮
-成功提交的状态，客户端不应提示用户执行 `resume` 或 `discard`。
+自动恢复的典型 payload：
 
 ```json
 {
@@ -152,17 +204,7 @@ turn_error
 }
 ```
 
-失败来源字段含义：
-
-| 字段 | 含义 | 示例 |
-|---|---|---|
-| `failure_source` | 哪个子系统报告失败 | `agent_turn` |
-| `failure_scope` | 失败影响范围 | `current_turn` |
-| `failure_stage` | 失败发生在哪个阶段 | `parent_model_provider` / `parent_graph` / `context_summary` / `memory_extraction` |
-| `user_action` | 前端推荐用户操作 | `revise_input_and_retry` / `resume_later` |
-
-这些字段用于区分“当前对话模型调用失败”和“后台摘要、长期记忆等维护任务失败”。后台维护失败不会通过
-当前请求的 `done` 表示，应通过 `session.status.maintenance.recent_failures` 和日志 trace 查看。
+后台摘要、长期记忆等维护任务失败不会通过当前请求的 `done` 表示；应通过 `session.status.maintenance` 和 Trace/Telemetry 排查。
 
 ## `error`
 
@@ -171,7 +213,6 @@ turn_error
   "event": "error",
   "data": {
     "type": "provider_error",
-    "stop_reason": "graph_error",
     "message": "安全的用户可见错误",
     "error_category": "rate_limited",
     "error_action": "pause",
@@ -184,7 +225,7 @@ turn_error
 }
 ```
 
-Provider 错误还可能包含 `provider`、`provider_code` 和 `http_status`。客户端应展示安全的 `message`，不要把未知内部字段直接暴露给用户。
+前端应展示 `message`，并可在调试模式展示 `failure_*` 与 `request_id`。不要展示 API key、完整 Provider 原始响应或 traceback。
 
 ## 断线语义
 
@@ -193,8 +234,4 @@ Provider 错误还可能包含 `provider`、`provider_code` 和 `http_status`。
 - 已开始的当前 Slice 可以继续结束。
 - Core 不再向断开的客户端发送事件。
 - Core 会在开始下一 Slice 前暂停 Execution。
-- 客户端应使用 `session.status` 查询状态，而不是自动重发 `agent.chat`。
-
-## 兼容性要求
-
-当前 `event.data` 仍是通用字典。前端应忽略未知事件字段，并对未知 `step.type` 使用通用进度展示。未来会逐步将各事件改为严格模型。
+- 客户端应使用 `session.status` 查询状态，而不是自动重发非幂等请求。

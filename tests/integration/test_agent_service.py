@@ -15,10 +15,14 @@ from src.core.errors import ErrorCategory
 from src.core.llm.provider import LlmConfigurationStatus
 from src.core.maintenance.repository import MaintenanceRepository
 from src.config.settings import CORE_AGENT_WORKERS
-from src.core.agent.service import AgentTurnService, SessionLockRegistry
+from src.core.agent.locking import SessionLockRegistry
+from tests.support.agent_services import build_agent_turn_service
+from src.core.agent.worker import TurnWorkerExecutor
+from tests.support.session_services import build_session_lifecycle_service
 from src.core.state import ExecutionRepository, LocalStateDatabase, LocalStateStore
 from src.core.state.workspace import LocalWorkspaceRepository
 from src.core.workspace.models import SessionContext, WorkspaceContext
+from tests.support.model_providers import UnusedModelProvider
 
 
 class SessionLockRegistryTest(unittest.TestCase):
@@ -73,13 +77,18 @@ class SessionLockRegistryTest(unittest.TestCase):
 
 
 class AgentTurnExecutorTest(unittest.IsolatedAsyncioTestCase):
-    def _service(self, executor=None, max_concurrent_turns=CORE_AGENT_WORKERS):
-        return AgentTurnService(
+    def _service(self, executor=None, max_concurrent_turns=CORE_AGENT_WORKERS, sync_runner=None):
+        worker = TurnWorkerExecutor(
+            executor=executor,
+            max_workers=max_concurrent_turns,
+        )
+        return build_agent_turn_service(
             workspace_repository=Mock(),
             runtime_registry=Mock(),
             state_store_factory=Mock(),
-            turn_executor=executor,
+            turn_worker=worker,
             max_concurrent_turns=max_concurrent_turns,
+            sync_turn_runner=sync_runner,
         )
 
     async def test_injected_executor_bounds_concurrent_turns(self):
@@ -99,7 +108,7 @@ class AgentTurnExecutorTest(unittest.IsolatedAsyncioTestCase):
                 active -= 1
             return {"status": "ok"}
 
-        service._run_turn_sync = run_sync
+        service.async_turn_runner.sync_runner.run_turn = run_sync
         try:
             await asyncio.gather(*(service.run_turn(".", f"s-{index}", "hello") for index in range(5)))
         finally:
@@ -120,7 +129,7 @@ class AgentTurnExecutorTest(unittest.IsolatedAsyncioTestCase):
     async def test_default_executor_uses_configured_worker_limit(self):
         service = self._service()
         try:
-            self.assertEqual(CORE_AGENT_WORKERS, service._turn_executor._max_workers)
+            self.assertEqual(CORE_AGENT_WORKERS, service.async_turn_runner.turn_worker._executor._max_workers)
         finally:
             service.close()
 
@@ -146,7 +155,7 @@ class AgentTurnExecutorTest(unittest.IsolatedAsyncioTestCase):
                 second_started.set()
             return {"status": "ok"}
 
-        service._run_turn_sync = run_sync
+        service.async_turn_runner.sync_runner.run_turn = run_sync
         first = asyncio.create_task(service.run_turn(".", "first", "hello"))
         self.assertTrue(await asyncio.to_thread(first_started.wait, 1))
         first.cancel()
@@ -184,7 +193,7 @@ class DiagnosticTurnTest(unittest.TestCase):
                 self.loaded = 0
                 self.closed = False
 
-            def load_session(self, _session):
+            def load_context(self, _session):
                 self.loaded += 1
                 return AgentContextState(), 0
 
@@ -199,14 +208,14 @@ class DiagnosticTurnTest(unittest.TestCase):
 
         store = Store()
         runtime_registry = Mock()
-        service = AgentTurnService(
+        service = build_agent_turn_service(
             workspace_repository=Repository(),
             runtime_registry=runtime_registry,
             state_store_factory=lambda: store,
             model_configuration=MissingConfiguration(),
         )
         try:
-            with patch("src.core.agent.service.emit_event") as emit:
+            with patch("src.core.diagnostics.turn.emit_event") as emit:
                 first = list(service.stream_turn(".", "default", "检查连接", run_id="run-1"))
                 second = list(service.stream_turn(".", "default", "再次检查", run_id="run-2"))
         finally:
@@ -224,7 +233,7 @@ class DiagnosticTurnTest(unittest.TestCase):
         self.assertNotIn("turn_finished", event_types)
         runtime_registry.get.assert_not_called()
         self.assertEqual(2, store.loaded)
-        self.assertTrue(store.closed)
+        self.assertFalse(store.closed)
 
 
 class GoalModeRoutingTest(unittest.TestCase):
@@ -241,7 +250,7 @@ class GoalModeRoutingTest(unittest.TestCase):
                 return LlmConfigurationStatus(True)
 
         class Store:
-            def load_session(self, _session):
+            def load_context(self, _session):
                 return AgentContextState(), 0
 
             def retrieve_for_turn(self, *_args, **_kwargs):
@@ -271,7 +280,7 @@ class GoalModeRoutingTest(unittest.TestCase):
 
         registry = Mock()
         registry.get.return_value = runtime
-        return AgentTurnService(
+        return build_agent_turn_service(
             workspace_repository=self.workspace_repository,
             runtime_registry=registry,
             state_store_factory=Store,
@@ -408,12 +417,13 @@ class GoalModeRoutingTest(unittest.TestCase):
         self.assertIn("no pending execution", events[-1]["data"]["message"])
 
     def test_discard_without_pending_execution_returns_idle(self):
-        service = self._service(Mock(graph=Mock(), goal_graph=Mock()))
         workspace_root = str(Path("tests/fixtures/workspace_a").resolve())
-        try:
-            result = service.discard_pending(workspace_root, "idle-discard")
-        finally:
-            service.close()
+        service = build_session_lifecycle_service(
+            database=self.database,
+            workspace_repository=self.workspace_repository,
+            execution_repository=self.execution_repository,
+        )
+        result = service.discard_pending(workspace_root, "idle-discard")
 
         self.assertEqual("idle", result["status"])
         self.assertIn("no pending execution", result["message"])
@@ -487,10 +497,10 @@ class ProviderErrorResolutionIntegrationTest(unittest.TestCase):
 
         runtime_registry = Mock()
         runtime_registry.get.return_value = Mock(graph=RejectedGraph())
-        service = AgentTurnService(
+        service = build_agent_turn_service(
             workspace_repository=self.workspace_repository,
             runtime_registry=runtime_registry,
-            state_store_factory=lambda: LocalStateStore(self.database),
+            state_store_factory=lambda: LocalStateStore(self.database, UnusedModelProvider()),
             model_configuration=ConfiguredModel(),
             execution_repository=self.execution_repository,
         )
@@ -532,7 +542,7 @@ class ProviderErrorResolutionIntegrationTest(unittest.TestCase):
         )
         session, _ = self.workspace_repository.resolve_session(workspace, "default")
         self.assertIsNone(self.execution_repository.get_attached(session))
-        state, turn_index = LocalStateStore(self.database).load_session(session)
+        state, turn_index = LocalStateStore(self.database, UnusedModelProvider()).load_session(session)
         self.assertEqual(0, turn_index)
         self.assertEqual([], state.recent_messages)
         next_execution = self.execution_repository.begin(session, "safe input")
@@ -553,10 +563,10 @@ class ProviderErrorResolutionIntegrationTest(unittest.TestCase):
 
         runtime_registry = Mock()
         runtime_registry.get.return_value = Mock(graph=RateLimitedGraph())
-        service = AgentTurnService(
+        service = build_agent_turn_service(
             workspace_repository=self.workspace_repository,
             runtime_registry=runtime_registry,
-            state_store_factory=lambda: LocalStateStore(self.database),
+            state_store_factory=lambda: LocalStateStore(self.database, UnusedModelProvider()),
             model_configuration=ConfiguredModel(),
             execution_repository=self.execution_repository,
         )
@@ -612,20 +622,16 @@ class ProviderErrorResolutionIntegrationTest(unittest.TestCase):
                 ),
             )
 
-        service = AgentTurnService(
+        service = build_session_lifecycle_service(
+            database=self.database,
             workspace_repository=self.workspace_repository,
-            runtime_registry=Mock(),
-            state_store_factory=lambda: LocalStateStore(self.database),
             execution_repository=self.execution_repository,
             maintenance_repository=MaintenanceRepository(self.database),
         )
-        try:
-            status = service.session_status(
-                str(Path("tests/fixtures/workspace_a").resolve()),
-                "default",
-            )
-        finally:
-            service.close()
+        status = service.session_status(
+            str(Path("tests/fixtures/workspace_a").resolve()),
+            "default",
+        )
 
         self.assertEqual(1, status["maintenance"]["failed"])
         self.assertEqual(
@@ -655,29 +661,35 @@ class ProviderErrorResolutionIntegrationTest(unittest.TestCase):
                     str(session.session_id),
                 ),
             )
-        service = AgentTurnService(
+        turn_service = build_agent_turn_service(
             workspace_repository=self.workspace_repository,
             runtime_registry=Mock(),
-            state_store_factory=lambda: LocalStateStore(self.database),
+            state_store_factory=lambda: LocalStateStore(self.database, UnusedModelProvider()),
             execution_repository=self.execution_repository,
         )
+        session_service = build_session_lifecycle_service(
+            database=self.database,
+            workspace_repository=self.workspace_repository,
+            execution_repository=self.execution_repository,
+            lock_registry=turn_service.request_stream_service.lock_registry,
+        )
         try:
-            archived = service.delete_session(workspace_root, "delete-me")
+            archived = session_service.delete_session(workspace_root, "delete-me")
             blocked = list(
-                service.stream_turn(
+                turn_service.stream_turn(
                     workspace_root,
                     "delete-me",
                     "hello again",
                     run_id="run-archived",
                 )
             )
-            deleted = service.delete_session(
+            deleted = session_service.delete_session(
                 workspace_root,
                 "delete-me",
                 hard_delete=True,
             )
         finally:
-            service.close()
+            turn_service.close()
 
         self.assertEqual("archived", archived["status"])
         self.assertEqual("archived", blocked[-1]["data"]["status"])

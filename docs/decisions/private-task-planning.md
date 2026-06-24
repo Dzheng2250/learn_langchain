@@ -1,8 +1,18 @@
 # 私有任务规划设计决策
 
-> 文档状态：Current
+> 文档状态：Current Decision
 > 权威范围：Agent 私有任务规划系统的方案取舍
 > 维护触发：任务系统定位、存储方式、工具边界或 goal 模式发生变化
+
+## 本文负责
+
+- 任务规划为何只在 goal 模式暴露给父 Agent，以及存储和身份方案的取舍。
+
+## 本文不负责
+
+- 不维护当前任务工具实现；见 Private Task Architecture。
+- 不提供用户任务管理接口。
+
 
 ## 1. 决策
 
@@ -82,42 +92,47 @@ run_validation
 
 ## 5. 涉及的设计模式
 
-### Repository
+### Repository / Port
 
-`TaskRepository` 只负责 SQLite 读写、事务和约束校验。它不关心工具输出格式。
+任务读写通过 Execution 作用域的存储接口完成；校验逻辑不依赖具体数据库。应用服务只表达“规划、更新、
+读取任务”，不接触 SQL、连接或文件格式。
 
 ### Application Service
 
-`TaskPlanningService` 负责把工具输入转换成领域模型，并把结果格式化给 LLM。
+任务规划服务把工具输入转换为领域命令，执行依赖校验，再返回适合 LLM 消费的紧凑结果。工具本身只是
+协议 Adapter，不承载任务规则。
 
-### Factory
+### Factory 与 Registry
 
-`create_task_tools()` 根据一个服务实例创建 LangChain 工具。`WorkspaceRuntimeFactory` 决定普通 graph 和 goal graph 如何组装。
+组合边界决定普通 Graph 与 goal Graph 暴露哪些工具。任务能力按运行模式装配，不通过工具内部的全局
+开关临时禁用。
 
-### Dependency Injection
+### Context Injection
 
-任务工具不从全局变量读取 Execution ID，而是通过 `ToolRuntime.context` 接收 `ToolExecutionContext`。
+任务工具从运行时上下文接收 Workspace、Session 和 Execution 身份。模型不管理数据库 UUID，也不能
+通过参数指定其他 Execution。
 
 ### Unit of Work
 
-`task_plan` 在一个 SQLite 事务中提交整批任务和依赖。任何校验失败都会整体回滚。
+批量计划及依赖图必须在一个事务抽象中提交；任何字段、依赖或环路校验失败都整体回滚。具体存储实现
+由 Adapter 提供，不属于本决策。
+
+当前模块与接口见[私有任务规划架构](/docs/architecture/private-task-planning.md)。
 
 ## 6. 风险
 
-| 风险 | 当前缓解 |
+| 风险 | 决策级缓解原则 |
 |---|---|
-| 模型在 goal 模式中滥用任务工具 | Prompt 要求简单任务不建计划，且普通 chat 不暴露工具 |
-| 计划错误导致执行偏离 | 用户最新请求优先，任务不作为硬控制器 |
-| resume 后工具不可用 | `executions.goal_mode` 持久化，resume 自动选择 goal graph |
-| 跨 Execution 数据泄漏 | Repository 每次校验 `workspace_id/session_id/execution_id` |
-| 任务数量膨胀 | `LEARN_AGENT_TASK_MAX_PER_EXECUTION` 默认 40 |
+| 模型在 goal 模式中滥用任务工具 | 普通 chat 不暴露任务工具；Prompt 要求简单目标不建计划 |
+| 计划错误导致执行偏离 | 用户最新请求优先，任务不是 AgentLoop 的硬控制器 |
+| resume 后规划能力丢失 | Execution 持久化运行模式，恢复时选择同类 Graph |
+| 跨 Execution 数据泄漏 | 所有任务端口都要求当前 Workspace、Session 和 Execution 身份 |
+| 任务数量膨胀 | 使用可配置硬上限；当前参数见[配置参考](/docs/reference/configuration-reference.md) |
 
-## 7. 后续方向
+## 7. 当前能力与后续方向
 
-可以考虑但当前不做：
+本文不维护当前工具字段、配置默认值或未来功能清单：
 
-- 只读任务状态查询 RPC，用于调试。
-- goal 模式下任务摘要注入最终回答。
-- 任务计划质量评估。
-- 任务级 trace 聚合视图。
-- 更细粒度的任务工具预算。
+- 当前实现见[私有任务规划架构](/docs/architecture/private-task-planning.md)；
+- 配置事实见[配置参考](/docs/reference/configuration-reference.md)；
+- 未实现能力见[路线图与已知限制](/docs/product/roadmap-and-known-limitations.md)。

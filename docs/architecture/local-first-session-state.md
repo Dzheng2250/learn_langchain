@@ -4,6 +4,17 @@
 > 权威范围：本地优先 Session 状态、响应关键路径和后台派生处理
 > 维护触发：Session 权威状态、提交时机或后台维护边界变化
 
+## 本文负责
+
+- Session、Message、Branch 和本地权威状态之间的领域关系。
+- 普通 Turn 响应关键路径与后台派生状态的边界。
+
+## 本文不负责
+
+- 不维护完整 Schema 字段；见本地状态 Schema 参考。
+- 不解释跨库 Saga 细节；见数据库一致性文档。
+
+
 关于为什么从对话卡顿问题引出本地优先设计、SQLite 不能保证无卡顿、当前真实关键路径和设计原则审查，见
 [`/docs/decisions/local-first-rationale-and-review.md`](/docs/decisions/local-first-rationale-and-review.md)。
 
@@ -37,7 +48,8 @@ learn-agent/
     checkpoints.db    # LangGraph 执行断点
     artifacts/        # 大型工具结果或文件内容
     telemetry/
-      events.jsonl    # 观测事件
+      events.db       # 默认结构化 Telemetry，保留期可配置
+      events.jsonl    # 可选 JSONL 兼容输出
 ```
 
 可使用 `LEARN_AGENT_STATE_DIR` 覆盖 `state/` 所在目录。
@@ -46,6 +58,7 @@ learn-agent/
 
 - `state.db` 保存用户可理解的业务事实，例如消息、记忆和 Session。
 - `checkpoints.db` 保存 LangGraph 内部恢复执行所需的状态。
+- `telemetry/events.db` 保存 best-effort 诊断事件；它不参与恢复，并通过独立写锁避免影响业务提交。
 - 即使以后替换 LangGraph，也不需要重写 Session 数据模型。
 
 ## 主要数据结构

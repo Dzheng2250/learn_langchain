@@ -4,6 +4,16 @@
 > 权威范围：非功能需求的测试方法、指标和验收边界
 > 维护触发：非功能需求、性能指标或故障模型变化
 
+## 本文负责
+
+- 非功能目标的测试方法、指标采集、故障注入和验收条件。
+
+## 本文不负责
+
+- 不重新定义非功能目标。
+- 不解释业务功能测试。
+
+
 本文测试的数据库一致性术语和故障状态，统一以
 [`/docs/architecture/database-state-and-consistency.md`](/docs/architecture/database-state-and-consistency.md) 为准。
 

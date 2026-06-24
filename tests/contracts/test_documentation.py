@@ -71,6 +71,22 @@ def _document_anchors(path: Path) -> set[str]:
     return anchors
 
 
+def _has_status(text: str, status: str = "Current") -> bool:
+    """Accept both repaired UTF-8 headers and older mojibake headers."""
+    return f"文档状态：{status}" in text or f"�ĵ�״̬��{status}" in text
+
+
+def _has_any_status(text: str) -> bool:
+    return "文档状态：" in text or "�ĵ�״̬��" in text
+
+
+def _has_boundaries(text: str) -> bool:
+    return (
+        ("## 本文负责" in text and "## 本文不负责" in text)
+        or ("## ���ĸ���" in text and "## ���Ĳ�����" in text)
+    )
+
+
 class DocumentationStructureTest(unittest.TestCase):
     """Keep public contracts discoverable after documentation changes."""
 
@@ -80,33 +96,49 @@ class DocumentationStructureTest(unittest.TestCase):
     def test_documentation_categories_and_api_contracts_exist(self):
         required = (
             "docs/README.md",
+            "docs/product/README.md",
             "docs/product/project-overview.md",
             "docs/product/functional-requirements.md",
             "docs/product/roadmap-and-known-limitations.md",
+            "docs/governance/README.md",
             "docs/governance/documentation-management.md",
             "docs/governance/document-register.md",
             "docs/governance/document-template.md",
             "docs/governance/decision-record-template.md",
+            "docs/architecture/README.md",
             "docs/architecture/system-overview.md",
             "docs/architecture/security-model.md",
+            "docs/api/README.md",
             "docs/api/ipc-protocol.md",
             "docs/api/rpc-reference.md",
             "docs/api/streaming-events.md",
             "docs/api/error-reference.md",
+            "docs/api/tui-reference.md",
             "docs/api/tui-client-guide.md",
             "docs/api/cli-reference.md",
             "docs/api/protocol-compatibility.md",
-            "docs/api/extension-guide.md",
+            "docs/development/platform-extension.md",
             "docs/architecture/core-architecture.md",
+            "docs/architecture/cli-architecture.md",
+            "docs/architecture/tui-architecture.md",
+            "docs/architecture/agent-execution-architecture.md",
+            "docs/architecture/agent-execution-call-chain.md",
             "docs/decisions/cli-core-json-rpc.md",
             "docs/reference/configuration-reference.md",
+            "docs/reference/local-state-schema.md",
+            "docs/development/README.md",
             "docs/development/development-guide.md",
+            "docs/development/internal-adapter-extension.md",
             "docs/development/change-management.md",
             "docs/development/release-process.md",
+            "docs/decisions/README.md",
+            "docs/operations/README.md",
             "docs/operations/runbook.md",
             "docs/operations/backup-and-restore.md",
             "docs/operations/upgrade-and-rollback.md",
+            "docs/quality/README.md",
             "docs/quality/testing-guide.md",
+            "docs/reference/README.md",
             "CONTRIBUTING.md",
             "tests/README.md",
         )
@@ -137,15 +169,24 @@ class DocumentationStructureTest(unittest.TestCase):
     def test_core_authoritative_documents_declare_current_status(self):
         documents = (
             "docs/README.md",
+            "docs/product/README.md",
             "docs/product/project-overview.md",
             "docs/product/functional-requirements.md",
             "docs/product/roadmap-and-known-limitations.md",
+            "docs/architecture/README.md",
             "docs/architecture/system-overview.md",
             "docs/architecture/security-model.md",
+            "docs/api/README.md",
             "docs/api/rpc-reference.md",
             "docs/api/streaming-events.md",
+            "docs/decisions/README.md",
+            "docs/development/README.md",
+            "docs/operations/README.md",
             "docs/operations/runbook.md",
             "docs/operations/backup-and-restore.md",
+            "docs/quality/README.md",
+            "docs/reference/README.md",
+            "docs/governance/README.md",
             "docs/governance/documentation-management.md",
             "docs/governance/document-register.md",
         )
@@ -175,6 +216,74 @@ class DocumentationStructureTest(unittest.TestCase):
                 if "文档状态：" not in path.read_text(encoding="utf-8"):
                     missing_status.append(str(path.relative_to(self.root)))
         self.assertEqual([], sorted(missing_status))
+
+    def test_current_architecture_documents_declare_responsibility_boundaries(self):
+        missing = []
+        for path in (self.root / "docs" / "architecture").glob("*.md"):
+            text = path.read_text(encoding="utf-8")
+            if "文档状态：Current" not in text:
+                continue
+            if "## 本文负责" not in text or "## 本文不负责" not in text:
+                missing.append(str(path.relative_to(self.root)))
+        self.assertEqual([], sorted(missing))
+
+    def test_decision_documents_use_governed_status_and_boundaries(self):
+        invalid_status = []
+        missing_boundaries = []
+        allowed = (
+            "文档状态：Current Decision",
+            "文档状态：Superseded Decision",
+            "文档状态：Historical Decision",
+        )
+        for path in (self.root / "docs" / "decisions").glob("*.md"):
+            if path.name == "README.md":
+                continue
+            text = path.read_text(encoding="utf-8")
+            if not any(status in text for status in allowed):
+                invalid_status.append(str(path.relative_to(self.root)))
+            if "文档状态：Current Decision" in text:
+                if "## 本文负责" not in text or "## 本文不负责" not in text:
+                    missing_boundaries.append(str(path.relative_to(self.root)))
+        self.assertEqual([], sorted(invalid_status))
+        self.assertEqual([], sorted(missing_boundaries))
+
+    def test_current_development_documents_declare_responsibility_boundaries(self):
+        self._assert_current_documents_have_boundaries("development")
+
+    def test_current_operations_documents_declare_responsibility_boundaries(self):
+        self._assert_current_documents_have_boundaries("operations")
+
+    def _assert_current_documents_have_boundaries(self, category):
+        missing = []
+        for path in (self.root / "docs" / category).glob("*.md"):
+            text = path.read_text(encoding="utf-8")
+            if "文档状态：Current" not in text:
+                continue
+            if "## 本文负责" not in text or "## 本文不负责" not in text:
+                missing.append(str(path.relative_to(self.root)))
+        self.assertEqual([], sorted(missing))
+
+    def test_current_product_documents_declare_responsibility_boundaries(self):
+        self._assert_current_documents_have_boundaries("product")
+
+    def test_current_quality_documents_declare_responsibility_boundaries(self):
+        self._assert_current_documents_have_boundaries("quality")
+
+    def test_current_reference_documents_declare_responsibility_boundaries(self):
+        self._assert_current_documents_have_boundaries("reference")
+
+    def test_current_governance_documents_declare_responsibility_boundaries(self):
+        self._assert_current_documents_have_boundaries("governance")
+
+    def test_current_api_documents_declare_responsibility_boundaries(self):
+        missing = []
+        for path in (self.root / "docs" / "api").glob("*.md"):
+            text = path.read_text(encoding="utf-8")
+            if "文档状态：Current" not in text:
+                continue
+            if "## 本文负责" not in text or "## 本文不负责" not in text:
+                missing.append(str(path.relative_to(self.root)))
+        self.assertEqual([], sorted(missing))
 
     def test_current_api_contracts_are_registered(self):
         register = (

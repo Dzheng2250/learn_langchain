@@ -4,6 +4,16 @@
 > 权威范围：文档分类、状态、冲突处理和维护流程
 > 维护触发：文档结构或治理规则变化
 
+## 本文负责
+
+- 文档分类、权威优先级、状态、冲突处理、写作规则和自动治理。
+
+## 本文不负责
+
+- 不登记每篇文档的具体状态；见文档登记表。
+- 不定义业务、接口或运维事实。
+
+
 ## 1. 目标
 
 文档必须帮助读者回答以下问题：
@@ -65,7 +75,7 @@
 | 新增或修改 RPC | `src/ipc/models.py`、Handler、`api/rpc-reference.md`、协议测试 |
 | 新增流式事件 | `api/streaming-events.md`、CLI/TUI 渲染、兼容测试 |
 | 新增 CLI 命令 | `api/cli-reference.md`、README、CLI 测试 |
-| 新增 Tool/Skill/Provider | `api/extension-guide.md`、安全模型、单元与集成测试 |
+| 新增 Tool/Skill/Provider | `development/platform-extension.md`、安全模型、单元与集成测试 |
 | 修改状态表或迁移 | 数据库架构、备份恢复、升级回滚、迁移测试 |
 | 修改用户可见功能 | 功能需求、路线图、相关 API |
 | 修改延迟或后台边界 | 非功能需求、非功能测试、架构文档 |
@@ -74,6 +84,7 @@
 ## 6. 写作规则
 
 - 当前事实、设计原因和未来计划必须分开描述。
+- 每篇 Current 文档必须有清晰职责边界：它负责回答什么、不负责回答什么。
 - 不在多篇文档复制字段清单；非权威文档使用链接。
 - 复杂术语首次出现时给出通俗解释。
 - 命令必须标明前置条件、风险和预期结果。
@@ -81,8 +92,45 @@
 - 文档链接使用 `/docs/...` 或仓库根路径。
 - 新文档使用[文档模板](/docs/governance/document-template.md)。
 - 重要跨模块取舍使用[设计决策记录模板](/docs/governance/decision-record-template.md)。
+- 函数级调用链和代码位置在更新前必须通过 CodeGraph 或当前源码核对；不得凭旧文档复制符号名。
+- 中文 Markdown 必须保存为 UTF-8。Windows PowerShell 读取中文文档时应显式使用
+  `-Encoding UTF8`，否则可能按系统 ANSI/GBK 解码并显示为乱码；这不代表文件内容损坏。
 
-## 7. 自动治理
+## 7. 文档设计原则
+
+文档结构应与代码结构一样遵守模块边界。新增或重写文档时，按以下原则判断内容是否放对位置：
+
+### 7.1 单一职责
+
+一篇文档只回答一类问题。
+
+- Agent 执行文档负责解释 turn、slice、tool、模型调用和暂停恢复。
+- State 文档负责解释数据库、事务、消息链、checkpoint 和后台维护。
+- API 文档负责解释外部调用者能发送什么、会收到什么。
+- Decision 文档负责解释为什么选择某方案，不作为当前实现的唯一事实来源。
+
+如果一段内容需要详细解释另一个模块，应改成摘要加链接，不应复制完整规则。
+
+### 7.2 依赖倒置
+
+高层架构文档应依赖抽象概念，不应直接依赖底层实现细节。
+
+例如，Agent 文档可以写“调用 `TurnFinalizer` 完成最小提交”，但不应展开
+`messages.raw`、SQLite 事务或 Outbox 表结构。那些细节属于 State 文档。
+
+### 7.3 接口优先
+
+当代码引入 `ports/`、adapter 或 DI 容器后，文档也应优先描述接口和职责，再链接到具体实现。
+
+例如，Core 组合根文档应说明 `CoreContainer` 装配 `ConversationHistoryStore`，而不是把
+`SQLiteConversationHistoryStore` 的 SQL 行为写入 Core 文档正文。
+
+### 7.4 当前事实与历史原因分离
+
+`architecture/` 写当前代码如何工作；`decisions/` 写为什么这么选；`history/` 写 PR review、
+旧方案和一次性整改。Current 文档不得把历史 review 过程写成当前运行机制。
+
+## 8. 自动治理
 
 `tests/contracts/test_documentation.py` 当前检查：
 
@@ -91,9 +139,15 @@
 - `learn-agent` 与 `learn-agent-core` 命令是否出现在 CLI 参考。
 - 本地 Markdown 根路径、相对路径和锚点链接是否有效。
 - 核心权威文档是否声明 `Current`，所有受治理文档是否声明状态。
+- 所有 Current API 文档是否声明“本文负责 / 本文不负责”。
+- 所有 Current Architecture 文档是否声明“本文负责 / 本文不负责”。
+- 所有 Current Development 和 Operations 文档是否声明“本文负责 / 本文不负责”。
+- 所有 Current Product、Quality、Reference 和 Governance 文档是否声明“本文负责 / 本文不负责”。
+- 所有 Decision 文档是否使用规范状态，Current Decision 是否声明职责边界。
 - 测试目录是否符合分类规则。
 
 后续应继续增加：
 
 - 配置变量与配置参考同步检查。
 - 文档登记表覆盖检查。
+- 架构文档不得越界定义其他模块的权威细节，例如 Agent 文档不得定义数据库表结构。

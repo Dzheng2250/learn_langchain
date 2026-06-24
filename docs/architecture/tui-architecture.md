@@ -1,8 +1,20 @@
-# TUI 架构文档
+# TUI 架构
 
 > 文档状态：Current
-> 权威范围：TUI 客户端的组件设计、数据流、问题处理与能力边界
+> 权威范围：TUI 客户端的组件设计、内部数据流、错误分层和扩展边界
 > 维护触发：新增 UI 组件、修改事件渲染逻辑、变更通信协议
+
+## 本文负责
+
+- Textual App、Screen、Widget、异步 client 和 renderer 的内部职责。
+- TUI 内部事件流、错误分层、测试边界和扩展规则。
+
+## 本文不负责
+
+- 不维护用户命令和当前能力清单；见 [TUI 使用与命令参考](/docs/api/tui-reference.md)。
+- 不定义 RPC 和流式事件字段；见 `/docs/api/`。
+- 不解释 Core 内部 Agent、状态库或恢复策略；见 `/docs/architecture/`。
+- 不记录历史修复过程；见 [TUI 实现问题与修复记录](/docs/history/tui-implementation-fixes.md)。
 
 ## 1. 概览
 
@@ -17,13 +29,6 @@ TUI（Terminal UI）是基于 [Textual 8.x](https://textual.textualize.io/) 构�
 | 暂停恢复 | 检测已暂停的 execution，支持 `/resume` 和 `/discard` |
 | Goal 模式 | 通过 `/goal` 发送任务规划请求，展示完成标记 |
 | 可维护性 | 复用 `src/cli/render.py` 的脱敏和截断语义，不重复实现 |
-
-### 不负责
-
-- 直接调用模型或工具（必须通过 Core daemon）。
-- 读取或修改 SQLite 数据库。
-- 管理 daemon 生命周期（由 CLI 的 `daemon.py` 负责）。
-- 决定上下文压缩、记忆提取或执行恢复策略。
 
 ## 2. 组件架构
 
@@ -200,24 +205,87 @@ Textual `Label` 子类，一行式状态展示：
 
 ### 2.6 ChatLog ([`widgets/chat_log.py`](/src/tui/widgets/chat_log.py))
 
-Textual `RichLog` 子类，核心挑战是**流式 token 渲染不产生额外换行**。
+Textual `VerticalScroll` 子类，负责把 Core 推送的流式事件展示成用户可读日志。
+
+#### 关键问题
+
+服务端到前端的 token 事件是 JSON-RPC notification，token 内容位于 JSON 字段中：
+
+```json
+{"event":"token","data":{"content":"..."}}
+```
+
+因此换行、空格和普通文本不会因为 TCP/NDJSON 传输天然丢失。之前出现“长输出卡顿、空格或标记显示异常”的主要原因在 TUI 渲染层：
+
+1. `RichLog` 适合追加日志，但没有稳定的公开 API 用来替换最后一条已写入内容。
+2. 为了避免每个 token 独立成行，旧实现采用 `clear()` + 重放全部历史 + `refresh()`；长回答会变成近似 `O(N^2)` 的重绘成本。
+3. 如果流式中间态直接交给 Rich markup/Markdown 解析，`[bold]`、JSON 片段或特殊空白可能被当作格式语法解释。
+4. 单纯依赖 timer 节流也不可靠：当 token notification 密集到达时，事件循环可能一直忙于读取和处理事件，timer 回调要等到流结束附近才运行，用户仍然看不到中间态。
+
+#### 当前渲染策略
+
+ChatLog 使用 append-only widget 模型：
+
+| 阶段 | 数据状态 | 渲染方式 | 目的 |
+|---|---|---|---|
+| 流式尾部 | 回答正在生成 | 一个活动 `Static` widget，内容用 `rich.text.Text` 原地更新 | 每个 token 到达后立即更新当前尾部，同时保留空格和原始字符 |
+| 阶段性稳定块 | 已形成完整段落或尾部过长 | 将稳定前缀提交为 `rich.markdown.Markdown` widget | 在回答未结束前就显示列表、标题、代码块等 Markdown 结构 |
+| 最终态 | 收到完整 agent message 或 `flush_tokens()` | 将剩余尾部提交为 Markdown/纯文本 entry | 完整回答结束后补齐最后一段排版 |
+| 超长最终块 | 单块内容超过渲染阈值 | 继续使用纯文本 | 避免极长 Markdown 一次性解析导致 UI 卡顿 |
+| 结构事件 | 工具调用、错误、状态 | 新增独立 `Static` widget，使用 TUI renderer 产生的 Rich markup | 保持事件样式，不混入普通 token 文本 |
+
+这意味着：
+
+- 用户在生成过程中能看到内容持续更新，而不是等完整回答结束。
+- 已完成段落会阶段性变成 Markdown，当前仍在生成的尾部保持纯文本，避免解析半截语法。
+- 完整回答到达后，剩余尾部会再提交一次，得到最终排版。
+- 已提交历史不再因为新 token 到来而反复重绘。
+- 只有用户已经位于底部时才自动跟随新输出；用户向上滚动查看历史后，流式刷新不会把滚动条强行拉回底部。
 
 #### 数据模型
 
+```python
+_entries: list[_LogEntry]        # 已提交日志条目，每条记录自己的渲染 mode
+_token_buf: str                  # 当前流式回复的累积内容
+_active_token_widget: Static | None  # 正在更新的回答尾部
+_stream_committed_length: int      # 已阶段性提交为 Markdown 的前缀长度
 ```
-_entries: list[str]    # 已提交的日志条目（事件、工具调用、用户消息等）
-_token_buf: str        # 当前流式回复的累积内容
-```
+
+`_LogEntry.mode` 有三种：
+
+| mode | 用途 |
+|---|---|
+| `markup` | TUI renderer 生成的可信 Rich 标记，例如工具调用、错误、状态 |
+| `plain` | 流式中间态或失败草稿，按字面显示 |
+| `markdown` | 完整 AI 回复，完成后一次性 Markdown 渲染 |
 
 #### 三种写入操作
 
 | 方法 | 何时调用 | 行为 |
 |---|---|---|
-| `write_token(content)` | 每个 token chunk | 追加到 `_token_buf` 后触发渲染 |
-| `write_event(markup)` | 非 token 事件（step、done、error） | 先 flush tokens，再将事件加入 entries 并全量重绘 |
-| `flush_tokens()` | agent_message 在 token 流之后 | 将 `_token_buf` 转为正式 entry |
+| `write_token(content)` | 每个 token chunk | 追加到 `_token_buf`，必要时提交稳定 Markdown 前缀，再更新当前尾部 widget |
+| `write_event(markup)` | 非 token 事件（step、done、error） | 先提交当前 token，再追加独立事件 widget |
+| `flush_tokens()` | agent_message 到达或其他事件前 | 将剩余尾部提交为最终 Markdown/纯文本 entry |
 
-渲染策略见 §3.1。
+#### 性能与滚动边界
+
+TUI 不应让每个 token 都触发完整历史重绘和整段 Markdown 解析，也不能让 Textual 的消息处理器直接等待完整流式 RPC。当前实现分三层解耦：`action_submit()` 只创建后台输入任务并立即返回，让鼠标和键盘消息可以继续被 Textual 派发；`ChatScreen._on_event()` 再把 Core notification 放入 TUI 事件队列，由后台 consumer 渲染，避免 socket 读取循环直接驱动 UI；`ChatLog.write_token()` 只追加到内存缓冲，`ChatLog` 再以固定帧率批量 `render_pending_tokens()`，因此 Core 的推送速率不会直接决定 layout 次数。渲染帧只更新当前尾部 widget，并在段落边界或尾部过长时提交稳定 Markdown 前缀；长回答不会重放已提交历史，也不会等到最后才出现所有 Markdown 排版。如果单块超过阈值，则回退纯文本以保证交互性。
+
+自动滚动遵循 follow-tail 规则：如果用户正在底部，新增 token 会继续跟随到底部；如果用户通过鼠标滚轮、键盘、触控板或拖动滚动条向上查看历史，ChatLog 会先记录“暂停自动跟随”的意图，然后把滚轮事件继续交给 Textual/ScrollView 的真实滚动处理；如果滚轮发生在输入框等非日志区域，ChatScreen 会把滚动转发给 ChatLog。暂停状态优先级高于底部采样，避免滚动刚发生但 layout 还没更新时被下一帧 token 重新拉回底部。实现上有两个短窗口：用户滚动后设置“暂停自动跟随”窗口，窗口内即使布局临时报告“已经在底部”，`scroll_end()` 也不会执行；发送新消息或 resume 时设置“强制跟随”窗口，因为 Textual 的 `scroll_end()` 需要等后续 layout 才会稳定，不能让紧随其后的旧 `scroll_y/max_scroll_y` 采样把 follow-tail 误关掉。强制跟随不是永久锁，只要用户在这之后滚动，`watch_scroll_y()` 会立即取消强制跟随并以用户滚动为准。底部判断优先使用 `scroll_y/max_scroll_y` 数值，因为 `is_vertical_scroll_end` 在布局未稳定时可能出现滞后。用户手动回到底部后，下一次输出会恢复自动跟随；每次发送新消息或 resume 时会显式回到底部并重新开启 follow-tail。这样长输出期间用户可以自由查看前文。
+
+后续若要进一步优化，可在活动 widget 内做更细的分段或虚拟滚动，但不应回到每个 token 全量重绘的实现。
+
+#### 为什么不直接回到 RichLog
+
+`RichLog` 是 Textual 的高性能追加日志控件，适合结构事件、系统日志和不可变行追加。但当前 AI 回复需要一个“正在生成的活动块”：同一条回答在流式阶段不断增长，完成后还要转成 Markdown。`RichLog` 没有稳定的公开 API 来替换最后一条已写入记录；如果每个 token 都 `write()`，会重新引入碎片行和排版错位。因此当前折中方案是：
+
+- 使用 Textual `VerticalScroll` 管理真实滚动。
+- 使用 `set_interval()` 作为渲染泵，限制 UI 刷新频率。
+- 只把当前回答尾部作为可变 widget，历史条目保持 append-only。
+- 不覆盖 Textual 的滚动 action/watch；滚动快捷键由 `ChatScreen` 统一转发到日志区域。
+
+这不是把框架能力重写一遍，而是在 Textual 原语之上补足“活动流式回答块”这一 RichLog 不直接支持的交互。
+
 
 ### 2.7 InputBar ([`widgets/input_bar.py`](/src/tui/widgets/input_bar.py))
 
@@ -235,183 +303,16 @@ Textual `TextArea` 子类，多行输入：
 - `command_name` — 提取命令名（如 `"resume"`）
 - `command_args` — 提取命令参数
 
-## 3. 关键问题与解决
+## 3. 用户接口与历史问题
 
-### 3.1 流式 token 换行问题
+TUI 的用户命令、快捷键、当前能力和限制统一维护在
+[TUI 使用与命令参考](/docs/api/tui-reference.md)。
 
-**症状**：每个 token chunk 在 RichLog 中变成独立的一行，导致 AI 回复被拆成几十行。
+流式 token 换行、认证参数遗漏和 Schema 迁移防御等历史修复记录已迁移到
+[TUI 实现问题与修复记录](/docs/history/tui-implementation-fixes.md)。
 
-**原因**：`RichLog.write()` 每次调用都会在 `self.lines` 中创建一条新的视觉条目。如果每个 token chunk 都调用一次 `write()`，每块都独占一行。
-
-**第一次修复（全量重绘）**：
-
-```python
-def _render_token_buffer(self) -> None:
-    self._redraw(include_token=True)
-
-def _redraw(self, *, include_token=False) -> None:
-    self.clear()
-    for entry in self._entries:
-        self.write(entry)
-    if include_token and self._token_buf:
-        self.write(self._token_buf)
-    self.refresh()
-```
-
-每次 token 到达都 **清空整屏 → 重写所有已提交条目 → 重写当前 token 缓冲**。正确解决了换行问题，但复杂度 O(N)。
-
-**第二次修复（原地替换）**（推荐，但用户选择了全量重绘方案）：
-
-```python
-def _render_token_buffer(self) -> None:
-    if self._token_line_start is None:
-        self._token_line_start = len(self.lines)
-    else:
-        del self.lines[self._token_line_start:]
-    self.write(self._token_buf)
-    self.refresh()
-```
-
-只删除上次 token 渲染的视觉行，再写入新的。复杂度 O(1)。缺点是需要谨慎处理 RichLog 的内部行拆分。
-
-**结论**：当前使用全量重绘方案（复杂度 O(N)，N=已提交条目数）。在典型会话中 N < 100，Textual 的虚拟终端操作足够快，不会造成卡顿。
-
-### 3.2 Context Token 用量展示
-
-**需求**：状态栏显示 `ctx: 3K/128K (2%)`，反映当前 session 的上下文 token 消耗。
-
-**数据链路**（跨 Core + TUI 多个层次）：
-
-```
-LLM Response
-  → _TokenTrackerCallback (src/core/llm/provider.py)
-    记录 input_tokens, output_tokens
-  → ExecutionBudget.input_tokens / output_tokens
-  → TracingModelProvider 代理调用
-  → AgentTurnService._stream_locked_turn
-    在 done 事件中携带 context_tokens snapshot
-  → TurnFinalizer.finalize()
-    build_fast_state() 后更新 context_tokens
-  → LocalStateStore._save_session()
-    持久化 context_tokens 到 state.db sessions 表
-  → AsyncCoreClient.on_event 回调
-  → ChatScreen._handle_done()
-    解析 context_tokens → StatusBar.set_usage()
-```
-
-**涉及的修改**：
-
-| 文件 | 改动 |
-|---|---|
-| `src/core/llm/provider.py` | 新增 `_TokenTrackerCallback`（BaseCallbackHandler）跟踪 LLM token 用量 |
-| `src/core/agent/budget.py` | `ExecutionBudget` 新增 `input_tokens` / `output_tokens` 字段 |
-| `src/core/agent/service.py` | `_stream_locked_turn` 的 done 事件携带 `context_tokens` |
-| `src/core/context/models.py` | `AgentContextState` 新增 `context_tokens` 字段 |
-| `src/core/finalization/service.py` | `TurnFinalizer.finalize()` 更新 `fast_state.context_tokens` |
-| `src/core/state/migrations.py` | Schema v5：sessions 表新增 `context_tokens` 列 |
-| `src/core/state/store.py` | `save_fast_session_in_transaction()` 写入 `context_tokens` |
-| `src/config/settings.py` | 新增 `MODEL_CONTEXT_LIMIT`（默认 128_000） |
-
-### 3.3 认证错误
-
-**症状**：TUI 启动后状态栏显示 `error: [-32602] INVALID PARAMS`。
-
-**原因**：`core.ping` 在较新版本的 Core 中要求 `auth_token` 参数，而初始实现调用 `ping()` 时未传递 auth_token。
-
-**修复**：`AsyncCoreClient.ping(auth_token)` 改为接收并传递 auth_token：
-
-```python
-async def ping(self, auth_token: str = "") -> dict[str, Any]:
-    params: dict[str, Any] = {}
-    if auth_token:
-        params["auth_token"] = auth_token
-    return await self.request("core.ping", params)
-```
-
-### 3.4 Schema 迁移健壮性
-
-**问题**：添加 `context_tokens` 列的迁移在空数据库上运行时报错。
-
-**原因**：`PRAGMA table_info` 在表不存在时返回空结果，后续列检查逻辑未防御。
-
-**修复**：在 `migrations.py` 中增加 `if not columns: continue` 跳过不存在的表。
-
-## 4. 命令参考
-
-| 命令 | 用途 | 示例 |
-|---|---|---|
-| `/help` | 显示帮助 | `/help` |
-| `/goal <msg>` | 以目标模式发送消息 | `/goal 分析项目结构` |
-| `/resume` | 恢复暂停的 execution | `/resume` |
-| `/resume <指令>` | 带额外指令恢复 | `/resume 先只改测试` |
-| `/discard` | 丢弃暂停的 execution | `/discard` |
-| `/session <name>` | 切换 session | `/session feature-x` |
-| `/session` | 查看当前 session | `/session` |
-| `/clear` | 清空日志 | `/clear` |
-| `Ctrl+C` | 取消操作 | — |
-| `Ctrl+D` | 退出 TUI | — |
-
-## 5. 当前支持的能力
-
-### 连接与启动
-
-- 自动加载 `runtime_dir` 下的 auth token。
-- 启动时自动发现 workspace 根目录。
-- 自动 ping Core daemon 验证连接。
-- 启动时自动检查 session 是否有暂停的 execution。
-- 状态栏实时反映连接状态（绿/黄/红）。
-
-### 流式展示
-
-- 每个 token chunk 到达后立即展示，不等待完整回复。
-- 工具调用开始和结果按步骤渲染。
-- 敏感参数脱敏（`api_key`、`token`、`password` → `[REDACTED]`）。
-- 长内容截断（参数 240 字符/字段，列表 20 项，深度 20 层）。
-
-### Session 管理
-
-- 通过 `/session` 切换 session 名称。
-- 显示暂停 execution 的恢复提示。
-- `/resume` 恢复暂停 execution。
-- `/discard` 丢弃暂停 execution。
-
-### Goal 模式
-
-- 通过 `/goal` 进入目标模式，状态栏显示 `goal` 标记。
-- 目标完成后显示 `★ goal completed` 标记。
-
-### 状态展示
-
-- 连接状态、daemon 地址、session 名称。
-- 上下文使用额度 `ctx: XK/128K (X%)`。
-
-## 6. 当前不支持
-
-### 协议与通信
-
-- 执行中取消协议（无 `cancel` RPC）。
-- 断线后事件续传。
-- 同一连接并行请求。
-- 自动重连。
-- TLS 或远程连接。
-
-### UI 功能
-
-- Session 列表与历史查询。
-- 消息编辑或删除。
-- Markdown / 代码渲染。
-- 文件上传或图片展示。
-- 多窗口或分屏。
-- 搜索和过滤日志。
-- 配置页或设置界面。
-
-### Daemon 管理
-
-- 从 TUI 启动/停止 daemon。
-- 查看 daemon 日志。
-- Trace/Telemetry 查看。
-
-## 7. 错误处理策略
+本篇不再维护用户接口清单或历史修复过程。
+## 4. 错误处理策略
 
 TUI 遵循与 CLI 一致的错误分层：
 
@@ -430,7 +331,7 @@ TUI 遵循与 CLI 一致的错误分层：
 | 请求被拒 | `[red]Request failed: [-32001] ...[/red]` |
 | 请求中再次提交 | `Busy — wait for the current request to finish.` |
 
-## 8. 测试
+## 5. 测试
 
 TUI 测试位于 `tests/unit/test_tui_chat_log.py`，使用 `ChatLog.__new__()` + `MethodType` 模拟 widget 行为，避免依赖 Textual 的完整事件循环。
 
@@ -457,7 +358,7 @@ def _fake_log(self):
 - event 在 token 后追加 → 内容不重复。
 - agent_message 在 token 流后不重复显示。
 
-## 9. 扩展规则
+## 6. 扩展规则
 
 1. 新增 widget 放入 `src/tui/widgets/`，在 `widgets/__init__.py` 中导出。
 2. 新增 screen 放入 `src/tui/screens/`。

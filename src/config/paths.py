@@ -67,6 +67,11 @@ def telemetry_dir() -> Path:
     return local_state_dir() / "telemetry"
 
 
+def telemetry_db() -> Path:
+    """Return the structured best-effort telemetry database path."""
+    return telemetry_dir() / "events.db"
+
+
 def trace_dir() -> Path:
     """Return system-trace storage, honoring an explicit override."""
     override = os.getenv("LEARN_AGENT_TRACE_DIR")

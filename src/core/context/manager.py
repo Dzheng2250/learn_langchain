@@ -10,32 +10,29 @@ from src.config.settings import (
     SUMMARY_TRIGGER_MESSAGE_LIMIT,
     SUMMARY_TRIGGER_TOKEN_LIMIT,
 )
-from src.core.common.debug import debug_print, format_message
-from src.core.telemetry import emit_event, event_span, record_error
-from src.core.context.models import AgentContextState
-from src.core.llm.provider import LlmPurpose, ModelProvider, OpenAICompatibleProvider
-from src.core.prompts import build_context_summary_messages
-
-
-SUMMARY_MESSAGE_PREFIX = "Conversation context summary:"
-MEMORY_MESSAGE_PREFIXES = (
-    "Relevant long-term memory:",
-    "Relevant long-term memory for this workspace:",
+from src.core.telemetry import emit_event, record_error
+from src.core.context.messages import (
+    SUMMARY_MESSAGE_PREFIX,
+    strip_context_messages,
 )
-SUMMARY_SOURCE_MESSAGE_PREVIEW_CHARS = 1200
+from src.core.context.models import AgentContextState
+from src.core.context.summary_executor import ContextSummaryExecutor
+from src.core.context.summary_policy import SummaryPolicy
+from src.core.llm.contracts import ModelProvider
+
 
 class AgentContextManager:
     """Build bounded LLM inputs and compress old conversation turns."""
 
     def __init__(
         self,
+        model_provider: ModelProvider,
         recent_message_limit: int = RECENT_MESSAGE_LIMIT,
         summary_trigger_message_limit: int = SUMMARY_TRIGGER_MESSAGE_LIMIT,
         summary_trigger_char_limit: int = SUMMARY_TRIGGER_CHAR_LIMIT,
         summary_trigger_token_limit: int = SUMMARY_TRIGGER_TOKEN_LIMIT,
         summary_max_chars: int = SESSION_SUMMARY_MAX_CHARS,
         summary_source_char_limit: int = SUMMARY_SOURCE_CHAR_LIMIT,
-        model_provider: ModelProvider | None = None,
     ) -> None:
         self.recent_message_limit = recent_message_limit
         self.summary_trigger_message_limit = summary_trigger_message_limit
@@ -43,7 +40,16 @@ class AgentContextManager:
         self.summary_trigger_token_limit = summary_trigger_token_limit
         self.summary_max_chars = summary_max_chars
         self.summary_source_char_limit = summary_source_char_limit
-        self.model_provider = model_provider or OpenAICompatibleProvider()
+        self.summary_executor = ContextSummaryExecutor(
+            model_provider=model_provider,
+            summary_max_chars=summary_max_chars,
+            summary_source_char_limit=summary_source_char_limit,
+        )
+        self.summary_policy = SummaryPolicy(
+            message_limit=summary_trigger_message_limit,
+            char_limit=summary_trigger_char_limit,
+            token_limit=summary_trigger_token_limit,
+        )
 
     def build_input_messages(
         self,
@@ -73,14 +79,16 @@ class AgentContextManager:
         memory_context: str = "",
     ) -> AgentContextState:
         """Update compact context after one graph execution."""
-        final_conversation_messages = self._strip_context_summary_messages(final_messages)
+        final_conversation_messages = strip_context_messages(final_messages)
         unsent_previous_messages = state.recent_messages[:-self.recent_message_limit]
         conversation_messages = [*unsent_previous_messages, *final_conversation_messages]
 
         should_summarize = (
             force_summarize
-            or state.context_tokens > self.summary_trigger_token_limit
-            or len(conversation_messages) > self.summary_trigger_message_limit
+            or self.summary_policy.should_summarize_state(
+                context_tokens=state.context_tokens,
+                messages=conversation_messages,
+            )
         )
         if not should_summarize:
             emit_event(
@@ -146,7 +154,7 @@ class AgentContextManager:
 
     def build_fast_state(self, state: AgentContextState, final_messages: list) -> AgentContextState:
         """Build bounded committed context without invoking a summary model."""
-        final_conversation_messages = self._strip_context_summary_messages(final_messages)
+        final_conversation_messages = strip_context_messages(final_messages)
         unsent_previous_messages = state.recent_messages[:-self.recent_message_limit]
         conversation_messages = [*unsent_previous_messages, *final_conversation_messages]
         return AgentContextState(
@@ -157,7 +165,7 @@ class AgentContextManager:
 
     def should_summarize(self, messages: list) -> bool:
         """Expose the summary policy to durable maintenance handlers."""
-        return self._should_summarize(messages)
+        return self.summary_policy.should_summarize_messages(messages)
 
     def summarize_messages(self, previous_summary: str, messages: list, memory_context: str = "") -> str:
         """Create a derived summary outside the response critical path."""
@@ -170,40 +178,9 @@ class AgentContextManager:
         Synthetic summary and memory messages are removed first. This remains
         stable across checkpoint resumes even if injected memory changes.
         """
-        conversation = self._strip_context_summary_messages(final_messages)
+        conversation = strip_context_messages(final_messages)
         loaded_recent_count = min(len(state.recent_messages), self.recent_message_limit)
         return conversation[loaded_recent_count:]
-
-    def _should_summarize(self, messages: list) -> bool:
-        """Return whether message volume is large enough to compress."""
-        if len(messages) > self.summary_trigger_message_limit:
-            return True
-
-        total_chars = 0
-        for message in messages:
-            content = getattr(message, "content", "")
-            if isinstance(content, str):
-                total_chars += len(content)
-            else:
-                total_chars += len(repr(content))
-
-        return total_chars > self.summary_trigger_char_limit
-
-    def _strip_context_summary_messages(self, messages: list) -> list:
-        """Remove synthetic summary messages before persisting recent history."""
-        stripped = []
-        for message in messages:
-            if (
-                message.__class__.__name__ == "SystemMessage"
-                and isinstance(message.content, str)
-                and (
-                    message.content.startswith(SUMMARY_MESSAGE_PREFIX)
-                    or message.content.startswith(MEMORY_MESSAGE_PREFIXES)
-                )
-            ):
-                continue
-            stripped.append(message)
-        return stripped
 
     def _summarize_messages(self, previous_summary: str, messages: list, memory_context: str = "") -> tuple[str, int, int]:
         """Compress older messages into a structured session summary.
@@ -212,67 +189,12 @@ class AgentContextManager:
             ``(summary, input_tokens, output_tokens)`` — the compressed summary
             text and the token counts from the summary LLM call.
         """
-        source = self._format_messages_for_summary(messages)
-        if len(source) > self.summary_source_char_limit:
-            source = source[-self.summary_source_char_limit:]
-
-        llm = self._create_summary_llm()
-        with event_span(
-            "context_summary_llm",
-            "agent_context",
-            payload={"source_chars": len(source), "message_count": len(messages)},
-        ):
-            response = llm.invoke(
-                build_context_summary_messages(
-                    source=source,
-                    previous_summary=previous_summary,
-                    memory_context=memory_context,
-                    summary_max_chars=self.summary_max_chars,
-                )
-            )
-
-        summary = response.content.strip()
-        if len(summary) > self.summary_max_chars:
-            summary = summary[:self.summary_max_chars] + "\n... summary truncated ..."
-
-        # Extract token usage from the summary LLM response
-        input_tokens = 0
-        output_tokens = 0
-        try:
-            metadata = getattr(response, "usage_metadata", None) or {}
-            input_tokens = metadata.get("input_tokens", 0)
-            output_tokens = metadata.get("output_tokens", 0)
-        except Exception:
-            pass
-
-        debug_print("CONTEXT SUMMARY UPDATED", summary)
-        emit_event(
-            "context_summarized",
-            "agent_context",
-            "Context summary updated.",
-            {
-                "summary_chars": len(summary),
-                "compressed_messages": len(messages),
-                "input_tokens": input_tokens,
-                "output_tokens": output_tokens,
-            },
+        return self.summary_executor.summarize(
+            previous_summary,
+            messages,
+            memory_context,
         )
-        return summary, input_tokens, output_tokens
-
-    def _format_messages_for_summary(self, messages: list) -> str:
-        """Format messages for summarization with bounded per-message content."""
-        formatted = []
-        for index, message in enumerate(messages, start=1):
-            text = format_message(message)
-            if len(text) > SUMMARY_SOURCE_MESSAGE_PREVIEW_CHARS:
-                text = text[:SUMMARY_SOURCE_MESSAGE_PREVIEW_CHARS] + "\n... message truncated ..."
-            formatted.append(f"[{index}]\n{text}")
-        return "\n\n".join(formatted)
 
     def _create_summary_llm(self):
-        """Create a non-streaming model for context summarization."""
-        return self.model_provider.create_chat_model(
-            LlmPurpose.CONTEXT_SUMMARY,
-            temperature=0,
-            streaming=False,
-        )
+        """Compatibility wrapper for tests and older internal callers."""
+        return self.summary_executor._create_summary_llm()

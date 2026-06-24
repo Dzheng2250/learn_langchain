@@ -4,6 +4,16 @@
 > 权威范围：本地开发环境、代码边界和日常开发流程
 > 维护触发：开发工具、目录结构或默认验证命令变化
 
+## 本文负责
+
+- 本地开发环境、代码依赖边界、常用命令和日常开发流程。
+
+## 本文不负责
+
+- 不说明生产部署；见部署指南。
+- 不重复架构设计和 API 字段。
+
+
 ## 1. 环境准备
 
 ```shell
@@ -32,7 +42,7 @@ docker compose up -d postgres
 CLI -> IPC models
 Transport -> RpcRouter
 Handlers -> Application Services
-Agent -> Workspace Runtime / State / Maintenance
+Agent -> Workspace Runtime / Ports / Maintenance
 Tools -> Workspace-bound capabilities
 CoreApp -> 组合和生命周期
 ```
@@ -43,7 +53,12 @@ CoreApp -> 组合和生命周期
 - Transport 直接调用 Agent、Tool 或 State。
 - Tool 读取全局 Workspace 或修改 RPC 状态。
 - Agent 直接负责 daemon 启停或终端输出。
+- Application Service 直接 import `sqlite3` 或 `src.core.adapters.*`。
 - Telemetry/Trace 决定业务结果。
+
+内部存储能力应先定义在 `src/core/ports/`，具体实现放在 `src/core/adapters/`，
+并由 `CoreApp` 注入。完整规则见
+[面向接口的 Core 设计](/docs/architecture/interface-driven-core.md)。
 
 ## 4. 日常开发流程
 

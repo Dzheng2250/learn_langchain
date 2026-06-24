@@ -10,12 +10,25 @@ from langgraph.graph import END, START, MessagesState, StateGraph
 
 from src.core.agent.budget import ExecutionBudget, ToolBudgetExceeded
 from src.core.agent.models import AgentRunContext, RunLimits
+from src.core.adapters.sqlite import (
+    SQLiteConversationHistoryStore,
+    SQLiteProjectionOutboxStore,
+    SQLiteSessionStore,
+)
 from src.core.context.models import AgentContextState
-from src.core.state import ArtifactStore, ExecutionRepository, LocalStateDatabase, LocalStateStore
+from src.core.state import (
+    ArtifactStore,
+    ExecutionCheckpointStore,
+    ExecutionRepository,
+    ExecutionSliceStore,
+    LocalStateDatabase,
+    LocalStateStore,
+)
 from src.core.state import CheckpointManager
 from src.core.state.workspace import LocalWorkspaceRepository
 from src.core.streaming.events import stream_graph_events
 from src.core.tools.catalog import ToolRisk
+from tests.support.model_providers import UnusedModelProvider
 
 
 class LocalStateTest(unittest.TestCase):
@@ -57,17 +70,35 @@ class LocalStateTest(unittest.TestCase):
         self.assertNotEqual(self.session.session_id, recreated.session_id)
 
     def test_completed_turn_is_atomic_and_updates_branch_head(self):
-        store = LocalStateStore(self.database, projection_enabled=True)
+        store = LocalStateStore(self.database, UnusedModelProvider(), projection_enabled=True)
         state = AgentContextState(
             summary="summary",
             recent_messages=[HumanMessage(content="hello"), AIMessage(content="world")],
         )
-        message_ids = store.commit_turn(
-            self.session,
-            1,
-            [HumanMessage(content="hello"), AIMessage(content="world")],
-            state,
-        )
+        with self.database.transaction() as conn:
+            message_ids = SQLiteConversationHistoryStore(
+                self.database,
+                transaction_conn=conn,
+            ).append_messages(
+                self.session,
+                1,
+                [HumanMessage(content="hello"), AIMessage(content="world")],
+            )
+            SQLiteSessionStore(self.database, transaction_conn=conn).save_context(
+                self.session,
+                state,
+                1,
+            )
+            SQLiteProjectionOutboxStore(
+                self.database,
+                transaction_conn=conn,
+                enabled=True,
+            ).enqueue(
+                "turn_committed",
+                "session",
+                str(self.session.session_id),
+                {"workspace_id": str(self.workspace.workspace_id), "turn_index": 1},
+            )
         loaded, turn_index = store.load_session(self.session)
         with self.database.connect() as conn:
             branch = conn.execute(
@@ -123,6 +154,43 @@ class LocalStateTest(unittest.TestCase):
         self.assertEqual(2, updated.controlled_executions_used)
         self.assertEqual(1, updated.delegations_used)
 
+    def test_execution_slice_store_persists_budget_usage(self):
+        executions = ExecutionRepository(self.database)
+        slices = ExecutionSliceStore(self.database)
+        pending = executions.begin(self.session, "sliced task")
+        slice_id = slices.start_slice(pending.execution_id, 1, 1)
+
+        slices.finish_slice(
+            slice_id,
+            pending.execution_id,
+            status="paused_budget",
+            stop_reason="tool_limit",
+            graph_steps_used=3,
+            usage={"tool_calls": 2, "controlled_executions": 1, "delegations": 0},
+        )
+
+        updated = executions.get_pending(self.session)
+        self.assertEqual(3, updated.graph_steps_used)
+        self.assertEqual(2, updated.tool_calls_used)
+        self.assertEqual(1, updated.controlled_executions_used)
+
+    def test_execution_checkpoint_store_updates_recovery_state(self):
+        executions = ExecutionRepository(self.database)
+        checkpoints = ExecutionCheckpointStore(self.database)
+        pending = executions.begin(self.session, "recoverable task")
+
+        checkpoints.mark_paused_recovery(pending.execution_id)
+
+        attached = executions.get_attached(self.session)
+        self.assertEqual("paused_recovery", attached.status)
+        self.assertEqual("available", attached.checkpoint_state)
+        self.assertEqual(1, len(checkpoints.list_for_recovery()))
+
+        checkpoints.mark_checkpoint_missing(pending.execution_id)
+        attached = executions.get_attached(self.session)
+        self.assertEqual("unrecoverable_checkpoint", attached.status)
+        self.assertEqual("missing", attached.checkpoint_state)
+
     def test_terminal_provider_error_releases_session_and_redacts_input(self):
         executions = ExecutionRepository(self.database)
         pending = executions.begin(self.session, "sensitive input")
@@ -159,7 +227,7 @@ class LocalStateTest(unittest.TestCase):
             self.assertEqual(1, artifacts.collect_garbage())
 
     def test_vague_memory_recall_fallback_respects_retrieval_limit(self):
-        store = LocalStateStore(self.database, retrieval_limit=3)
+        store = LocalStateStore(self.database, UnusedModelProvider(), retrieval_limit=3)
         with self.database.transaction() as conn:
             for index in range(8):
                 conn.execute(
@@ -184,15 +252,27 @@ class LocalStateTest(unittest.TestCase):
         self.assertEqual(3, len(memories))
 
     def test_unknown_message_role_emits_warning_before_archiving_as_unknown(self):
-        store = LocalStateStore(self.database)
+        store = LocalStateStore(self.database, UnusedModelProvider())
 
         class NewMessageType:
+            type = "new_message_type"
+            content = "unknown role content"
+
+            def model_dump(self):
+                return {"content": self.content}
+
             pass
 
-        with patch("src.core.state.store.emit_event") as emit:
-            role = store._message_role(NewMessageType())
+        with patch("src.core.adapters.sqlite.conversation_history.emit_event") as emit:
+            store.archive_turn_messages(self.session, 1, [NewMessageType()])
 
-        self.assertEqual("unknown", role)
+        with self.database.connect() as conn:
+            row = conn.execute(
+                "SELECT role FROM messages WHERE session_id=?",
+                (str(self.session.session_id),),
+            ).fetchone()
+
+        self.assertEqual("unknown", row["role"])
         emit.assert_called_once()
         self.assertEqual("unknown_message_role", emit.call_args.args[0])
         self.assertEqual("warning", emit.call_args.kwargs["level"])

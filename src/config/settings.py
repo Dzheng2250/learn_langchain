@@ -1,4 +1,4 @@
-"""Non-secret runtime configuration.
+﻿"""Non-secret runtime configuration.
 
 Committed defaults live here. Deployment-specific values and secrets can be
 overridden with environment variables or the Core user-level .env file.
@@ -24,13 +24,12 @@ HARD_MAX_TOOL_CALLS_PER_GRANT = env_int("LEARN_AGENT_HARD_MAX_TOOL_CALLS_PER_GRA
 MAX_GRAPH_STEPS = MAX_GRAPH_STEPS_PER_SLICE
 BASH_PATH = "bash"
 
-# Shared OpenAI-compatible model configuration. The generic LEARN_AGENT names
-# take precedence; ALIYUN aliases remain only for backward compatibility.
-MODEL = env_str("LEARN_AGENT_MODEL", "deepseek-v4-flash")
+# Shared model configuration. The generic LEARN_AGENT names take precedence;
+# LLM configuration is provider-neutral; the default provider is Anthropic.
+MODEL = env_str("LEARN_AGENT_MODEL", "")
 MODEL_CONTEXT_LIMIT = env_int("LEARN_AGENT_MODEL_CONTEXT_LIMIT", 128_000)
-LLM_API_KEY = env_str("LEARN_AGENT_LLM_API_KEY", env_str("ALIYUN_API_KEY", ""))
-LLM_BASE_URL = env_str("LEARN_AGENT_LLM_BASE_URL", env_str("ALIYUN_BASE_URL", ""))
-LLM_STREAM_USAGE_ENABLED = env_bool("LEARN_AGENT_LLM_STREAM_USAGE_ENABLED", True)
+LLM_API_KEY = env_str("LEARN_AGENT_LLM_API_KEY", "")
+LLM_BASE_URL = env_str("LEARN_AGENT_LLM_BASE_URL", "")
 
 # Container command sandbox limits. The Workspace is copied into a temporary
 # directory and mounted read-only; command output is truncated before LLM input.
@@ -74,6 +73,12 @@ SESSION_SUMMARY_MAX_CHARS = 4000
 SUMMARY_SOURCE_CHAR_LIMIT = 12000
 
 MEMORY_ENABLED = True
+# Storage backend selectors. The first implementation keeps SQLite as the only
+# production adapter, while these names reserve the dependency-inversion seam.
+CONVERSATION_HISTORY_BACKEND = env_str("LEARN_AGENT_CONVERSATION_HISTORY_BACKEND", "sqlite")
+MEMORY_BACKEND = env_str("LEARN_AGENT_MEMORY_BACKEND", "sqlite")
+TASK_BACKEND = env_str("LEARN_AGENT_TASK_BACKEND", "sqlite")
+CHECKPOINT_BACKEND = env_str("LEARN_AGENT_CHECKPOINT_BACKEND", "sqlite")
 # Optional future PostgreSQL business projection. Disabled means local SQLite
 # remains authoritative without accumulating an unconsumed projection outbox.
 POSTGRES_PROJECTION_ENABLED = env_bool("LEARN_AGENT_POSTGRES_PROJECTION_ENABLED", False)
@@ -110,16 +115,28 @@ MEMORY_EXTRACT_SOURCE_CHAR_LIMIT = 12000
 
 AGENT_EVENTS_ENABLED = True
 # Event sinks observe business behavior and must never determine its result.
+AGENT_EVENTS_SQLITE_ENABLED = env_bool("LEARN_AGENT_EVENTS_SQLITE_ENABLED", True)
+AGENT_EVENTS_SQLITE_PATH = env_str("LEARN_AGENT_EVENTS_SQLITE_PATH", "")
+AGENT_EVENTS_SQLITE_RETENTION_DAYS = env_int(
+    "LEARN_AGENT_EVENTS_SQLITE_RETENTION_DAYS",
+    30,
+)
 AGENT_EVENTS_POSTGRES_ENABLED = env_bool("LEARN_AGENT_EVENTS_POSTGRES_ENABLED", False)
 AGENT_EVENTS_CONSOLE_ENABLED = False
 AGENT_EVENTS_FILE_ENABLED = env_bool("LEARN_AGENT_EVENTS_FILE_ENABLED", True)
 AGENT_EVENTS_FILE_PATH = env_str("LEARN_AGENT_EVENTS_FILE_PATH", "")
-AGENT_EVENTS_PAYLOAD_PREVIEW_LIMIT = 1000
-AGENT_EVENTS_ASYNC_WRITE = True
+AGENT_EVENTS_PAYLOAD_PREVIEW_LIMIT = env_int(
+    "LEARN_AGENT_EVENTS_PAYLOAD_PREVIEW_LIMIT",
+    1000,
+)
+AGENT_EVENTS_ASYNC_WRITE = env_bool("LEARN_AGENT_EVENTS_ASYNC_WRITE", True)
 # PostgreSQL event writes are queued and flushed by size or elapsed interval.
-AGENT_EVENTS_BATCH_SIZE = 50
-AGENT_EVENTS_FLUSH_INTERVAL_SECONDS = 1.0
-AGENT_EVENTS_QUEUE_MAX_SIZE = 1000
+AGENT_EVENTS_BATCH_SIZE = env_int("LEARN_AGENT_EVENTS_BATCH_SIZE", 50)
+AGENT_EVENTS_FLUSH_INTERVAL_SECONDS = env_float(
+    "LEARN_AGENT_EVENTS_FLUSH_INTERVAL_SECONDS",
+    1.0,
+)
+AGENT_EVENTS_QUEUE_MAX_SIZE = env_int("LEARN_AGENT_EVENTS_QUEUE_MAX_SIZE", 1000)
 
 # Cross-layer daemon trace. Trace is best-effort diagnostic data and never a
 # source of truth for Session state, recovery, billing, or compliance.

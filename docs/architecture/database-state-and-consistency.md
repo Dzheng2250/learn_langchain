@@ -15,6 +15,24 @@ Core 崩溃后如何恢复。阅读本文不要求预先了解数据库事务或
 - [记忆管理与加载机制](/docs/architecture/memory-management.md)：介绍短期上下文和长期记忆。
 - [可恢复执行与预算控制](/docs/architecture/resumable-execution.md)：介绍 Execution、Grant、Slice 和 checkpoint。
 
+## 本文负责
+
+本文是本地状态层的权威说明，负责回答：
+
+- 为什么 `state.db` 和 `checkpoints.db` 分离。
+- Session、消息、Execution、记忆、维护任务和 checkpoint 的存储关系。
+- 成功 Turn 为什么必须经过最小事务提交。
+- Outbox、CAS、Saga、恢复协调器这些一致性概念在项目中如何落地。
+
+## 本文不负责
+
+本文不解释 Agent 如何决定下一步、工具如何执行、RPC 如何传输或 CLI 如何渲染。
+
+- Agent 循环和工具调用见 [Agent 执行架构](/docs/architecture/agent-execution-architecture.md)。
+- Core 进程生命周期见 [CoreApp 与 Transport 架构](/docs/architecture/core-architecture.md)。
+- 对外 RPC 与事件字段见 `/docs/api/`。
+- 设计选择的历史原因见 `/docs/decisions/`。
+
 ## 1. 先理解几个术语
 
 ### 1.1 业务事实
@@ -52,7 +70,7 @@ PostgreSQL 和 Telemetry 都不是普通对话状态的权威来源。
 
 Unit of Work，中文可理解为“工作单元”，用于把一次业务操作涉及的多个数据库修改放进同一个事务。
 
-本项目中的 `CompletedTurnCommitter` 就是一次成功 Turn 的 Unit of Work：
+本项目中的 `CompletedTurnCommitter` 通过 `StateUnitOfWorkFactory` 执行一次成功 Turn 的 Unit of Work：
 
 ```text
 CompletedTurnCommitter.commit()
@@ -62,6 +80,23 @@ CompletedTurnCommitter.commit()
   -> 写入后台维护任务
   -> 一次性提交
 ```
+
+`AgentServiceLifecycle` 也只通过 `StateInitializer` 请求 schema 初始化，具体由
+`LocalStateDatabase` 实现，不再构造完整状态 facade。
+
+`CompletedTurnCommitter` 只依赖 `src/core/ports/` 中的端口，不直接依赖 SQLite。当前 SQLite
+实现位于 `src/core/adapters/sqlite/`。这样后续可以替换会话历史或维护队列实现，而不改 Turn 提交流程。
+
+当前 adapter 拆分只改变依赖边界，不改变写入语义：
+
+- `SQLiteConversationHistoryStore` 负责读取历史消息和重建近期上下文。
+- `SQLiteSessionStore` 负责读取 Session 上下文，并在 Unit of Work 内委托 fast context 更新。
+- `SQLiteSessionLifecycleStore` 负责 Session 身份查找、归档、硬删除、checkpoint thread 查询和近期历史重建；应用服务不直接访问 Workspace repository 或 SQLite 表。
+- `SQLiteMemoryRetrievalStore` 负责长期记忆召回。
+- 前台 `ConversationContextLoader` 直接依赖 Session 与 Memory 小端口，`TurnExecutionLoop` 不再为每轮创建 `LocalStateStore` 兼容 facade。
+- `messages.raw` 的序列化、`messages.parent_message_id` 链接、分支头更新和 execution 关联仍由原 SQLite 写入路径保证。
+
+也就是说，本轮拆分不会改变“成功 turn 必须先完整写入 `state.db` 才返回 done”的耐久性边界。未来如果替换会话历史后端，新后端必须通过同一组 contract tests 证明消息顺序、raw 结构和 turn 原子提交语义没有变化。
 
 ### 1.5 Transactional Outbox
 
@@ -151,218 +186,37 @@ learn-agent/state/
 因此，“同步到 PostgreSQL”不等于“对话已可靠保存”。对话是否可靠，以 `state.db` 最小事务是否提交
 成功为准；PostgreSQL 即使暂时不可用，也不应阻止普通对话。
 
-## 3. `state.db` 的数据模型
+## 3. 本地状态数据所有权
 
-### 3.1 总体关系
+`state.db` 保存 Workspace、Session、Message、Execution、Memory 和 Maintenance Job 等业务事实。
+`checkpoints.db` 只保存 LangGraph 图执行断点。
 
-```mermaid
-flowchart LR
-    W[workspaces] --> S[sessions]
-    S --> B[branches]
-    S --> M[messages]
-    S --> E[executions]
-    E --> ES[execution_slices]
-    E --> TL[tool_ledger]
-    W --> LM[memories]
-    LM --> MS[memory_sources]
-    M --> MS
-    S --> J[maintenance_jobs]
-    E --> J
-```
+完整表关系、字段职责、外键、索引和 Session 删除语义统一维护在
+[本地状态数据库 Schema 参考](/docs/reference/local-state-schema.md)。
 
-### 3.2 身份与对话历史
+架构层只依赖这些数据所有权结论，不在本文复制字段清单。
+## 4. SQLite 连接与事务机制
 
-| 表 | 作用 | 为什么存在 |
-|---|---|---|
-| `workspaces` | 将规范化项目路径映射为稳定 UUID | 隔离不同项目的 Session、记忆和工具 |
-| `sessions` | 保存 Workspace 内的一段对话及有限上下文 | 允许快速构造下一轮模型输入 |
-| `branches` | 保存消息历史分支和分支头 | 为未来从历史消息派生新分支预留结构 |
-| `messages` | 保存完整、不可丢失的消息历史 | 用于恢复、审计、记忆来源和未来分支操作 |
-
-关键设计：
-
-- `UNIQUE(workspace_id, session_name)`：每个 Workspace 可以有自己的 `default`，但同一 Workspace
-  内不能出现两个同名 Session。
-- `messages.parent_message_id`：消息不只是线性序号，也可以组成分支链。
-- `messages.raw`：保留可恢复的 LangChain 消息结构；`content` 用于普通查询和审计。
-- `messages.execution_id`：能追踪一条消息由哪次 Execution 产生。
-- `sessions.recent_messages`：只保存下一轮需要的近期原文，不等同于完整历史。
-
-### 3.3 Session 生命周期：可用、归档与硬删除
-
-Session 不是只有“存在”和“不存在”两种状态。当前实现区分两种删除语义：
-
-| 操作 | 数据库行为 | 适用场景 |
-|---|---|---|
-| 归档 Session | 设置 `sessions.archived_at`，清除 `pending_execution_id`，保留消息、Execution、任务计划和维护记录 | 默认删除方式；不再继续使用这个 Session，但仍希望保留审计与历史 |
-| 硬删除 Session | 删除 `sessions` 行，并通过外键级联删除关联数据 | 明确不再需要该 Session 的所有本地历史 |
-
-`archived_at` 是软删除标记。它的作用不是隐藏一条消息，而是让整个 Session 变为不可继续对话的历史记录：
-
-- `chat`、`resume` 和 `discard` 不会继续操作已归档 Session。
-- `session.status` 会返回 `status=archived`，不会自动创建同名新 Session。
-- 归档不会删除 `messages`、`executions`、`execution_tasks` 或 `maintenance_jobs`，因此仍可用于审计、排障和未来历史查看。
-- 如果归档前存在待恢复 Execution，Core 会先将其标记为已丢弃，并把 checkpoint 清理任务写入 `maintenance_jobs`。
-
-硬删除才是真正的数据清除。删除 `sessions` 行后，数据库外键会级联删除：
-
-- `branches`
-- `messages`
-- `executions`
-- `execution_slices`
-- `execution_tasks`
-- `execution_task_dependencies`
-- 绑定该 Session 的 `maintenance_jobs`
-
-硬删除还会尽力删除对应的 LangGraph checkpoint thread。checkpoint 位于独立的 `checkpoints.db`，不属于同一个 SQLite
-事务；如果 checkpoint 文件清理失败，`state.db` 中的 Session 删除仍然以本地业务事实为准。这一点与本项目的
-Saga / 恢复协调原则一致：跨数据库清理是可重试的辅助动作，不应反过来阻止权威业务状态变更。
-
-设计上默认使用归档而不是硬删除，是为了避免误操作导致无法追溯。只有用户明确传入 `hard_delete=true` 或 CLI
-`--hard` 时，系统才执行不可恢复的数据删除。
-
-### 3.4 短期上下文与摘要字段
-
-`sessions` 中与上下文有关的字段：
-
-| 字段 | 含义 |
-|---|---|
-| `summary` | 已压缩的旧对话摘要 |
-| `recent_messages` | 最近若干条原始消息 |
-| `turn_index` | 已成功提交的最后一轮编号 |
-| `summary_through_turn` | 当前摘要已经覆盖到哪一轮 |
-| `version` | Session 发生过多少次状态更新，供诊断和未来并发控制使用 |
-| `archived_at` | 为空表示 Session 可继续使用；非空表示已归档，只可查询状态，不可继续对话 |
-
-`summary_through_turn` 是摘要 CAS 的比较边界。例如：
-
-```text
-当前 summary_through_turn = 10
-任务 A 计划把摘要推进到第 15 轮
-任务 B 更快，先把摘要推进到第 18 轮
-任务 A 写回时仍要求数据库值为 10，因此更新失败，不会覆盖任务 B
-```
-
-### 3.5 可恢复执行
-
-| 表 | 作用 |
-|---|---|
-| `executions` | 保存一项可能跨多个 Slice 的工作状态 |
-| `execution_slices` | 保存每次有界 LangGraph 运行的预算和停止原因 |
-| `tool_ledger` | 为工具调用审计预留账本结构 |
-
-`executions.status` 表示业务执行状态，例如：
-
-- `running`：正在执行。
-- `paused_budget`：达到本次预算边界，可以恢复。
-- `paused_error`：发生错误后暂停。
-- `paused_confirmation`：等待外部确认。
-- `paused_recovery`：Core 重启后发现 checkpoint 仍存在，等待恢复。
-- `unrecoverable_checkpoint`：业务状态认为任务未完成，但 checkpoint 已丢失。
-- `completed`：任务已完成。
-- `discarded`：用户明确放弃。
-
-`checkpoint_state` 单独描述 Execution 与 checkpoint 的关系：
-
-```text
-uninitialized -> available -> cleanup_pending -> cleaned
-                       \-> missing
-```
-
-业务状态和 checkpoint 状态分开，是因为“任务是否完成”和“断点文件是否已清理”是两个不同事实。
-
-### 3.6 长期记忆
-
-| 表 | 作用 |
-|---|---|
-| `memories` | 保存 Workspace 级稳定知识 |
-| `memory_sources` | 记录一条记忆来自哪些原始消息 |
-
-`memory_sources` 是多对多关系。一条记忆可能由多条消息支持，一条消息也可能支持多条记忆。来源关系
-用于追踪和审计，不代表每次加载记忆都要加载所有来源消息。
-
-### 3.7 后台维护与投影
-
-| 表 | 作用 | 当前状态 |
-|---|---|---|
-| `maintenance_jobs` | 可靠执行摘要、记忆提取和 checkpoint 清理 | 已使用 |
-| `projection_outbox` | 未来把本地业务变化投影到 PostgreSQL | 已预留，默认不启用 |
-| `imported_events` | 保存从旧系统迁移来的事件 | 迁移兼容用途 |
-
-`maintenance_jobs` 和 `projection_outbox` 不能合并：
-
-- `maintenance_jobs` 会改变本地派生状态，例如写入摘要、记忆或清理 checkpoint，失败后需要在本机重试。
-- `projection_outbox` 只描述“把已经存在的本地事实复制到外部查询库”，外部失败不能改变本地业务结果。
-
-两者的消费者、失败语义和保留策略不同，分表可以避免未来投影故障阻塞本地维护。
-
-`maintenance_jobs` 的关键字段：
-
-| 字段 | 含义 |
-|---|---|
-| `job_type` | 选择哪个 handler 执行 |
-| `dedupe_key` | 幂等去重键，防止同一任务重复入队 |
-| `priority` | 数字越大越先执行；checkpoint 清理优先级最高 |
-| `status` | `pending`、`running`、`succeeded` 或 `failed` |
-| `attempts / max_attempts` | 已尝试次数和最大次数 |
-| `next_attempt_at` | 失败后何时允许重试 |
-| `lease_expires_at` | worker 对任务的临时所有权何时过期 |
-| `last_error` | 最后一次失败摘要 |
-
-## 4. 数据库约束为什么重要
-
-应用代码会犯错，数据库约束是最后一道防线。
-
-### 4.1 外键
-
-SQLite 连接都会执行 `PRAGMA foreign_keys=ON`。例如：
-
-- 删除 Session 时，其 Branch、Message 和 Execution 会级联删除。
-- `memory_sources` 不能引用不存在的记忆或消息。
-- `maintenance_jobs` 不能绑定不存在的 Session。
-
-### 4.2 Workspace 复合外键
-
-Session、Branch、Message 和 Execution 的主要关系同时携带 `workspace_id + session_id`，用于防止把
-A 项目的 Session 数据错误关联到 B 项目。
-
-当前 `memory_sources` 的记忆侧使用 `workspace_id + memory_id` 复合外键，但消息侧只通过全局唯一的
-`message_id` 外键关联。应用代码只会传入当前 Session 的消息，因此正常路径保持 Workspace 隔离；不过
-数据库 Schema 尚未在消息侧强制验证相同 `workspace_id`。后续应为 `messages` 增加适合的复合唯一约束，
-并将 `memory_sources` 消息侧升级为复合外键。
-
-### 4.3 索引
-
-索引用于避免数据增长后每次查询都扫描整张表：
-
-- `idx_messages_session`：按 Session 和轮次读取消息。
-- `idx_executions_session`：查找 Session 的执行记录。
-- `idx_memories_workspace`：按 Workspace 检索重要记忆。
-- `idx_maintenance_jobs_ready`：按状态、执行时间和优先级认领任务。
-- `idx_maintenance_jobs_session`：查询一个 Session 的待处理和失败任务数量。
-
-## 5. SQLite 连接与事务机制
-
-### 5.1 WAL
+### 4.1 WAL
 
 WAL 是 Write-Ahead Logging 的缩写，可理解为“先把变更追加到日志，再合并进主数据库文件”。
 
 WAL 允许读取和短写事务更好地并行，但 SQLite 仍然只有一个写者。它降低锁竞争，不会消除锁竞争。
 如果文件系统不支持 WAL，项目会降级为 DELETE journal 模式。
 
-### 5.2 `BEGIN IMMEDIATE`
+### 4.2 `BEGIN IMMEDIATE`
 
 写事务通过 `BEGIN IMMEDIATE` 开始。它会在事务开始时获取写入资格，而不是执行到一半才发现无法写入。
 这样失败位置更可预测，也避免事务完成一半后长期等待锁。
 
-### 5.3 `busy_timeout`
+### 4.3 `busy_timeout`
 
 如果另一个短事务正在写入，连接最多等待配置的 `busy_timeout`。它用于吸收短暂竞争，不应被理解为
 无限等待。后台 handler 不得持有写事务执行 LLM 调用或文件删除等慢操作。
 
-## 6. 一次成功 Turn 如何提交
+## 5. 一次成功 Turn 如何提交
 
-### 6.1 响应前必须完成的工作
+### 5.1 响应前必须完成的工作
 
 ```mermaid
 flowchart TB
@@ -378,7 +232,7 @@ flowchart TB
 
 这里的“快速状态”只保留已有摘要和最近消息，不调用摘要 LLM。
 
-### 6.2 为什么 `done` 必须等待这次提交
+### 5.2 为什么 `done` 必须等待这次提交
 
 如果先返回 `done` 再保存消息，Core 在两者之间崩溃时，用户已经看到回答，但历史记录会丢失。因此
 最小提交是有意保留的 durability barrier，即“耐久性屏障”：
@@ -387,12 +241,12 @@ flowchart TB
 只有回答已可靠写入 state.db，Core 才能声明本轮成功。
 ```
 
-### 6.3 为什么摘要和记忆不在事务中执行
+### 5.3 为什么摘要和记忆不在事务中执行
 
 摘要和记忆提取需要调用 LLM，耗时和失败概率都远高于本地短事务。它们又可以从完整消息重新生成，
 因此适合写成持久化后台任务。这样既不丢任务，也不会让用户等待慢维护操作。
 
-## 7. 后台维护如何可靠执行
+## 6. 后台维护如何可靠执行
 
 ```mermaid
 flowchart LR
@@ -403,12 +257,12 @@ flowchart LR
     R -->|Core 崩溃且租约过期| P
 ```
 
-### 7.1 租约
+### 6.1 租约
 
 租约表示 worker 只在一段时间内拥有任务，而不是永久拥有。如果 Core 在任务执行中崩溃，租约过期后，
 下次启动的 worker 可以重新认领该任务。
 
-### 7.2 幂等
+### 6.2 幂等
 
 幂等表示同一操作执行多次，最终结果与执行一次相同。例如：
 
@@ -418,12 +272,12 @@ flowchart LR
 
 没有幂等性，租约恢复和重试可能制造重复数据。
 
-### 7.3 指数退避
+### 6.3 指数退避
 
 任务失败后不会立刻高频重试。等待时间按尝试次数增长，并设置上限。这称为指数退避，用于避免数据库
 或模型服务故障时形成持续重试压力。
 
-## 8. 两个 SQLite 数据库如何最终一致
+## 7. 两个 SQLite 数据库如何最终一致
 
 两个数据库不能共享一个事务，因此需要明确处理所有可能的崩溃位置。
 
@@ -437,7 +291,7 @@ flowchart LR
 恢复协调器只负责让状态收敛，不会把不可恢复任务伪装成可恢复，也不会因为 checkpoint 清理失败而
 撤销已经成功提交的对话。
 
-## 9. Schema 初始化与迁移
+## 8. Schema 初始化与迁移
 
 `LocalStateDatabase.initialize()` 在 Core 接受请求前执行：
 
@@ -454,7 +308,7 @@ flowchart LR
 `migrations.py` 中动态拼接的表名、列名和声明全部来自代码内静态常量，不接受用户输入；业务值仍应
 通过 SQL 参数绑定传入。
 
-## 10. 当前一致性保证与边界
+## 9. 当前一致性保证与边界
 
 ### 已保证
 
@@ -477,7 +331,7 @@ flowchart LR
 - `memory_sources` 消息侧尚未使用 `workspace_id + message_id` 复合外键，当前依赖应用层传入同一
   Workspace 的来源消息。
 
-## 11. 代码与测试入口
+## 10. 代码与测试入口
 
 | 关注点 | 代码 |
 |---|---|
@@ -486,7 +340,13 @@ flowchart LR
 | 加法迁移 | `src/core/state/migrations.py` |
 | Session、消息和记忆 | `src/core/state/store.py` |
 | Execution 状态 | `src/core/state/executions.py` |
+| Execution 只读查询 | `src/core/state/execution_queries.py` |
+| Execution checkpoint 恢复状态 | `src/core/state/execution_checkpoints.py` |
+| Execution Slice 与预算计数 | `src/core/state/execution_slices.py` |
 | LangGraph checkpoint | `src/core/state/checkpoints.py` |
+| PostgreSQL 到本地状态迁移编排 | `src/core/state/migration.py` |
+| 迁移前源库计数检查 | `src/core/state/migration_inspector.py` |
+| 迁移后源库清理 | `src/core/state/migration_pruner.py` |
 | 最小 Turn 提交 | `src/core/finalization/committer.py` |
 | 后台任务仓储与调度 | `src/core/maintenance/repository.py`、`scheduler.py` |
 | 恢复协调器 | `src/core/maintenance/recovery.py` |

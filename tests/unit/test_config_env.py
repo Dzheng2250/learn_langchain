@@ -84,10 +84,10 @@ class EnvironmentValueTest(unittest.TestCase):
 
         self.assertEqual(
             ["generic-key", "https://generic.example/v1"],
-            result.stdout.strip().splitlines(),
+            result.stdout.splitlines(),
         )
 
-    def test_legacy_llm_variables_remain_compatible(self):
+    def test_legacy_llm_variables_do_not_configure_default_provider(self):
         root = REPOSITORY_ROOT
         process_env = dict(os.environ)
         process_env.pop("LEARN_AGENT_LLM_API_KEY", None)
@@ -115,8 +115,8 @@ class EnvironmentValueTest(unittest.TestCase):
         )
 
         self.assertEqual(
-            ["legacy-key", "https://legacy.example/v1"],
-            result.stdout.strip().splitlines(),
+            ["", ""],
+            result.stdout.splitlines(),
         )
 
     def _assert_entry_loads_user_env(

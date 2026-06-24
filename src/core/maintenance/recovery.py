@@ -3,7 +3,7 @@
 from src.core.maintenance.models import MaintenanceJobSpec
 from src.core.maintenance.repository import MaintenanceRepository
 from src.core.maintenance.types import MaintenanceJobType, MaintenancePriority
-from src.core.state.contracts import CheckpointStore
+from src.core.ports import CheckpointStore
 from src.core.state.executions import ExecutionRepository
 from src.core.state.types import ExecutionStatus
 from src.core.telemetry import emit_event

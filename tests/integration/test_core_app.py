@@ -3,8 +3,11 @@ import time
 import unittest
 from unittest.mock import call, patch
 
+from dependency_injector import providers
+
 from src.core.app import CoreApp
 from src.core.config.models import CoreConfig
+from src.core.container import CoreContainer
 
 
 class FakeAgentService:
@@ -222,6 +225,39 @@ class CoreAppTest(unittest.IsolatedAsyncioTestCase):
 
             install_bus.assert_called_once_with(None)
             self.assertEqual([app.config.shutdown_timeout_seconds], pool.close_timeouts)
+
+    async def test_default_path_uses_injected_container_components(self):
+        events = []
+        container = CoreContainer()
+        container.agent_service.override(providers.Object(FakeAgentService(events)))
+
+        class FakeEventBus:
+            def close(self):
+                events.append("event_bus.close")
+
+        container.event_bus.override(providers.Object(FakeEventBus()))
+        container.postgres_pool.override(providers.Object(None))
+
+        app = CoreApp(
+            self._config(),
+            "token",
+            container=container,
+            transport_factory=lambda _config, _router: FakeTransport(events),
+        )
+
+        await app.start()
+        await app.close()
+
+        self.assertEqual(
+            [
+                "agent.initialize",
+                "transport.start",
+                "transport.close",
+                "agent.close",
+                "event_bus.close",
+            ],
+            events,
+        )
 
     def test_core_config_rejects_non_loopback_host(self):
         with self.assertRaises(ValueError):

@@ -9,10 +9,10 @@ class MemoryExtractionPolicyTest(unittest.TestCase):
     """Tests for deciding whether to spend an LLM call on long-term memory extraction."""
 
     def test_explicit_memory_hint_triggers_extraction(self) -> None:
-        self.assertTrue(has_explicit_memory_request("请记住我喜欢中文注释"))
+        self.assertTrue(has_explicit_memory_request("please remember my preference"))
         self.assertTrue(
             should_extract_long_term_memory(
-                "请记住我喜欢中文注释",
+                "please remember my preference",
                 turn_index=1,
                 turn_messages=[HumanMessage(content="short"), AIMessage(content="ok")],
             )
@@ -21,7 +21,7 @@ class MemoryExtractionPolicyTest(unittest.TestCase):
     def test_interval_turn_triggers_extraction(self) -> None:
         self.assertTrue(
             should_extract_long_term_memory(
-                "普通问题",
+                "ordinary question",
                 turn_index=5,
                 turn_messages=[HumanMessage(content="short"), AIMessage(content="ok")],
             )
@@ -30,7 +30,7 @@ class MemoryExtractionPolicyTest(unittest.TestCase):
     def test_large_turn_triggers_extraction(self) -> None:
         self.assertTrue(
             should_extract_long_term_memory(
-                "普通问题",
+                "ordinary question",
                 turn_index=1,
                 turn_messages=[
                     HumanMessage(content="short"),
@@ -42,7 +42,7 @@ class MemoryExtractionPolicyTest(unittest.TestCase):
     def test_small_ordinary_turn_does_not_trigger_extraction(self) -> None:
         self.assertFalse(
             should_extract_long_term_memory(
-                "普通问题",
+                "ordinary question",
                 turn_index=1,
                 turn_messages=[HumanMessage(content="short"), AIMessage(content="ok")],
             )

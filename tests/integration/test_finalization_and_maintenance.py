@@ -9,6 +9,8 @@ from langchain_core.messages import AIMessage, HumanMessage
 
 from src.core.context.manager import AgentContextManager
 from src.core.context.models import AgentContextState
+from tests.support.model_providers import UnusedModelProvider
+from src.core.adapters.sqlite import SQLiteStateUnitOfWorkFactory
 from src.core.finalization import CompletedTurnCommitter, TurnFinalizer
 from src.core.finalization.models import CompletedTurn
 from src.core.maintenance import (
@@ -19,9 +21,9 @@ from src.core.maintenance import (
 )
 from src.core.maintenance.handlers import ContextSummaryHandler
 from src.core.state import ExecutionRepository, LocalStateDatabase, LocalStateStore
-from src.core.state.migrations import apply_local_migrations
+from src.core.state.migrations import LATEST_SCHEMA_VERSION, apply_local_migrations
 from src.core.state.workspace import LocalWorkspaceRepository
-from src.core.agent.service import AgentTurnService
+from tests.support.session_services import build_session_lifecycle_service
 
 
 class WakeOnlyScheduler:
@@ -40,17 +42,19 @@ class FinalizationTest(unittest.TestCase):
         self.workspaces = LocalWorkspaceRepository(self.database)
         self.workspace = self.workspaces.resolve(str(Path("tests/fixtures/workspace_a").resolve()))
         self.session, _ = self.workspaces.resolve_session(self.workspace, "default")
-        self.store = LocalStateStore(self.database)
+        self.store = LocalStateStore(self.database, UnusedModelProvider())
         self.executions = ExecutionRepository(self.database)
         self.maintenance = MaintenanceRepository(self.database)
         self.scheduler = WakeOnlyScheduler()
         self.committer = CompletedTurnCommitter(
-            self.database,
-            self.executions,
-            self.maintenance,
+            SQLiteStateUnitOfWorkFactory(
+                self.database,
+                self.executions,
+                self.maintenance,
+            ),
         )
         self.finalizer = TurnFinalizer(
-            AgentContextManager(),
+            AgentContextManager(UnusedModelProvider()),
             self.committer,
             self.scheduler,
         )
@@ -65,7 +69,6 @@ class FinalizationTest(unittest.TestCase):
         ]
 
         result = self.finalizer.finalize(
-            store=self.store,
             session=self.session,
             turn_index=1,
             previous_state=state,
@@ -117,9 +120,11 @@ class FinalizationTest(unittest.TestCase):
                 raise RuntimeError("injected enqueue failure")
 
         committer = CompletedTurnCommitter(
-            self.database,
-            self.executions,
-            FailingMaintenanceRepository(self.database),
+            SQLiteStateUnitOfWorkFactory(
+                self.database,
+                self.executions,
+                FailingMaintenanceRepository(self.database),
+            ),
         )
         completed = CompletedTurn(
             self.session,
@@ -140,7 +145,7 @@ class FinalizationTest(unittest.TestCase):
         )
 
         with self.assertRaisesRegex(RuntimeError, "injected enqueue failure"):
-            committer.commit(self.store, completed)
+            committer.commit(completed)
 
         with self.database.connect() as conn:
             self.assertEqual(0, conn.execute("SELECT count(*) FROM messages").fetchone()[0])
@@ -179,7 +184,6 @@ class FinalizationTest(unittest.TestCase):
             )
         )
         self.finalizer.finalize(
-            store=self.store,
             session=self.session,
             turn_index=2,
             previous_state=AgentContextState(summary="stale summary"),
@@ -193,18 +197,17 @@ class FinalizationTest(unittest.TestCase):
 
     def test_minimal_commit_remains_a_required_durability_barrier(self):
         class SlowCommitter:
-            def commit(self, _store, _completed):
+            def commit(self, _completed):
                 time.sleep(0.08)
                 return []
 
         finalizer = TurnFinalizer(
-            AgentContextManager(),
+            AgentContextManager(UnusedModelProvider()),
             SlowCommitter(),
             self.scheduler,
         )
         started = time.perf_counter()
         finalizer.finalize(
-            store=self.store,
             session=self.session,
             turn_index=1,
             previous_state=AgentContextState(),
@@ -219,14 +222,13 @@ class FinalizationTest(unittest.TestCase):
                 raise RuntimeError("wake failed")
 
         finalizer = TurnFinalizer(
-            AgentContextManager(),
+            AgentContextManager(UnusedModelProvider()),
             self.committer,
             FailingWakeScheduler(),
             memory_enabled=False,
         )
         with patch("src.core.finalization.service.record_error") as record:
             result = finalizer.finalize(
-                store=self.store,
                 session=self.session,
                 turn_index=1,
                 previous_state=AgentContextState(),
@@ -256,7 +258,7 @@ class FinalizationTest(unittest.TestCase):
             poll_interval_seconds=0.01,
         )
         finalizer = TurnFinalizer(
-            AgentContextManager(),
+            AgentContextManager(UnusedModelProvider()),
             self.committer,
             scheduler,
             memory_enabled=False,
@@ -273,7 +275,6 @@ class FinalizationTest(unittest.TestCase):
                 ]
                 started = time.perf_counter()
                 finalizer.finalize(
-                    store=self.store,
                     session=self.session,
                     turn_index=turn_index,
                     previous_state=state,
@@ -480,7 +481,6 @@ class MaintenanceHandlerTest(unittest.TestCase):
         class Store:
             def __init__(self):
                 self.updated = None
-                self.closed = False
 
             def load_summary_source(self, _session, _target_turn):
                 return (
@@ -497,9 +497,6 @@ class MaintenanceHandlerTest(unittest.TestCase):
                 self.updated = kwargs
                 return True
 
-            def close(self):
-                self.closed = True
-
         class Context:
             recent_message_limit = 1
 
@@ -512,7 +509,7 @@ class MaintenanceHandlerTest(unittest.TestCase):
         store = Store()
         handler = ContextSummaryHandler(
             Mock(get_session=Mock(return_value=session)),
-            lambda: store,
+            store,
             Context(),
         )
         handler(
@@ -525,7 +522,6 @@ class MaintenanceHandlerTest(unittest.TestCase):
 
         self.assertEqual("one,two", store.updated["summary"])
         self.assertEqual(2, store.updated["summary_through_turn"])
-        self.assertTrue(store.closed)
 
 
 class RecoveryCoordinatorTest(unittest.TestCase):
@@ -576,17 +572,13 @@ class RecoveryCoordinatorTest(unittest.TestCase):
                 str(session.session_id),
             )
         )
-        service = AgentTurnService(
+        service = build_session_lifecycle_service(
+            database=self.database,
             workspace_repository=self.workspaces,
-            runtime_registry=Mock(),
-            state_store_factory=lambda: LocalStateStore(self.database),
             execution_repository=self.executions,
             maintenance_repository=self.maintenance,
         )
-        try:
-            status = service.session_status(str(self.workspace.root), "status")
-        finally:
-            service.close()
+        status = service.session_status(str(self.workspace.root), "status")
 
         self.assertTrue(status["execution_recoverable"])
         self.assertEqual("available", status["checkpoint_state"])
@@ -690,7 +682,8 @@ class LocalSchemaMigrationTest(unittest.TestCase):
         database.initialize()
         with database.transaction() as conn:
             conn.execute(
-                "INSERT INTO local_schema_migrations(version, name) VALUES (6, 'future')"
+                "INSERT INTO local_schema_migrations(version, name) VALUES (?, 'future')",
+                (LATEST_SCHEMA_VERSION + 1,),
             )
 
         with self.assertRaisesRegex(RuntimeError, "newer"):
@@ -725,7 +718,7 @@ class LocalSchemaMigrationTest(unittest.TestCase):
         workspace = workspaces.resolve(str(Path("tests/fixtures/workspace_a").resolve()))
         session, _ = workspaces.resolve_session(workspace, "migration")
         with database.transaction() as conn:
-            conn.execute("DELETE FROM local_schema_migrations WHERE version IN (2, 3, 4, 5)")
+            conn.execute("DELETE FROM local_schema_migrations WHERE version > 1")
             conn.execute(
                 "UPDATE sessions SET turn_index=1 WHERE session_id=?",
                 (str(session.session_id),),
