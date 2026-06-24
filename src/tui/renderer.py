@@ -7,9 +7,12 @@ but outputs Rich markup strings instead of ``print()`` calls.
 from __future__ import annotations
 
 import json
+import re
 from typing import Any
 
 # Reuse constants and helpers from the CLI renderer
+from rich.markup import escape
+
 from src.cli.render import (
     ARG_FIELD_PREVIEW_LIMIT,
     ARG_PREVIEW_LIMIT,
@@ -20,6 +23,68 @@ from src.cli.render import (
     _task_plan_lines,
     _task_update_line,
 )
+
+
+
+_TASK_PROGRESS_LINE = re.compile(r"^\[(?P<marker>[ >x-])\]\s+(?P<key>[^:]+):\s+(?P<subject>.*?)\s+\((?P<state>.*)\)$")
+
+
+def is_tool_step(data: dict[str, Any]) -> bool:
+    """Return whether a step event represents tool execution."""
+    return data.get("type") in {"tool_call_start", "tool_call_result"}
+
+
+def is_task_tool_step(data: dict[str, Any]) -> bool:
+    """Return whether a step event belongs to the private task tools."""
+    return is_tool_step(data) and (data.get("tool") or "") in TASK_TOOLS
+
+
+def render_task_progress(data: dict[str, Any]) -> str | None:
+    """Render the latest task plan as one replaceable TUI block.
+
+    Task tool results carry the authoritative compact plan text returned by
+    TaskPlanningService. The TUI treats it as state, not an append-only log, so
+    every update replaces the previous visible task block.
+    """
+    if data.get("type") != "tool_call_result":
+        return None
+    tool = data.get("tool") or ""
+    if tool not in TASK_TOOLS:
+        return None
+    content = str(data.get("content") or "").strip()
+    if not content or content.startswith("Task tool error:"):
+        return None
+
+    lines = [line.rstrip() for line in content.splitlines() if line.strip()]
+    task_lines = [_render_task_progress_line(line) for line in lines]
+    task_lines = [line for line in task_lines if line is not None]
+    if not task_lines:
+        return None
+    return "\n".join(["[bold cyan]● Update Todos[/bold cyan]", *task_lines])
+
+
+def _render_task_progress_line(line: str) -> str | None:
+    """Render one compact task-list line without treating task keys as markup."""
+    if line.startswith("Task plan saved.") or line.startswith("Task updated:"):
+        return None
+    if line == "No private task plan exists for this Execution.":
+        return "[dim]No task plan yet.[/dim]"
+    match = _TASK_PROGRESS_LINE.match(line)
+    if match is None:
+        return f"[dim]{escape(line)}[/dim]"
+
+    marker = match.group("marker")
+    key = escape(match.group("key"))
+    subject = escape(match.group("subject"))
+    state = escape(match.group("state"))
+    label = f"{key}: {subject}"
+    if marker == "x":
+        return f"[green]☑[/green] [strike dim]{label}[/strike dim]"
+    if marker == ">":
+        return f"[bold yellow]▣[/bold yellow] [bold]{label}[/bold] [dim]({state})[/dim]"
+    if marker == "-":
+        return f"[dim]☒ {label} ({state})[/dim]"
+    return f"[dim]☐[/dim] {label} [dim]({state})[/dim]"
 
 # ── event-type markers ──────────────────────────────────────────────
 

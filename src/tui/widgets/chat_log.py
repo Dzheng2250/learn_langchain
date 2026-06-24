@@ -27,6 +27,7 @@ class _LogEntry:
     ``mode`` controls how the entry is rendered:
     - ``markup``: trusted TUI markup produced by ``src.tui.renderer``.
     - ``plain``: literal text; Rich markup is not interpreted.
+    - ``tool``: trusted Rich markup for collapsible tool execution details.
     - ``markdown``: completed assistant answer rendered once with Markdown.
     """
 
@@ -53,6 +54,9 @@ class ChatLog(VerticalScroll):
         self._entries: list[_LogEntry] = []
         self._token_buf: str = ""
         self._active_token_widget: Static | None = None
+        self._task_progress_widget: Static | None = None
+        self._task_progress_index: int | None = None
+        self._tool_events_visible: bool = False
         self._stream_committed_length: int = 0
         self._markdown_render_limit: int = MARKDOWN_RENDER_LIMIT
         self._partial_markdown_min_chars: int = PARTIAL_MARKDOWN_MIN_CHARS
@@ -96,9 +100,51 @@ class ChatLog(VerticalScroll):
         """Flush any pending tokens, then write a TUI markup event."""
         self.flush_tokens()
         self._capture_scroll_follow_state()
-        for line in markup.split("\n"):
-            if line:
-                self._append_committed(_LogEntry(line, "markup"))
+        if markup.strip():
+            self._append_committed(_LogEntry(markup, "markup"))
+
+    def write_tool_event(self, markup: str) -> None:
+        """Store one collapsible tool event and mount it only when expanded."""
+        self.flush_tokens()
+        self._capture_scroll_follow_state()
+        if not markup.strip():
+            return
+        entry = _LogEntry(markup, "tool")
+        self._entries.append(entry)
+        if self._tool_events_visible:
+            self._append_entry(entry)
+            self._scroll_to_bottom()
+
+    def set_tool_events_visible(self, visible: bool) -> None:
+        """Expand or collapse stored tool execution details."""
+        if self._tool_events_visible == visible:
+            return
+        self.flush_tokens()
+        self._capture_scroll_follow_state()
+        self._tool_events_visible = visible
+        self._rebuild_visible_entries()
+        self._scroll_to_bottom()
+
+    def write_task_progress(self, markup: str) -> None:
+        """Create or replace the latest visible private-task progress block."""
+        self.flush_tokens()
+        self._capture_scroll_follow_state()
+        if not markup.strip():
+            return
+        entry = _LogEntry(markup, "markup")
+        if self._task_progress_widget is None or self._task_progress_index is None:
+            self._entries.append(entry)
+            self._task_progress_index = len(self._entries) - 1
+            self._task_progress_widget = self._append_entry(entry)
+        else:
+            self._entries[self._task_progress_index] = entry
+            self._update_widget(self._task_progress_widget, entry)
+        self._scroll_to_bottom()
+
+    def reset_task_progress(self) -> None:
+        """Start a new task-progress block for the next goal Execution."""
+        self._task_progress_widget = None
+        self._task_progress_index = None
 
     def mark_tokens_stale(self, reason: str) -> None:
         """Keep a failed draft for diagnosis but mark it as non-authoritative."""
@@ -123,6 +169,9 @@ class ChatLog(VerticalScroll):
         self._entries.clear()
         self._token_buf = ""
         self._active_token_widget = None
+        self._task_progress_widget = None
+        self._task_progress_index = None
+        self._tool_events_visible = False
         self._stream_committed_length = 0
         self._auto_scroll = True
         self._user_scroll_paused = False
@@ -285,6 +334,18 @@ class ChatLog(VerticalScroll):
         self.mount(widget)
         return widget
 
+    def _rebuild_visible_entries(self) -> None:
+        """Recreate mounted widgets after a visibility-only display change."""
+        self.remove_children()
+        self._active_token_widget = None
+        self._task_progress_widget = None
+        for index, entry in enumerate(self._entries):
+            if entry.mode == "tool" and not self._tool_events_visible:
+                continue
+            widget = self._append_entry(entry)
+            if index == self._task_progress_index:
+                self._task_progress_widget = widget
+
     def _new_widget(self, entry: _LogEntry) -> Static:
         """Create a Textual widget for one log entry.
 
@@ -293,8 +354,8 @@ class ChatLog(VerticalScroll):
         whitespace are preserved. Completed answers use Markdown unless they are
         too large for a single safe render pass.
         """
-        if entry.mode == "markup":
-            return Static(entry.content, markup=True, classes="chat-log-entry")
+        if entry.mode in {"markup", "tool"}:
+            return Static(entry.content, markup=True, classes=f"chat-log-entry chat-log-{entry.mode}")
         return Static(
             self._renderable_for_entry(entry),
             markup=False,
@@ -303,7 +364,7 @@ class ChatLog(VerticalScroll):
 
     def _update_widget(self, widget: Static, entry: _LogEntry) -> None:
         """Update an existing entry widget in place."""
-        if entry.mode == "markup":
+        if entry.mode in {"markup", "tool"}:
             widget.update(entry.content)
             return
         widget.update(self._renderable_for_entry(entry))

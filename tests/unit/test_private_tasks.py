@@ -161,6 +161,29 @@ class PrivateTaskTest(unittest.TestCase):
         self.assertNotIn("blocked_by", result)
         self.assertNotIn("depends_on", result)
 
+    def test_task_update_returns_refreshed_plan_list(self):
+        self.service.plan(
+            self.context,
+            [
+                {"task_key": "inspect", "subject": "Inspect"},
+                {
+                    "task_key": "write_report",
+                    "subject": "Write report",
+                    "depends_on": ["inspect"],
+                },
+            ],
+        )
+
+        result = self.service.update(
+            self.context,
+            "inspect",
+            status=TaskStatus.COMPLETED,
+        )
+
+        self.assertIn("Task updated: inspect", result)
+        self.assertIn("[x] inspect: Inspect (completed)", result)
+        self.assertIn("[ ] write_report: Write report (ready)", result)
+
     def test_task_get_uses_user_facing_dependency_labels(self):
         self.service.plan(
             self.context,

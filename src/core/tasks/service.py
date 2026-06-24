@@ -65,7 +65,11 @@ class TaskPlanningService:
             notes=notes.strip() if isinstance(notes, str) else None,
             depends_on=depends_on,
         )
-        return self._format_task(task)
+        tasks = self.repository.list(context)
+        return self._bounded(
+            "Task updated: " + task.task_key + "\n" + self._format_list(tasks),
+            self.settings.list_output_limit,
+        )
 
     def list(self, context: ToolExecutionContext) -> str:
         """Return a compact current plan view for the active Execution."""

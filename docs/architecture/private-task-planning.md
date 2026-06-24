@@ -114,7 +114,7 @@ goal 模式下父 Agent 可见四个普通 LangChain 工具：
 | 工具 | 作用 |
 |---|---|
 | `task_plan` | 原子创建或更新一批任务和依赖图 |
-| `task_update` | 更新单项任务的状态、说明、备注或依赖 |
+| `task_update` | 更新单项任务的状态、说明、备注或依赖，并返回刷新后的完整紧凑计划视图 |
 | `task_list` | 返回当前 Execution 的紧凑计划视图 |
 | `task_get` | 读取单项任务详情 |
 
@@ -126,6 +126,8 @@ goal 模式下父 Agent 可见四个普通 LangChain 工具：
 - 不产生 Workspace 文件副作用。
 
 子 Agent 不会收到任务工具。子 Agent 的定位是短生命周期局部执行者，任务规划属于父 Agent 的整体认知工作。
+
+`task_plan` 和 `task_update` 的返回内容都应包含当前 Execution 的紧凑任务清单。这不是公开任务 API，而是为了让 CLI/TUI 在 goal 模式下能及时显示父 Agent 的计划变化。TUI 会把这些结果折叠成一个“最新任务进度”状态块并原地更新，避免每次 `task_update` 都追加一份完整清单造成刷屏。
 
 ## 5. goal 模式如何切换工具
 

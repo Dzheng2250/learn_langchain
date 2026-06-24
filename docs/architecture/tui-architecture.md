@@ -181,7 +181,7 @@ src/tui/renderer.py
 | `step.agent_start` | `[bold blue]▶ Agent turn started.` | 蓝色粗体 |
 | `step.agent_message` | 原始内容 | 仅在无 token 时作为 fallback |
 | `step.tool_call_start` | `[bold green]▶ tool: read_file` | 绿色粗体，参数脱敏后 preview |
-| `step.tool_call_result` | `[green]✓ tool: read_file` | 绿色，仅 task 工具显示内容 |
+| `step.tool_call_result` | `[green]✓ tool: read_file` | 绿色；task 工具结果还会更新独立任务进度块 |
 | `done.status=ok` | `[green]■ completed` 或 `[bold green]★ goal completed` | 普通/目标模式 |
 | `done.status=paused` | `[yellow]■ execution paused: budget_limit` | 黄色 |
 | `error` | `[red]✗ error: ...` | 红色 |
@@ -264,14 +264,28 @@ _stream_committed_length: int      # 已阶段性提交为 Markdown 的前缀长
 | 方法 | 何时调用 | 行为 |
 |---|---|---|
 | `write_token(content)` | 每个 token chunk | 追加到 `_token_buf`，必要时提交稳定 Markdown 前缀，再更新当前尾部 widget |
-| `write_event(markup)` | 非 token 事件（step、done、error） | 先提交当前 token，再追加独立事件 widget |
+| `write_event(markup)` | 非 token 事件（step、done、error） | 先提交当前 token，再把整段 markup 作为一个事件 widget 追加；不能按换行拆分 |
 | `flush_tokens()` | agent_message 到达或其他事件前 | 将剩余尾部提交为最终 Markdown/纯文本 entry |
+
+非 token 事件可以包含多行 Rich markup。例如 task 工具会把标题和任务清单放在同一个事件中，其中 `[dim]...[/dim]` 这类样式可能跨越多行。`ChatLog.write_event()` 必须把这段 markup 当作一个 Rich 解析单元；如果按 `\n` 拆成多个 widget，后续行会丢失样式，最后一行还可能因为只有闭合标签而触发 Rich 解析错误。
+
+工具过程默认折叠，避免 goal 模式下被 `task_update`、文件读取、命令执行等工具事件刷屏。用户可以用 `Ctrl+O` 在 TUI 中切换工具过程明细；该开关只影响普通工具调用日志，不影响 token 输出、错误提示和任务进度块。任务进度块由 `task_plan`、`task_update`、`task_list` 的结果驱动，是一个可替换状态块：第一次出现时追加到日志，后续任务清单变化时原地更新，因此界面只保留最新计划状态，而不是每次 update 都追加一份完整清单。发送新的 goal 时会开始新的任务进度块，保留旧 goal 的最终状态用于回看。
 
 #### 性能与滚动边界
 
-TUI 不应让每个 token 都触发完整历史重绘和整段 Markdown 解析，也不能让 Textual 的消息处理器直接等待完整流式 RPC。当前实现分三层解耦：`action_submit()` 只创建后台输入任务并立即返回，让鼠标和键盘消息可以继续被 Textual 派发；`ChatScreen._on_event()` 再把 Core notification 放入 TUI 事件队列，由后台 consumer 渲染，避免 socket 读取循环直接驱动 UI；`ChatLog.write_token()` 只追加到内存缓冲，`ChatLog` 再以固定帧率批量 `render_pending_tokens()`，因此 Core 的推送速率不会直接决定 layout 次数。渲染帧只更新当前尾部 widget，并在段落边界或尾部过长时提交稳定 Markdown 前缀；长回答不会重放已提交历史，也不会等到最后才出现所有 Markdown 排版。如果单块超过阈值，则回退纯文本以保证交互性。
+TUI 不应让每个 token 都触发完整历史重绘和整段 Markdown 解析，也不能让 Textual 的消息处理器直接等待完整流式 RPC。当前实现分三层解耦：`action_submit()` 只创建后台输入任务并立即返回，让鼠标和键盘消息可以继续被 Textual 派发；
+- `ChatScreen._on_event()` 再把 Core notification 放入 TUI 事件队列，由后台 consumer 渲染，避免 socket 读取循环直接驱动 UI；
+- `ChatLog.write_token()` 只追加到内存缓冲，`ChatLog` 再以固定帧率批量 `render_pending_tokens()`，因此 Core 的推送速率不会直接决定 layout 次数。
+- 渲染帧只更新当前尾部 widget，并在段落边界或尾部过长时提交稳定 Markdown 前缀；
+- 长回答不会重放已提交历史，也不会等到最后才出现所有 Markdown 排版。如果单块超过阈值，则回退纯文本以保证交互性。
 
-自动滚动遵循 follow-tail 规则：如果用户正在底部，新增 token 会继续跟随到底部；如果用户通过鼠标滚轮、键盘、触控板或拖动滚动条向上查看历史，ChatLog 会先记录“暂停自动跟随”的意图，然后把滚轮事件继续交给 Textual/ScrollView 的真实滚动处理；如果滚轮发生在输入框等非日志区域，ChatScreen 会把滚动转发给 ChatLog。暂停状态优先级高于底部采样，避免滚动刚发生但 layout 还没更新时被下一帧 token 重新拉回底部。实现上有两个短窗口：用户滚动后设置“暂停自动跟随”窗口，窗口内即使布局临时报告“已经在底部”，`scroll_end()` 也不会执行；发送新消息或 resume 时设置“强制跟随”窗口，因为 Textual 的 `scroll_end()` 需要等后续 layout 才会稳定，不能让紧随其后的旧 `scroll_y/max_scroll_y` 采样把 follow-tail 误关掉。强制跟随不是永久锁，只要用户在这之后滚动，`watch_scroll_y()` 会立即取消强制跟随并以用户滚动为准。底部判断优先使用 `scroll_y/max_scroll_y` 数值，因为 `is_vertical_scroll_end` 在布局未稳定时可能出现滞后。用户手动回到底部后，下一次输出会恢复自动跟随；每次发送新消息或 resume 时会显式回到底部并重新开启 follow-tail。这样长输出期间用户可以自由查看前文。
+自动滚动遵循 follow-tail 规则：
+- 如果用户正在底部，新增 token 会继续跟随到底部；如果用户通过鼠标滚轮、键盘、触控板或拖动滚动条向上查看历史，ChatLog 会先记录“暂停自动跟随”的意图，然后把滚轮事件继续交给 Textual/ScrollView 的真实滚动处理；
+- 如果滚轮发生在输入框等非日志区域，ChatScreen 会把滚动转发给 ChatLog。暂停状态优先级高于底部采样，避免滚动刚发生但 layout 还没更新时被下一帧 token 重新拉回底部。
+- 实现上有两个短窗口：用户滚动后设置“暂停自动跟随”窗口，窗口内即使布局临时报告“已经在底部”，`scroll_end()` 也不会执行；
+- 发送新消息或 resume 时设置“强制跟随”窗口，因为 Textual 的 `scroll_end()` 需要等后续 layout 才会稳定，不能让紧随其后的旧 `scroll_y/max_scroll_y` 采样把 follow-tail 误关掉。强制跟随不是永久锁，只要用户在这之后滚动，`watch_scroll_y()` 会立即取消强制跟随并以用户滚动为准。
+- 底部判断优先使用 `scroll_y/max_scroll_y` 数值，因为 `is_vertical_scroll_end` 在布局未稳定时可能出现滞后。
+- 用户手动回到底部后，下一次输出会恢复自动跟随；每次发送新消息或 resume 时会显式回到底部并重新开启 follow-tail。这样长输出期间用户可以自由查看前文。
 
 后续若要进一步优化，可在活动 widget 内做更细的分段或虚拟滚动，但不应回到每个 token 全量重绘的实现。
 
@@ -294,7 +308,9 @@ Textual `TextArea` 子类，多行输入：
 | 按键 | 行为 |
 |---|---|
 | `Ctrl+Enter` | 提交输入（触发 `action_submit`） |
+| `Ctrl+O` | 展开或收起工具调用过程（任务进度块始终显示最新状态） |
 | `Enter` | 插入换行 |
+| `Ctrl+O` | 展开或收起工具调用明细，任务进度块不受影响 |
 | `Escape` | 清空输入 |
 
 提供三个便捷属性用于外部判断：

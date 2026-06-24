@@ -20,7 +20,12 @@ from src.tui.client import (
     CoreUnavailableError,
 )
 from src.tui.config import TuiConfig
-from src.tui.renderer import render_event
+from src.tui.renderer import (
+    is_task_tool_step,
+    is_tool_step,
+    render_event,
+    render_task_progress,
+)
 from src.tui.widgets.chat_log import ChatLog
 from src.tui.widgets.input_bar import InputBar
 from src.tui.widgets.status_bar import StatusBar
@@ -33,6 +38,7 @@ class ChatScreen(Screen):
         Binding("ctrl+c", "cancel", "Cancel"),
         Binding("ctrl+d", "quit", "Quit"),
         Binding("ctrl+enter", "submit", "Send"),
+        Binding("ctrl+o", "toggle_tool_events", "Tools"),
         Binding("pageup", "log_page_up", "Log Page Up", show=False),
         Binding("pagedown", "log_page_down", "Log Page Down", show=False),
         Binding("home", "log_home", "Log Home", show=False),
@@ -74,6 +80,7 @@ class ChatScreen(Screen):
         self._auth_token = ""
         self._workspace_root = ""
         self._streamed_response_active = False
+        self._show_tool_events = False
         self._inflight_task: asyncio.Task[Any] | None = None
         self._inflight_client: AsyncCoreClient | None = None
         self._event_queue: asyncio.Queue[dict[str, Any] | None] = asyncio.Queue(maxsize=2000)
@@ -217,6 +224,11 @@ class ChatScreen(Screen):
         except Exception:
             log._resume_if_at_bottom()
 
+    def action_toggle_tool_events(self) -> None:
+        """Toggle verbose tool execution events without adding log noise."""
+        self._show_tool_events = not self._show_tool_events
+        self.query_one(ChatLog).set_tool_events_visible(self._show_tool_events)
+
     async def action_submit(self) -> None:
         """Submit the current input (Ctrl+Enter)."""
         bar = self.query_one(InputBar)
@@ -265,6 +277,7 @@ class ChatScreen(Screen):
             log.write_event("  /discard     — discard paused execution")
             log.write_event("  /session <n> — switch session")
             log.write_event("  /clear       — clear the log")
+            log.write_event("  Ctrl+O       — show/hide tool details")
             log.write_event("  Ctrl+C       — cancel")
             log.write_event("  Ctrl+D       — quit")
         elif cmd == "goal":
@@ -310,6 +323,8 @@ class ChatScreen(Screen):
         current_task = asyncio.current_task()
         log = self.query_one(ChatLog)
         log.force_scroll_to_bottom()
+        if goal_mode:
+            log.reset_task_progress()
         status_bar = self.query_one(StatusBar)
         mode_tag = " [bold cyan]goal[/bold cyan]" if goal_mode else ""
         log.write_event(f"[bold]▶ sending{ mode_tag }[/bold]")
@@ -501,6 +516,12 @@ class ChatScreen(Screen):
             )
             self._streamed_response_active = False
             return
+        data = params.get("data", {})
+        if event == "step" and is_task_tool_step(data):
+            progress = render_task_progress(data)
+            if progress is not None:
+                self.query_one(ChatLog).write_task_progress(progress)
+
         markup = render_event(params)
         if markup is None:
             return
@@ -509,7 +530,11 @@ class ChatScreen(Screen):
             self.query_one(ChatLog).write_token(markup)
             return
 
-        data = params.get("data", {})
+        if event == "step" and is_tool_step(data):
+            self.query_one(ChatLog).write_tool_event(markup)
+            self._streamed_response_active = False
+            return
+
         if (
             event == "step"
             and data.get("type") == "agent_message"

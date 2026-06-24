@@ -4,10 +4,11 @@ from types import MethodType
 from unittest.mock import patch
 
 from rich.markdown import Markdown
+from rich.markup import render as render_markup
 from rich.text import Text
 
 from src.tui.screens.chat import ChatScreen
-from src.tui.renderer import render_event
+from src.tui.renderer import render_event, render_task_progress
 from src.tui.widgets.chat_log import ChatLog, _LogEntry
 
 
@@ -37,6 +38,9 @@ class TuiChatLogTest(unittest.TestCase):
         log._entries = []
         log._token_buf = ""
         log._active_token_widget = None
+        log._task_progress_widget = None
+        log._task_progress_index = None
+        log._tool_events_visible = False
         log._stream_committed_length = 0
         log._markdown_render_limit = 50_000
         log._partial_markdown_min_chars = 240
@@ -83,7 +87,7 @@ class TuiChatLogTest(unittest.TestCase):
         type(log).max_scroll_y = property(lambda self: self._max_scroll_y)
 
         def _new_widget(self, entry):
-            if entry.mode == "markup":
+            if entry.mode in {"markup", "tool"}:
                 return FakeEntryWidget(entry.content)
             return FakeEntryWidget(ChatLog._renderable_for_entry(self, entry))
 
@@ -188,6 +192,87 @@ class TuiChatLogTest(unittest.TestCase):
 
         self.assert_widget_texts(log, ["answer", "[done]"])
         self.assertIsInstance(log.widgets[0].renderable, Markdown)
+
+    def test_multiline_tool_event_preserves_markup_as_one_widget(self):
+        log = self._fake_log()
+        markup = (
+            "[bold green]\u25b6 tool: task_plan[/bold green]\n"
+            "[dim]Task plan:\n"
+            "  - inspect: Inspect project\n"
+            "  - report: Write report[/dim]"
+        )
+
+        ChatLog.write_event(log, markup)
+
+        self.assertEqual(1, len(log.widgets))
+        self.assert_widget_texts(log, [markup])
+        rendered = render_markup(log.widgets[0].renderable)
+        self.assertIn("Task plan:", rendered.plain)
+        self.assertIn("  - inspect: Inspect project", rendered.plain)
+        self.assertIn("  - report: Write report", rendered.plain)
+
+    def test_tool_events_can_be_expanded_and_collapsed_after_storage(self):
+        log = self._fake_log()
+
+        ChatLog.write_event(log, "[bold]normal[/bold]")
+        ChatLog.write_tool_event(log, "[green]▶ tool: read_file[/green]")
+
+        self.assert_widget_texts(log, ["[bold]normal[/bold]"])
+        self.assertEqual(2, len(log._entries))
+
+        ChatLog.set_tool_events_visible(log, True)
+        self.assert_widget_texts(
+            log,
+            ["[bold]normal[/bold]", "[green]▶ tool: read_file[/green]"],
+        )
+
+        ChatLog.set_tool_events_visible(log, False)
+        self.assert_widget_texts(log, ["[bold]normal[/bold]"])
+
+    def test_task_progress_updates_one_replaceable_widget(self):
+        log = self._fake_log()
+        first = render_task_progress(
+            {
+                "type": "tool_call_result",
+                "tool": "task_update",
+                "content": "Task updated: outline\n[x] outline: Outline (completed)\n[>] write: Write report (in progress)",
+            }
+        )
+        second = render_task_progress(
+            {
+                "type": "tool_call_result",
+                "tool": "task_update",
+                "content": "Task updated: write\n[x] outline: Outline (completed)\n[x] write: Write report (completed)",
+            }
+        )
+
+        ChatLog.write_task_progress(log, first)
+        ChatLog.write_task_progress(log, second)
+
+        self.assertEqual(1, len(log.widgets))
+        self.assertEqual(1, len(log._entries))
+        rendered = render_markup(log.widgets[0].renderable)
+        self.assertIn("Update Todos", rendered.plain)
+        self.assertIn("outline: Outline", rendered.plain)
+        self.assertIn("write: Write report", rendered.plain)
+        self.assertNotIn("in progress", rendered.plain)
+
+    def test_reset_task_progress_starts_a_new_progress_block(self):
+        log = self._fake_log()
+        progress = render_task_progress(
+            {
+                "type": "tool_call_result",
+                "tool": "task_list",
+                "content": "[ ] outline: Outline (ready)",
+            }
+        )
+
+        ChatLog.write_task_progress(log, progress)
+        ChatLog.reset_task_progress(log)
+        ChatLog.write_task_progress(log, progress)
+
+        self.assertEqual(2, len(log.widgets))
+        self.assertEqual(2, len(log._entries))
 
     def test_mark_tokens_stale_keeps_draft_as_incomplete_entry(self):
         log = self._fake_log()
@@ -540,6 +625,81 @@ class TuiChatLogTest(unittest.TestCase):
         self.assertTrue(log._auto_scroll)
         self.assertGreater(log.scrolled, 0)
         self.assertEqual("first second", _rendered_text(log.widgets[-1]))
+
+    def test_tool_events_are_hidden_by_default_but_task_progress_updates(self):
+        screen = ChatScreen.__new__(ChatScreen)
+        screen._streamed_response_active = False
+        screen._show_tool_events = False
+        log = self._fake_log()
+
+        def query_one(_self, _widget_type):
+            return log
+
+        screen.query_one = MethodType(query_one, screen)
+
+        async def run():
+            await ChatScreen._render_event(
+                screen,
+                {
+                    "event": "step",
+                    "data": {
+                        "type": "tool_call_result",
+                        "tool": "task_update",
+                        "content": "Task updated: outline\n[x] outline: Outline (completed)",
+                    },
+                },
+            )
+            await ChatScreen._render_event(
+                screen,
+                {
+                    "event": "step",
+                    "data": {
+                        "type": "tool_call_start",
+                        "tool": "read_file",
+                        "args": {"path": "README.md"},
+                    },
+                },
+            )
+
+        asyncio.run(run())
+
+        self.assertEqual(1, len(log.widgets))
+        rendered = render_markup(log.widgets[0].renderable)
+        self.assertIn("Update Todos", rendered.plain)
+        self.assertNotIn("read_file", rendered.plain)
+
+    def test_toggle_tool_events_allows_verbose_tool_log_without_note_noise(self):
+        screen = ChatScreen.__new__(ChatScreen)
+        screen._streamed_response_active = False
+        screen._show_tool_events = False
+        log = self._fake_log()
+
+        def query_one(_self, _widget_type):
+            return log
+
+        screen.query_one = MethodType(query_one, screen)
+
+        ChatScreen.action_toggle_tool_events(screen)
+
+        async def run():
+            await ChatScreen._render_event(
+                screen,
+                {
+                    "event": "step",
+                    "data": {
+                        "type": "tool_call_start",
+                        "tool": "read_file",
+                        "args": {"path": "README.md"},
+                    },
+                },
+            )
+
+        asyncio.run(run())
+
+        self.assertTrue(screen._show_tool_events)
+        self.assertEqual(1, len(log.widgets))
+        self.assertIn("read_file", _rendered_text(log.widgets[0]))
+        self.assertFalse(any("Tool execution details" in _rendered_text(widget) for widget in log.widgets))
 
     def test_context_usage_updates_even_when_value_is_zero(self):
         class FakeStatusBar:

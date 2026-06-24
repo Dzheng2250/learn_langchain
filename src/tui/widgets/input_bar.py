@@ -25,7 +25,7 @@ class InputBar(TextArea):
             language=None,
             soft_wrap=True,
         )
-        self._placeholder = "Ctrl+Enter to send  |  /help  |  Ctrl+D to quit"
+        self._placeholder = "Ctrl+Enter send  |  Ctrl+O tools  |  /help  |  Ctrl+D quit"
 
     def on_mount(self) -> None:
         self.placeholder = self._placeholder
