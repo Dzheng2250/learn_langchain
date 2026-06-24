@@ -29,6 +29,7 @@
 | [Core 平台扩展指南](/docs/development/platform-extension.md) | Tool、Skill、Provider、RPC、Telemetry 和维护任务的扩展入口 |
 | [内部端口与 Adapter 扩展指南](/docs/development/internal-adapter-extension.md) | 新增内部 Port、Adapter、后端和契约测试 |
 | [Agent Runtime 扩展指南](/docs/development/agent-runtime-extension.md) | 新增模型用途、工具、运行限制和事件消费者 |
+| [新增工具指南](/docs/development/tool-extension-guide.md) | 添加新 LangChain tool 的端到端步骤、audience/risk 决策表、观测层边界与反模式清单 |
 | [接口化重构技术债务](/docs/development/interface-refactor-backlog.md) | 尚未完成的接口拆分计划，状态为 Draft |
 
 ## 推荐阅读顺序

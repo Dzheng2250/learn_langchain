@@ -39,6 +39,9 @@
 4. 通过 `ObservedToolNode` 执行，避免在单个工具内重复实现公共观测逻辑。
 5. 增加参数校验、路径安全、受众筛选、超时或取消、工具边界事件测试。
 
+详细步骤、三种实现模式、audience 与 risk 决策表、观测层职责边界、测试模式与反模式清单见
+[新增工具指南](/docs/development/tool-extension-guide.md)。
+
 ## 增加运行限制
 
 1. 扩展 `RunLimits` 和对应配置模型。
