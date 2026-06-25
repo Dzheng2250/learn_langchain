@@ -1,16 +1,33 @@
 import unittest
+from unittest.mock import patch
 
 from langchain_core.messages import AIMessage, AIMessageChunk, ToolMessage
+from langgraph.errors import GraphRecursionError
 
+from src.config.settings import REASONING_DISPLAY
 from src.core.common.content import content_text, reasoning_content_text
 from src.core.streaming.events import stream_graph_events
 from src.core.streaming.message_events import step_events_from_message, tool_calls_from_message
+from src.core.agent.budget import ToolBudgetExceeded
 class FakeGraph:
     def __init__(self, chunks):
         self.chunks = chunks
 
     def stream(self, _inputs, **_kwargs):
         yield from self.chunks
+
+
+class FakeGraphWithError(FakeGraph):
+    """A FakeGraph that raises an exception after yielding chunks."""
+
+    def __init__(self, chunks, exc_type, exc_msg=""):
+        super().__init__(chunks)
+        self.exc_type = exc_type
+        self.exc_msg = exc_msg
+
+    def stream(self, _inputs, **_kwargs):
+        yield from self.chunks
+        raise self.exc_type(self.exc_msg)
 
 
 class StreamingEventsTest(unittest.TestCase):
@@ -162,5 +179,126 @@ class StreamingEventsTest(unittest.TestCase):
         self.assertTrue(finished)
         self.assertTrue(finished[-1]["data"]["redacted"])
         self.assertNotIn("secret", str(events))
+
+    def test_reasoning_finished_on_graph_recursion_error(self):
+        graph = FakeGraphWithError(
+            [
+                (
+                    "messages",
+                    (
+                        AIMessageChunk(
+                            content=[{"type": "thinking", "thinking": "deep thoughts"}]
+                        ),
+                        {},
+                    ),
+                ),
+            ],
+            GraphRecursionError,
+            "max recursion depth",
+        )
+
+        events = list(stream_graph_events(graph, []))
+        event_names = [item["event"] for item in events]
+
+        self.assertIn("reasoning_started", event_names)
+        self.assertIn("reasoning_finished", event_names)
+        self.assertIn("paused", event_names)
+
+    def test_reasoning_finished_on_tool_budget_exceeded(self):
+        graph = FakeGraphWithError(
+            [
+                (
+                    "messages",
+                    (
+                        AIMessageChunk(
+                            content=[{"type": "thinking", "thinking": "budget plan"}]
+                        ),
+                        {},
+                    ),
+                ),
+            ],
+            ToolBudgetExceeded,
+            "Too many tools",
+        )
+
+        events = list(stream_graph_events(graph, []))
+        event_names = [item["event"] for item in events]
+
+        self.assertIn("reasoning_started", event_names)
+        self.assertIn("reasoning_finished", event_names)
+        self.assertIn("paused", event_names)
+
+    def test_reasoning_finished_on_generic_exception(self):
+        graph = FakeGraphWithError(
+            [
+                (
+                    "messages",
+                    (
+                        AIMessageChunk(
+                            content=[{"type": "thinking", "thinking": "oops"}]
+                        ),
+                        {},
+                    ),
+                ),
+            ],
+            RuntimeError,
+            "Unexpected error",
+        )
+
+        events = list(stream_graph_events(graph, []))
+        event_names = [item["event"] for item in events]
+
+        self.assertIn("reasoning_started", event_names)
+        self.assertIn("reasoning_finished", event_names)
+        self.assertNotIn("paused", event_names)
+
+    def test_reasoning_finished_only_once_on_error(self):
+        """Verifies that reasoning_finished fires exactly once when
+        reasoning was followed by text output before the exception."""
+        graph = FakeGraphWithError(
+            [
+                (
+                    "messages",
+                    (
+                        AIMessageChunk(
+                            content=[{"type": "thinking", "thinking": "think"}]
+                        ),
+                        {},
+                    ),
+                ),
+                (
+                    "messages",
+                    (AIMessageChunk(content=[{"type": "text", "text": "reply"}]), {}),
+                ),
+            ],
+            RuntimeError,
+            "Post-text error",
+        )
+
+        events = list(stream_graph_events(graph, []))
+        finished = [e for e in events if e["event"] == "reasoning_finished"]
+
+        # reasoning_finished should be emitted exactly once (via the text path),
+        # not again in the exception handler
+        self.assertEqual(1, len(finished))
+
+    def test_reasoning_no_finished_when_not_started_on_error(self):
+        """No reasoning_finished should be emitted when reasoning
+        was never started before an error."""
+        graph = FakeGraphWithError(
+            [
+                (
+                    "messages",
+                    (AIMessageChunk(content=[{"type": "text", "text": "hello"}]), {}),
+                ),
+            ],
+            RuntimeError,
+            "Error without reasoning",
+        )
+
+        events = list(stream_graph_events(graph, []))
+        finished = [e for e in events if e["event"] == "reasoning_finished"]
+
+        self.assertEqual(0, len(finished))
 if __name__ == "__main__":
     unittest.main()
