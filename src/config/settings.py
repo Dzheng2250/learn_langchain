@@ -1,4 +1,4 @@
-"""Non-secret runtime configuration.
+﻿"""Non-secret runtime configuration.
 
 Committed defaults live here. Deployment-specific values and secrets can be
 overridden with environment variables or the Core user-level .env file.
@@ -66,20 +66,20 @@ SKILL_READ_OUTPUT_LIMIT = 8000
 
 # Short-term context keeps whole conversation Turns. A Turn may contain several
 # LangChain messages, such as user, assistant and tool-result messages.
-RECENT_TURN_LIMIT = 12
+RECENT_TURN_LIMIT = 6
 # Backward-compatible alias for older internal callers; new code should use
 # RECENT_TURN_LIMIT so tool-heavy Turns are not sliced in half.
 RECENT_MESSAGE_LIMIT = RECENT_TURN_LIMIT
 # Compression starts when token count, Turn count, or character count crosses
 # its trigger; old Turns are summarized while recent Turns remain verbatim.
 # Token-based compression is the primary safety valve for very large Turns.
-SUMMARY_TRIGGER_TOKEN_LIMIT = env_int("LEARN_AGENT_SUMMARY_TRIGGER_TOKEN_LIMIT", 5_000)
-SUMMARY_TRIGGER_TURN_LIMIT = 40
+SUMMARY_TRIGGER_TOKEN_LIMIT = env_int("LEARN_AGENT_SUMMARY_TRIGGER_TOKEN_LIMIT", 80_000)
+SUMMARY_TRIGGER_TURN_LIMIT = 20
 # Backward-compatible alias for older internal callers; new code should use
 # SUMMARY_TRIGGER_TURN_LIMIT.
 SUMMARY_TRIGGER_MESSAGE_LIMIT = SUMMARY_TRIGGER_TURN_LIMIT
 SUMMARY_TRIGGER_CHAR_LIMIT = 24000
-SESSION_SUMMARY_MAX_CHARS = 4000
+SESSION_SUMMARY_MAX_CHARS = 8000
 SUMMARY_SOURCE_CHAR_LIMIT = 12000
 
 MEMORY_ENABLED = True

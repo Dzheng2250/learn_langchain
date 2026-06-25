@@ -54,7 +54,7 @@ flowchart LR
 - `messages.parent_message_id`：消息不只是线性序号，也可以组成分支链。
 - `messages.raw`：保留可恢复的 LangChain 消息结构；`content` 用于普通查询和审计。
 - `messages.execution_id`：能追踪一条消息由哪次 Execution 产生。
-- `sessions.recent_messages`???????????????????????? Turn ????????????
+- `sessions.recent_messages`：历史兼容列名；当前保存最近完整 Turn 的原始消息缓存，不等同于完整历史。
 
 ### 1.3 Session 生命周期：可用、归档与硬删除
 
@@ -97,7 +97,7 @@ Saga / 恢复协调原则一致：跨数据库清理是可重试的辅助动作�
 |---|---|
 | `active_context_window_id` | 当前 Session 正在使用的上下文窗口 |
 | `summary` | 兼容缓存；不再是摘要权威来源 |
-| `recent_messages` | ?????????????????? Turn ??????? |
+| `recent_messages` | 历史兼容列名；当前保存最近完整 Turn 的原始消息缓存 |
 | `turn_index` | 已成功提交的最后一轮编号 |
 | `summary_through_turn` | 兼容缓存；当前权威值来自 active context window |
 | `version` | Session 发生过多少次状态更新，供诊断和未来并发控制使用 |
