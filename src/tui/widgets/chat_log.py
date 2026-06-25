@@ -6,6 +6,7 @@ import time
 from dataclasses import dataclass
 
 from rich.markdown import Markdown
+from rich.markup import escape
 from rich.text import Text
 from textual import events
 from textual.containers import VerticalScroll
@@ -57,6 +58,14 @@ class ChatLog(VerticalScroll):
         self._task_progress_widget: Static | None = None
         self._task_progress_index: int | None = None
         self._tool_events_visible: bool = False
+        self._reasoning_widget: Static | None = None
+        self._reasoning_index: int | None = None
+        self._reasoning_content: str = ""
+        self._reasoning_char_count: int = 0
+        self._reasoning_redacted: bool = False
+        self._reasoning_expanded: bool = False
+        self._reasoning_finished: bool = False
+        self._reasoning_display: str = "metadata"
         self._stream_committed_length: int = 0
         self._markdown_render_limit: int = MARKDOWN_RENDER_LIMIT
         self._partial_markdown_min_chars: int = PARTIAL_MARKDOWN_MIN_CHARS
@@ -125,6 +134,87 @@ class ChatLog(VerticalScroll):
         self._rebuild_visible_entries()
         self._scroll_to_bottom()
 
+    def start_reasoning(self, *, expanded: bool = False, display: str = "metadata") -> None:
+        """Start a replaceable reasoning/thinking block."""
+        self.flush_tokens()
+        self._capture_scroll_follow_state()
+        self._reasoning_content = ""
+        self._reasoning_char_count = 0
+        self._reasoning_redacted = False
+        self._reasoning_expanded = expanded
+        self._reasoning_finished = False
+        self._reasoning_display = display or "metadata"
+        entry = _LogEntry(self._reasoning_markup(), "markup")
+        self._entries.append(entry)
+        self._reasoning_index = len(self._entries) - 1
+        self._reasoning_widget = self._append_entry(entry)
+        self._scroll_to_bottom()
+
+    def append_reasoning(
+        self,
+        content: str = "",
+        *,
+        char_count: int = 0,
+        redacted: bool = False,
+    ) -> None:
+        """Update the active reasoning block without touching answer tokens."""
+        if self._reasoning_widget is None or self._reasoning_index is None:
+            self.start_reasoning(expanded=False)
+        if content:
+            self._reasoning_content += content
+        self._reasoning_char_count = max(self._reasoning_char_count, int(char_count or 0))
+        self._reasoning_redacted = self._reasoning_redacted or redacted
+        self._replace_reasoning_entry()
+
+    def finish_reasoning(self, *, char_count: int = 0, redacted: bool = False) -> None:
+        """Mark the active reasoning block complete."""
+        if self._reasoning_widget is None or self._reasoning_index is None:
+            self.start_reasoning(expanded=False)
+        self._reasoning_char_count = max(self._reasoning_char_count, int(char_count or 0))
+        self._reasoning_redacted = self._reasoning_redacted or redacted
+        self._reasoning_finished = True
+        self._replace_reasoning_entry()
+
+    def toggle_reasoning(self) -> None:
+        """Expand or collapse the latest reasoning block."""
+        if self._reasoning_widget is None or self._reasoning_index is None:
+            return
+        self._reasoning_expanded = not self._reasoning_expanded
+        self._replace_reasoning_entry()
+
+    def _replace_reasoning_entry(self) -> None:
+        """Replace the current reasoning entry in place."""
+        if self._reasoning_widget is None or self._reasoning_index is None:
+            return
+        entry = _LogEntry(self._reasoning_markup(), "markup")
+        self._entries[self._reasoning_index] = entry
+        self._update_widget(self._reasoning_widget, entry)
+        self._scroll_to_bottom()
+
+    def _reasoning_markup(self) -> str:
+        """Render the current reasoning block as collapsible Rich markup."""
+        count = self._reasoning_char_count or len(self._reasoning_content)
+        state = "Thought" if self._reasoning_finished else "Thinking"
+        suffix = f" - {count} chars" if count else ""
+        if self._reasoning_redacted:
+            suffix += " - redacted"
+        toggle = "[-]" if self._reasoning_expanded else "[+]"
+        header = f"[dim]{toggle} {state}{suffix}[/dim]"
+        if not self._reasoning_expanded:
+            return header
+        if self._reasoning_content:
+            return f"{header}\n[dim]{escape(self._reasoning_content)}[/dim]"
+        if self._reasoning_redacted:
+            reason = "Provider returned redacted thinking; raw content is unavailable."
+        elif self._reasoning_display in {"metadata", "hidden"}:
+            reason = (
+                "Thinking text is hidden by LEARN_AGENT_REASONING_DISPLAY="
+                f"{escape(self._reasoning_display)}."
+            )
+        else:
+            reason = "No reasoning text was provided by the model stream."
+        return f"{header}\n[dim]{reason}[/dim]"
+
     def write_task_progress(self, markup: str) -> None:
         """Create or replace the latest visible private-task progress block."""
         self.flush_tokens()
@@ -172,6 +262,14 @@ class ChatLog(VerticalScroll):
         self._task_progress_widget = None
         self._task_progress_index = None
         self._tool_events_visible = False
+        self._reasoning_widget = None
+        self._reasoning_index = None
+        self._reasoning_content = ""
+        self._reasoning_char_count = 0
+        self._reasoning_redacted = False
+        self._reasoning_expanded = False
+        self._reasoning_finished = False
+        self._reasoning_display = "metadata"
         self._stream_committed_length = 0
         self._auto_scroll = True
         self._user_scroll_paused = False
@@ -345,6 +443,8 @@ class ChatLog(VerticalScroll):
             widget = self._append_entry(entry)
             if index == self._task_progress_index:
                 self._task_progress_widget = widget
+            if index == self._reasoning_index:
+                self._reasoning_widget = widget
 
     def _new_widget(self, entry: _LogEntry) -> Static:
         """Create a Textual widget for one log entry.

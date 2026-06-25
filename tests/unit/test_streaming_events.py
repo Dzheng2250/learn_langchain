@@ -1,8 +1,16 @@
 import unittest
 
-from langchain_core.messages import AIMessage, ToolMessage
+from langchain_core.messages import AIMessage, AIMessageChunk, ToolMessage
 
+from src.core.common.content import content_text, reasoning_content_text
+from src.core.streaming.events import stream_graph_events
 from src.core.streaming.message_events import step_events_from_message, tool_calls_from_message
+class FakeGraph:
+    def __init__(self, chunks):
+        self.chunks = chunks
+
+    def stream(self, _inputs, **_kwargs):
+        yield from self.chunks
 
 
 class StreamingEventsTest(unittest.TestCase):
@@ -88,5 +96,71 @@ class StreamingEventsTest(unittest.TestCase):
         self.assertEqual(content, events[0]["data"]["content"])
 
 
+
+    def test_content_text_still_filters_reasoning_blocks(self):
+        content = [
+            {"type": "thinking", "thinking": "hidden"},
+            {"type": "text", "text": "visible"},
+        ]
+
+        self.assertEqual("visible", content_text(content))
+        self.assertEqual(("hidden", False, 6), reasoning_content_text(content))
+
+    def test_stream_graph_events_emits_reasoning_separately_from_tokens(self):
+        graph = FakeGraph(
+            [
+                (
+                    "messages",
+                    (
+                        AIMessageChunk(
+                            content=[{"type": "thinking", "thinking": "hidden"}]
+                        ),
+                        {},
+                    ),
+                ),
+                (
+                    "messages",
+                    (AIMessageChunk(content=[{"type": "text", "text": "answer"}]), {}),
+                ),
+                ("values", {"messages": []}),
+            ]
+        )
+
+        events = list(stream_graph_events(graph, []))
+        event_names = [item["event"] for item in events]
+
+        self.assertIn("reasoning_started", event_names)
+        self.assertIn("reasoning_finished", event_names)
+        self.assertIn({"event": "token", "data": {"content": "answer"}}, events)
+        token_payload = next(item["data"] for item in events if item["event"] == "token")
+        self.assertNotIn("hidden", token_payload["content"])
+
+    def test_redacted_thinking_does_not_expose_content(self):
+        events = list(
+            stream_graph_events(
+                FakeGraph(
+                    [
+                        (
+                            "messages",
+                            (
+                                AIMessageChunk(
+                                    content=[{"type": "redacted_thinking", "data": "secret"}]
+                                ),
+                                {},
+                            ),
+                        ),
+                        ("values", {"messages": []}),
+                    ]
+                ),
+                [],
+            )
+        )
+
+        deltas = [item for item in events if item["event"] == "reasoning_delta"]
+        self.assertEqual([], deltas)
+        finished = [item for item in events if item["event"] == "reasoning_finished"]
+        self.assertTrue(finished)
+        self.assertTrue(finished[-1]["data"]["redacted"])
+        self.assertNotIn("secret", str(events))
 if __name__ == "__main__":
     unittest.main()

@@ -39,6 +39,7 @@ class ChatScreen(Screen):
         Binding("ctrl+d", "quit", "Quit"),
         Binding("ctrl+enter", "submit", "Send"),
         Binding("ctrl+o", "toggle_tool_events", "Tools"),
+        Binding("ctrl+t", "toggle_reasoning", "Thinking"),
         Binding("pageup", "log_page_up", "Log Page Up", show=False),
         Binding("pagedown", "log_page_down", "Log Page Down", show=False),
         Binding("home", "log_home", "Log Home", show=False),
@@ -228,6 +229,10 @@ class ChatScreen(Screen):
         """Toggle verbose tool execution events without adding log noise."""
         self._show_tool_events = not self._show_tool_events
         self.query_one(ChatLog).set_tool_events_visible(self._show_tool_events)
+
+    def action_toggle_reasoning(self) -> None:
+        """Expand or collapse the latest model thinking block."""
+        self.query_one(ChatLog).toggle_reasoning()
 
     async def action_submit(self) -> None:
         """Submit the current input (Ctrl+Enter)."""
@@ -517,6 +522,25 @@ class ChatScreen(Screen):
             self._streamed_response_active = False
             return
         data = params.get("data", {})
+        if event == "reasoning_started":
+            self.query_one(ChatLog).start_reasoning(
+                expanded=bool(data.get("expanded", False)),
+                display=str(data.get("display") or "metadata"),
+            )
+            return
+        if event == "reasoning_delta":
+            self.query_one(ChatLog).append_reasoning(
+                str(data.get("content") or ""),
+                char_count=int(data.get("char_count") or 0),
+                redacted=bool(data.get("redacted", False)),
+            )
+            return
+        if event == "reasoning_finished":
+            self.query_one(ChatLog).finish_reasoning(
+                char_count=int(data.get("char_count") or 0),
+                redacted=bool(data.get("redacted", False)),
+            )
+            return
         if event == "step" and is_task_tool_step(data):
             progress = render_task_progress(data)
             if progress is not None:

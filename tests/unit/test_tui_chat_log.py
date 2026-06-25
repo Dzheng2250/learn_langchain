@@ -41,6 +41,14 @@ class TuiChatLogTest(unittest.TestCase):
         log._task_progress_widget = None
         log._task_progress_index = None
         log._tool_events_visible = False
+        log._reasoning_widget = None
+        log._reasoning_index = None
+        log._reasoning_content = ""
+        log._reasoning_char_count = 0
+        log._reasoning_redacted = False
+        log._reasoning_expanded = False
+        log._reasoning_finished = False
+        log._reasoning_display = "metadata"
         log._stream_committed_length = 0
         log._markdown_render_limit = 50_000
         log._partial_markdown_min_chars = 240
@@ -210,6 +218,69 @@ class TuiChatLogTest(unittest.TestCase):
         self.assertIn("Task plan:", rendered.plain)
         self.assertIn("  - inspect: Inspect project", rendered.plain)
         self.assertIn("  - report: Write report", rendered.plain)
+
+    def test_reasoning_block_is_collapsible_and_updates_in_place(self):
+        log = self._fake_log()
+
+        ChatLog.start_reasoning(log, expanded=False)
+        ChatLog.append_reasoning(log, "hidden thought", char_count=14)
+        ChatLog.finish_reasoning(log, char_count=14)
+
+        self.assertEqual(1, len(log.widgets))
+        self.assertEqual(1, len(log._entries))
+        self.assertIn("Thought - 14 chars", _rendered_text(log.widgets[0]))
+        self.assertNotIn("hidden thought", _rendered_text(log.widgets[0]))
+
+        ChatLog.toggle_reasoning(log)
+
+        self.assertEqual(1, len(log.widgets))
+        self.assertIn("hidden thought", _rendered_text(log.widgets[0]))
+
+
+    def test_reasoning_metadata_expand_explains_hidden_content(self):
+        log = self._fake_log()
+
+        ChatLog.start_reasoning(log, expanded=False, display="metadata")
+        ChatLog.finish_reasoning(log, char_count=42)
+        ChatLog.toggle_reasoning(log)
+
+        rendered = _rendered_text(log.widgets[0])
+        self.assertIn("Thought - 42 chars", rendered)
+        self.assertIn("LEARN_AGENT_REASONING_DISPLAY=metadata", rendered)
+    def test_tui_reasoning_events_do_not_use_token_buffer(self):
+        log = self._fake_log()
+        screen = ChatScreen.__new__(ChatScreen)
+        screen._streamed_response_active = False
+
+        def query_one(_self, _widget_type):
+            return log
+
+        screen.query_one = MethodType(query_one, screen)
+
+        async def run():
+            await ChatScreen._render_event(
+                screen,
+                {"event": "reasoning_started", "data": {"expanded": False, "display": "collapsed"}},
+            )
+            await ChatScreen._render_event(
+                screen,
+                {
+                    "event": "reasoning_delta",
+                    "data": {"content": "internal", "char_count": 8},
+                },
+            )
+            await ChatScreen._render_event(
+                screen,
+                {"event": "token", "data": {"content": "answer"}},
+            )
+
+        asyncio.run(run())
+        self.render_frame(log)
+
+        self.assertEqual("answer", _rendered_text(log.widgets[-1]))
+        self.assertEqual("answer", log._token_buf)
+        self.assertTrue(screen._streamed_response_active)
+        self.assertEqual("collapsed", log._reasoning_display)
 
     def test_tool_events_can_be_expanded_and_collapsed_after_storage(self):
         log = self._fake_log()
