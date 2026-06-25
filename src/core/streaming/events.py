@@ -166,14 +166,6 @@ def stream_graph_events(
             {"recursion_limit": limits.max_graph_steps},
             level="error",
         )
-        if reasoning_started:
-            yield _reasoning_event(
-                "reasoning_finished",
-                char_count=reasoning_chars,
-                redacted=reasoning_redacted,
-                attempt_id=current_attempt_id(),
-                display=reasoning_display,
-            )
         yield {
             "event": "paused",
             "data": {
@@ -192,14 +184,6 @@ def stream_graph_events(
             str(exc),
             level="warning",
         )
-        if reasoning_started:
-            yield _reasoning_event(
-                "reasoning_finished",
-                char_count=reasoning_chars,
-                redacted=reasoning_redacted,
-                attempt_id=current_attempt_id(),
-                display=reasoning_display,
-            )
         yield {
             "event": "paused",
             "data": {
@@ -212,14 +196,6 @@ def stream_graph_events(
         }
         return
     except Exception as exc:
-        if reasoning_started:
-            yield _reasoning_event(
-                "reasoning_finished",
-                char_count=reasoning_chars,
-                redacted=reasoning_redacted,
-                attempt_id=current_attempt_id(),
-                display=reasoning_display,
-            )
         yield graph_failure_event(
             exc,
             graph_steps_used=graph_steps_used,
