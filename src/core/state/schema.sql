@@ -22,6 +22,7 @@ CREATE TABLE IF NOT EXISTS sessions (
     recent_messages TEXT NOT NULL DEFAULT '[]',
     turn_index INTEGER NOT NULL DEFAULT 0,
     summary_through_turn INTEGER NOT NULL DEFAULT 0,
+    active_context_window_id TEXT,
     version INTEGER NOT NULL DEFAULT 0,
     active_branch_id TEXT,
     pending_execution_id TEXT,
@@ -64,6 +65,7 @@ CREATE TABLE IF NOT EXISTS messages (
     raw TEXT NOT NULL DEFAULT '{}',
     artifact_id TEXT,
     turn_index INTEGER NOT NULL,
+    message_ordinal INTEGER NOT NULL,
     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
     FOREIGN KEY(workspace_id, session_id)
         REFERENCES sessions(workspace_id, session_id) ON DELETE CASCADE,
@@ -71,6 +73,34 @@ CREATE TABLE IF NOT EXISTS messages (
     FOREIGN KEY(parent_message_id) REFERENCES messages(message_id) ON DELETE SET NULL
 );
 
+
+-- v1 models a single linear compression lineage per Session. branch_id is
+-- reserved for future branch-local windows; supporting multiple active branches
+-- will require moving active_context_window_id from sessions to a branch-level
+-- mapping or to the branches table.
+CREATE TABLE IF NOT EXISTS context_windows (
+    window_id TEXT PRIMARY KEY,
+    workspace_id TEXT NOT NULL,
+    session_id TEXT NOT NULL,
+    branch_id TEXT,
+    first_window_id TEXT NOT NULL,
+    previous_window_id TEXT,
+    summary_text TEXT NOT NULL DEFAULT '',
+    summary_through_turn INTEGER NOT NULL DEFAULT 0,
+    compacted_from_turn INTEGER NOT NULL DEFAULT 0,
+    compacted_through_turn INTEGER NOT NULL DEFAULT 0,
+    opened_at_turn INTEGER NOT NULL DEFAULT 0,
+    closed_at_turn INTEGER,
+    source_message_count INTEGER NOT NULL DEFAULT 0,
+    input_tokens INTEGER NOT NULL DEFAULT 0,
+    output_tokens INTEGER NOT NULL DEFAULT 0,
+    model TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY(workspace_id, session_id)
+        REFERENCES sessions(workspace_id, session_id) ON DELETE CASCADE,
+    FOREIGN KEY(branch_id) REFERENCES branches(branch_id) ON DELETE SET NULL,
+    FOREIGN KEY(previous_window_id) REFERENCES context_windows(window_id) ON DELETE SET NULL
+);
 CREATE TABLE IF NOT EXISTS executions (
     execution_id TEXT PRIMARY KEY,
     workspace_id TEXT NOT NULL,
@@ -264,7 +294,13 @@ CREATE INDEX IF NOT EXISTS idx_sessions_workspace
 ON sessions(workspace_id, updated_at DESC);
 
 CREATE INDEX IF NOT EXISTS idx_messages_session
-ON messages(workspace_id, session_id, turn_index, created_at, message_id);
+ON messages(workspace_id, session_id, turn_index, message_ordinal);
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_messages_session_ordinal_unique
+ON messages(workspace_id, session_id, message_ordinal);
+
+CREATE INDEX IF NOT EXISTS idx_context_windows_session
+ON context_windows(workspace_id, session_id, created_at);
 
 CREATE INDEX IF NOT EXISTS idx_executions_session
 ON executions(workspace_id, session_id, updated_at DESC);

@@ -118,6 +118,99 @@ class SQLiteStateAdapterTest(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, "active Unit of Work"):
             SQLiteConversationHistoryStore(self.database).append_turn(completed)
 
+
+    def test_message_ordinal_is_session_local_and_unique(self):
+        other_session, _ = self.workspace_repository.resolve_session(
+            self.workspace,
+            "other",
+        )
+        with self.database.transaction() as conn:
+            SQLiteConversationHistoryStore(
+                self.database,
+                transaction_conn=conn,
+            ).append_messages(
+                self.session,
+                1,
+                [HumanMessage(content="default-1"), AIMessage(content="default-2")],
+            )
+            SQLiteConversationHistoryStore(
+                self.database,
+                transaction_conn=conn,
+            ).append_messages(
+                other_session,
+                1,
+                [HumanMessage(content="other-1"), AIMessage(content="other-2")],
+            )
+
+        with self.database.connect() as conn:
+            default_ordinals = [
+                row["message_ordinal"]
+                for row in conn.execute(
+                    """
+                    SELECT message_ordinal FROM messages
+                    WHERE session_id=? ORDER BY message_ordinal
+                    """,
+                    (str(self.session.session_id),),
+                ).fetchall()
+            ]
+            other_ordinals = [
+                row["message_ordinal"]
+                for row in conn.execute(
+                    """
+                    SELECT message_ordinal FROM messages
+                    WHERE session_id=? ORDER BY message_ordinal
+                    """,
+                    (str(other_session.session_id),),
+                ).fetchall()
+            ]
+
+        self.assertEqual([1, 2], default_ordinals)
+        self.assertEqual([1, 2], other_ordinals)
+        with self.assertRaises(Exception):
+            with self.database.transaction() as conn:
+                conn.execute(
+                    """
+                    INSERT INTO messages(
+                        message_id, workspace_id, session_id, role, message_type,
+                        content, raw, turn_index, message_ordinal
+                    ) VALUES ('duplicate-ordinal', ?, ?, 'user', 'HumanMessage',
+                              'duplicate', '{}', 99, 1)
+                    """,
+                    (
+                        str(self.workspace.workspace_id),
+                        str(self.session.session_id),
+                    ),
+                )
+    def test_message_order_uses_explicit_ordinal_not_created_at_or_id(self):
+        self.archive_and_save(
+            1,
+            [
+                HumanMessage(content="first"),
+                AIMessage(content="second"),
+                HumanMessage(content="third"),
+            ],
+            AgentContextState(),
+        )
+        with self.database.transaction() as conn:
+            conn.execute(
+                """
+                UPDATE messages SET created_at='2099-01-01 00:00:00'
+                WHERE content='first'
+                """
+            )
+            conn.execute(
+                """
+                UPDATE messages SET created_at='2000-01-01 00:00:00'
+                WHERE content='third'
+                """
+            )
+
+        messages, _message_ids = SQLiteConversationHistoryStore(self.database).load_turn(
+            self.session,
+            1,
+        )
+
+        self.assertEqual(["first", "second", "third"], [message.content for message in messages])
     def test_conversation_history_rebuild_recent_uses_latest_committed_messages(self):
         for index in range(15):
             self.store.archive_turn_messages(
@@ -230,6 +323,102 @@ class SQLiteStateAdapterTest(unittest.TestCase):
         self.assertEqual(["memory-a", "memory-b"], [memory.id for memory in memories])
         self.assertIn("alpha project rule", adapter.build_memory_message(memories).content)
 
+
+    def test_new_session_has_active_context_window(self):
+        with self.database.connect() as conn:
+            session = conn.execute(
+                """
+                SELECT active_context_window_id FROM sessions WHERE session_id=?
+                """,
+                (str(self.session.session_id),),
+            ).fetchone()
+            window = conn.execute(
+                """
+                SELECT window_id, first_window_id, previous_window_id,
+                       summary_text, summary_through_turn, opened_at_turn
+                FROM context_windows WHERE window_id=?
+                """,
+                (session["active_context_window_id"],),
+            ).fetchone()
+
+        self.assertEqual(f"root-{self.session.session_id}", session["active_context_window_id"])
+        self.assertEqual(window["window_id"], window["first_window_id"])
+        self.assertIsNone(window["previous_window_id"])
+        self.assertEqual("", window["summary_text"])
+        self.assertEqual(0, window["summary_through_turn"])
+        self.assertEqual(0, window["opened_at_turn"])
+
+    def test_session_store_prefers_active_context_window_summary(self):
+        adapter = SQLiteSummaryStore(self.database)
+        self.assertTrue(
+            adapter.update_summary_cas(
+                self.session,
+                expected_summary_through_turn=0,
+                summary_through_turn=1,
+                summary="window summary",
+            )
+        )
+        with self.database.transaction() as conn:
+            conn.execute(
+                "UPDATE sessions SET summary='stale compatibility summary' WHERE session_id=?",
+                (str(self.session.session_id),),
+            )
+
+        state, _turn_index = SQLiteSessionStore(self.database).load_context(self.session)
+
+        self.assertEqual("window summary", state.summary)
+
+    def test_summary_store_skips_empty_compaction_window(self):
+        adapter = SQLiteSummaryStore(self.database)
+
+        changed = adapter.update_summary_cas(
+            self.session,
+            expected_summary_through_turn=0,
+            summary_through_turn=0,
+            summary="same watermark",
+        )
+
+        with self.database.connect() as conn:
+            count = conn.execute(
+                "SELECT COUNT(*) AS count FROM context_windows WHERE session_id=?",
+                (str(self.session.session_id),),
+            ).fetchone()["count"]
+            summary = conn.execute(
+                "SELECT summary FROM sessions WHERE session_id=?",
+                (str(self.session.session_id),),
+            ).fetchone()["summary"]
+
+        self.assertTrue(changed)
+        self.assertEqual(1, count)
+        self.assertEqual("", summary)
+
+    def test_summary_store_repairs_missing_active_window_with_event(self):
+        sink = RecordingSink()
+        install_event_bus(EventBus([sink]))
+        with self.database.transaction() as conn:
+            conn.execute("DELETE FROM context_windows WHERE session_id=?", (str(self.session.session_id),))
+            conn.execute(
+                "UPDATE sessions SET active_context_window_id=NULL, summary='legacy summary' WHERE session_id=?",
+                (str(self.session.session_id),),
+            )
+
+        summary, watermark, messages = SQLiteSummaryStore(self.database).load_summary_source(
+            self.session,
+            0,
+        )
+
+        with self.database.connect() as conn:
+            active = conn.execute(
+                "SELECT active_context_window_id FROM sessions WHERE session_id=?",
+                (str(self.session.session_id),),
+            ).fetchone()["active_context_window_id"]
+
+        self.assertEqual("legacy summary", summary)
+        self.assertEqual(0, watermark)
+        self.assertEqual([], messages)
+        self.assertEqual(f"root-{self.session.session_id}", active)
+        self.assertIn("context_window_repaired", [event.event_type for event in sink.events])
+
     def test_summary_store_loads_only_unsummarized_messages(self):
         self.archive_and_save(
             1,
@@ -280,6 +469,37 @@ class SQLiteStateAdapterTest(unittest.TestCase):
 
         self.assertEqual("fresh", summary)
         self.assertEqual(2, watermark)
+
+        with self.database.connect() as conn:
+            root = conn.execute(
+                """
+                SELECT window_id, closed_at_turn FROM context_windows
+                WHERE session_id=? AND previous_window_id IS NULL
+                """,
+                (str(self.session.session_id),),
+            ).fetchone()
+            active = conn.execute(
+                "SELECT active_context_window_id FROM sessions WHERE session_id=?",
+                (str(self.session.session_id),),
+            ).fetchone()["active_context_window_id"]
+            active_window = conn.execute(
+                """
+                SELECT previous_window_id, summary_text, summary_through_turn
+                FROM context_windows WHERE window_id=?
+                """,
+                (active,),
+            ).fetchone()
+            count = conn.execute(
+                "SELECT COUNT(*) AS count FROM context_windows WHERE session_id=?",
+                (str(self.session.session_id),),
+            ).fetchone()["count"]
+
+        self.assertEqual(2, count)
+        self.assertEqual(f"root-{self.session.session_id}", root["window_id"])
+        self.assertEqual(root["window_id"], active_window["previous_window_id"])
+        self.assertEqual("fresh", active_window["summary_text"])
+        self.assertEqual(2, active_window["summary_through_turn"])
+        self.assertEqual(2, root["closed_at_turn"])
 
     def test_memory_write_store_saves_sources_and_emits_after_commit(self):
         sink = RecordingSink()

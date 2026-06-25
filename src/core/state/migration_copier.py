@@ -102,8 +102,9 @@ class LocalStateMigrationCopier:
                     """
                     INSERT INTO messages(
                         message_id, legacy_message_id, workspace_id, session_id, branch_id,
-                        parent_message_id, role, content, message_type, raw, turn_index, created_at
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        parent_message_id, role, content, message_type, raw, turn_index,
+                        message_ordinal, created_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         message_id,
@@ -117,6 +118,7 @@ class LocalStateMigrationCopier:
                         row[3],
                         json.dumps(row[4], ensure_ascii=False, default=str),
                         int(row[5]),
+                        len(message_map),
                         str(row[6]),
                     ),
                 )

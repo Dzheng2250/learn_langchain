@@ -28,7 +28,7 @@
 | 数据 | 存储位置 | 用途 | 是否直接加载给 LLM |
 |---|---|---|---|
 | 完整消息归档 | `state.db.messages` | 历史审计、来源追踪、未来恢复 | 否 |
-| Session 短期上下文 | `state.db.sessions.summary`、`recent_messages` | 构造当前 Session 的有限输入窗口 | 是 |
+| Session 短期上下文 | `state.db.context_windows.summary_text`、`sessions.recent_messages` | 构造当前 Session 的有限输入窗口 | 是 |
 | Workspace 长期记忆 | `state.db.memories` | 跨 Session 保存稳定事实、偏好和决策 | 按需检索后注入 |
 
 完整消息归档负责“不能丢”；短期上下文负责“当前模型需要看什么”；长期记忆负责“未来其他
@@ -42,11 +42,11 @@ Session 仍值得知道什么”。完整历史不会在每轮全部发送给模
 ```text
 Workspace
   ├── Session A
-  │    ├── summary
+  │    ├── active context window
   │    ├── recent_messages
   │    └── 完整消息归档
   ├── Session B
-  │    ├── summary
+  │    ├── active context window
   │    ├── recent_messages
   │    └── 完整消息归档
   └── 长期记忆
@@ -77,7 +77,7 @@ Workspace
 flowchart TB
     Request["agent.chat"]
     Identity["解析 Workspace / Session<br/>获取 Session UUID 锁"]
-    Load["加载 Session<br/>summary + recent_messages + turn_index"]
+    Load["加载 Session<br/>active window summary + recent_messages + turn_index"]
     Retrieve["检索当前 Workspace 长期记忆"]
     Compose["构造 LLM 输入"]
     Graph["执行 LangGraph"]
@@ -100,7 +100,7 @@ flowchart TB
 构造给模型的消息顺序是：
 
 ```text
-已有 summary（如果存在）
+active context window 的 summary_text（如果存在）
   -> 本轮检索到的 Workspace 长期记忆（如果存在）
   -> recent_messages 最近若干条
   -> 当前用户消息
@@ -133,14 +133,16 @@ flowchart TB
 
 ## 短期上下文管理
 
-`AgentContextState` 只有两个字段：
+`AgentContextState` 仍向上层暴露两个核心值：
 
 ```python
 summary: str
 recent_messages: list
 ```
 
-它是每轮发送给模型的有限上下文，不是完整聊天历史。
+但 `summary` 的权威来源已经不是 `sessions.summary`，而是 `sessions.active_context_window_id`
+指向的 `context_windows.summary_text`。`sessions.summary` 只保留为兼容缓存。这样每次压缩都会留下
+一个新的不可变窗口，旧摘要不会被覆盖，后续可以追溯压缩血统。
 
 ### 压缩触发与后台执行
 
@@ -153,17 +155,17 @@ recent_messages: list
 成功 Turn 会在最小提交中写入一个 `context_summary` 维护任务。后台 handler 达到任一阈值时才调用
 摘要模型：
 
-- 旧消息压缩到最多 `SESSION_SUMMARY_MAX_CHARS=4000` 字符的 `summary`。
+- 旧消息压缩到最多 `SESSION_SUMMARY_MAX_CHARS=4000` 字符的 `summary_text`。
 - 最近 `RECENT_MESSAGE_LIMIT=12` 条消息继续保留原文。
 - 发给总结模型的来源文本最多 `SUMMARY_SOURCE_CHAR_LIMIT=12000` 字符。
-- 摘要结果使用 `summary_through_turn` CAS 写回；旧任务不能覆盖更新后的摘要。
+- 摘要结果写入新的 `context_windows` 行，并推进 `sessions.active_context_window_id`。
 
-这里的 CAS 是“比较后再更新”。摘要任务开始时记录旧的 `summary_through_turn`，写回时要求数据库中的
-值仍然等于旧值。如果其他任务已经生成更新摘要，本次写回会失败并放弃，而不是用完成时间更晚的旧任务
-覆盖新结果。它比较的是已摘要轮次，不是时间戳。
+这里的 CAS 是“比较后再更新”。摘要任务开始时记录旧的 active window；写回时要求
+`sessions.active_context_window_id` 仍然等于旧窗口 ID。如果其他任务已经生成更新窗口，本次写回会失败并放弃，
+而不是用完成时间更晚的旧任务覆盖新结果。它比较的是上下文窗口血统，不是时间戳。
 
-如果总结失败，任务会有限重试并保留之前的 `summary`。完整消息始终保留在 `messages`；在摘要任务
-完成前，模型只会看到旧摘要和近期消息。
+如果总结失败，任务会有限重试并保留之前的 active window。完整消息始终保留在 `messages`；在摘要任务
+完成前，模型只会看到旧窗口摘要和近期消息。
 
 ## 长期记忆如何加载
 

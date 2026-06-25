@@ -63,12 +63,15 @@ class LocalWorkspaceRepository:
             else:
                 session_id = str(uuid4())
                 branch_id = str(uuid4())
+                window_id = f"root-{session_id}"
                 conn.execute(
                     """
-                    INSERT INTO sessions(session_id, workspace_id, session_name, active_branch_id)
-                    VALUES (?, ?, ?, ?)
+                    INSERT INTO sessions(
+                        session_id, workspace_id, session_name, active_branch_id,
+                        active_context_window_id
+                    ) VALUES (?, ?, ?, ?, ?)
                     """,
-                    (session_id, str(workspace.workspace_id), normalized, branch_id),
+                    (session_id, str(workspace.workspace_id), normalized, branch_id, window_id),
                 )
                 conn.execute(
                     """
@@ -76,6 +79,17 @@ class LocalWorkspaceRepository:
                     VALUES (?, ?, ?, 'main')
                     """,
                     (branch_id, str(workspace.workspace_id), session_id),
+                )
+                conn.execute(
+                    """
+                    INSERT INTO context_windows(
+                        window_id, workspace_id, session_id, branch_id, first_window_id,
+                        previous_window_id, summary_text, summary_through_turn,
+                        compacted_from_turn, compacted_through_turn, opened_at_turn,
+                        source_message_count
+                    ) VALUES (?, ?, ?, ?, ?, NULL, '', 0, 0, 0, 0, 0)
+                    """,
+                    (window_id, str(workspace.workspace_id), session_id, branch_id, window_id),
                 )
                 turn_index = 0
         return SessionContext(UUID(session_id), normalized, workspace), turn_index == 0
