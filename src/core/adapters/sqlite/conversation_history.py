@@ -8,9 +8,11 @@ from uuid import uuid4
 
 from langchain_core.messages import messages_from_dict, messages_to_dict
 
-from src.config.settings import RECENT_MESSAGE_LIMIT
+from src.config.settings import RECENT_TURN_LIMIT
 from src.core.common.content import message_content_text
 from src.core.telemetry import emit_event
+from src.core.adapters.sqlite.session_store import serialize_recent_turns
+from src.core.context.models import TurnChunk
 
 if TYPE_CHECKING:
     from src.core.finalization.models import CompletedTurn
@@ -129,28 +131,44 @@ class SQLiteConversationHistoryStore:
         return messages_from_dict(raw), [row["message_id"] for row in rows]
 
     def rebuild_recent(self, session) -> int:
-        """Rebuild compact recent context from durable message history."""
+        """Rebuild compact recent context from complete durable Turns."""
+        workspace_id = str(session.workspace.workspace_id)
+        session_id = str(session.session_id)
         with self.database.connect() as conn:
-            rows = conn.execute(
+            turn_rows = conn.execute(
                 """
-                SELECT raw FROM messages
+                SELECT DISTINCT turn_index FROM messages
                 WHERE workspace_id=? AND session_id=?
-                ORDER BY message_ordinal DESC
+                ORDER BY turn_index DESC
                 LIMIT ?
                 """,
-                (
-                    str(session.workspace.workspace_id),
-                    str(session.session_id),
-                    RECENT_MESSAGE_LIMIT,
-                ),
+                (workspace_id, session_id, RECENT_TURN_LIMIT),
             ).fetchall()
-        recovered = messages_from_dict(
-            [json.loads(row["raw"]) for row in reversed(rows)]
-        )
+            turn_indexes = sorted(int(row["turn_index"]) for row in turn_rows)
+            if turn_indexes:
+                placeholders = ",".join("?" for _ in turn_indexes)
+                rows = conn.execute(
+                    f"""
+                    SELECT turn_index, raw FROM messages
+                    WHERE workspace_id=? AND session_id=?
+                      AND turn_index IN ({placeholders})
+                    ORDER BY turn_index, message_ordinal
+                    """,
+                    (workspace_id, session_id, *turn_indexes),
+                ).fetchall()
+            else:
+                rows = []
+        messages_by_turn: dict[int, list] = {turn_index: [] for turn_index in turn_indexes}
+        raw_messages = messages_from_dict([json.loads(row["raw"]) for row in rows])
+        for row, message in zip(rows, raw_messages, strict=True):
+            messages_by_turn[int(row["turn_index"])].append(message)
+        turns = [
+            TurnChunk(turn_index, messages_by_turn[turn_index])
+            for turn_index in turn_indexes
+            if messages_by_turn[turn_index]
+        ]
+        recovered = [message for turn in turns for message in turn.messages]
         with self.database.transaction() as conn:
-            recent = json.dumps(
-                messages_to_dict(recovered), ensure_ascii=False, default=str
-            )
             conn.execute(
                 """
                 UPDATE sessions SET recent_messages=?, context_tokens=0,
@@ -158,9 +176,9 @@ class SQLiteConversationHistoryStore:
                 WHERE workspace_id=? AND session_id=?
                 """,
                 (
-                    recent,
-                    str(session.workspace.workspace_id),
-                    str(session.session_id),
+                    serialize_recent_turns(turns),
+                    workspace_id,
+                    session_id,
                 ),
             )
         return len(recovered)

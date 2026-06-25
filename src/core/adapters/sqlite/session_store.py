@@ -7,7 +7,8 @@ from typing import TYPE_CHECKING
 
 from langchain_core.messages import messages_from_dict, messages_to_dict
 
-from src.core.context.models import AgentContextState
+from src.core.context.models import AgentContextState, TurnChunk
+from src.core.telemetry import emit_event
 
 if TYPE_CHECKING:
     from src.core.finalization.models import CompletedTurn
@@ -41,12 +42,12 @@ class SQLiteSessionStore:
             ).fetchone()
         if not row:
             raise RuntimeError("Resolved session disappeared before it could be loaded.")
-        recent = json.loads(row["recent_messages"] or "[]")
+        recent_turns = deserialize_recent_turns(row["recent_messages"] or "[]")
         summary = row["window_summary"] if row["window_summary"] is not None else (row["summary"] or "")
         return (
             AgentContextState(
                 summary,
-                messages_from_dict(recent),
+                recent_turns=recent_turns,
                 context_tokens=int(row["context_tokens"] or 0),
             ),
             int(row["turn_index"]),
@@ -60,7 +61,7 @@ class SQLiteSessionStore:
     ) -> None:
         """Update full compact Session context, including the derived summary."""
         conn = self._require_transaction()
-        recent = json.dumps(messages_to_dict(state.recent_messages), ensure_ascii=False, default=str)
+        recent = serialize_recent_turns(state.recent_turns)
         cur = conn.execute(
             """
             UPDATE sessions SET summary = ?, recent_messages = ?, context_tokens = ?,
@@ -89,7 +90,7 @@ class SQLiteSessionStore:
     ) -> None:
         """Update recent context without overwriting a newer background summary."""
         conn = self._require_transaction()
-        recent = json.dumps(messages_to_dict(state.recent_messages), ensure_ascii=False, default=str)
+        recent = serialize_recent_turns(state.recent_turns)
         cur = conn.execute(
             """
             UPDATE sessions SET recent_messages=?, context_tokens=?, turn_index=?,
@@ -176,3 +177,52 @@ class SQLiteSessionStore:
         if self._transaction_conn is None:
             raise RuntimeError("Session update requires an active Unit of Work.")
         return self._transaction_conn
+
+
+def serialize_recent_turns(turns: list[TurnChunk]) -> str:
+    """Serialize recent Turn chunks into the legacy recent_messages column."""
+    payload = [
+        {
+            "turn_index": int(turn.turn_index),
+            "messages": messages_to_dict(turn.messages),
+        }
+        for turn in turns
+    ]
+    return json.dumps(payload, ensure_ascii=False, default=str)
+
+
+def deserialize_recent_turns(raw: str) -> list[TurnChunk]:
+    """Deserialize turn-aware recent context, accepting legacy message lists."""
+    try:
+        payload = json.loads(raw or "[]")
+    except json.JSONDecodeError:
+        emit_event(
+            "recent_context_decode_failed",
+            "sqlite_session_store",
+            "Could not decode recent Session context; using an empty cache.",
+            {},
+            level="warning",
+        )
+        return []
+    if not payload:
+        return []
+    if _looks_like_turn_chunks(payload):
+        return [
+            TurnChunk(
+                int(item.get("turn_index") or 0),
+                messages_from_dict(item.get("messages") or []),
+            )
+            for item in payload
+        ]
+    # Legacy format was a flat LangChain message list. Its original Turn
+    # boundaries were not stored, so keep it as one synthetic Turn until the next
+    # successful save rewrites the cache in the new format.
+    return [TurnChunk(0, messages_from_dict(payload))]
+
+
+def _looks_like_turn_chunks(payload) -> bool:
+    return (
+        isinstance(payload, list)
+        and all(isinstance(item, dict) for item in payload)
+        and all("turn_index" in item and "messages" in item for item in payload)
+    )

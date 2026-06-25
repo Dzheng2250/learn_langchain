@@ -148,7 +148,7 @@ recent_messages: list
 
 满足任一条件时触发上下文总结：
 
-- 消息数大于 `SUMMARY_TRIGGER_MESSAGE_LIMIT=40`。
+- ??? Turn ??? `SUMMARY_TRIGGER_TURN_LIMIT=40`?
 - 总内容字符数大于 `SUMMARY_TRIGGER_CHAR_LIMIT=24000`。
 - 调用方显式要求强制总结。
 
@@ -156,7 +156,7 @@ recent_messages: list
 摘要模型：
 
 - 旧消息压缩到最多 `SESSION_SUMMARY_MAX_CHARS=4000` 字符的 `summary_text`。
-- 最近 `RECENT_MESSAGE_LIMIT=12` 条消息继续保留原文。
+- ?? `RECENT_TURN_LIMIT=12` ??? Turn ????????? Turn ???? user?assistant ??? tool message?
 - 发给总结模型的来源文本最多 `SUMMARY_SOURCE_CHAR_LIMIT=12000` 字符。
 - 摘要结果写入新的 `context_windows` 行，并推进 `sessions.active_context_window_id`。
 

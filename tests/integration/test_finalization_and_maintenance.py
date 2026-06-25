@@ -1,4 +1,4 @@
-import sqlite3
+﻿import sqlite3
 import threading
 import time
 import unittest
@@ -475,7 +475,7 @@ class MaintenanceSchedulerTest(unittest.TestCase):
 
 
 class MaintenanceHandlerTest(unittest.TestCase):
-    def test_context_summary_uses_injected_recent_message_limit(self):
+    def test_context_summary_uses_injected_recent_turn_limit(self):
         session = Mock()
 
         class Store:
@@ -498,9 +498,11 @@ class MaintenanceHandlerTest(unittest.TestCase):
                 return True
 
         class Context:
+            recent_turn_limit = 1
             recent_message_limit = 1
 
-            def should_summarize(self, _messages):
+            def should_summarize(self, _messages, turn_count=None):
+                self.turn_count = turn_count
                 return True
 
             def summarize_messages(self, _summary, messages):
@@ -522,6 +524,7 @@ class MaintenanceHandlerTest(unittest.TestCase):
 
         self.assertEqual("one,two", store.updated["summary"])
         self.assertEqual(2, store.updated["summary_through_turn"])
+        self.assertEqual(3, handler.context_manager.turn_count)
 
 
 class RecoveryCoordinatorTest(unittest.TestCase):
