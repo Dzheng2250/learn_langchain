@@ -3,6 +3,8 @@ from pathlib import Path
 
 from langchain_core.messages import AIMessage, HumanMessage
 
+from src.config.settings import RECENT_TURN_LIMIT
+
 from src.core.adapters.sqlite import (
     SQLiteConversationHistoryStore,
     SQLiteMemoryRetrievalStore,
@@ -12,7 +14,7 @@ from src.core.adapters.sqlite import (
     SQLiteSummaryStore,
 )
 from src.core.adapters.sqlite.session_lifecycle import SQLiteSessionLifecycleStore
-from src.core.context.models import AgentContextState
+from src.core.context.models import AgentContextState, TurnChunk
 from src.core.finalization.models import CompletedTurn
 from src.core.state import LocalStateDatabase, LocalStateStore
 from src.core.state.workspace import LocalWorkspaceRepository
@@ -211,12 +213,20 @@ class SQLiteStateAdapterTest(unittest.TestCase):
         )
 
         self.assertEqual(["first", "second", "third"], [message.content for message in messages])
-    def test_conversation_history_rebuild_recent_uses_latest_committed_messages(self):
-        for index in range(15):
+    def test_conversation_history_rebuild_recent_uses_latest_committed_turns(self):
+        total_turns = 15
+        messages_per_turn = 2
+        expected_turns = min(RECENT_TURN_LIMIT, total_turns)
+        expected_messages = expected_turns * messages_per_turn
+        expected_first_turn = total_turns - expected_turns + 1
+        for index in range(total_turns):
             self.store.archive_turn_messages(
                 self.session,
                 index + 1,
-                [HumanMessage(content=f"message-{index}")],
+                [
+                    HumanMessage(content=f"user-{index}"),
+                    AIMessage(content=f"answer-{index}"),
+                ],
             )
         with self.database.transaction() as conn:
             conn.execute(
@@ -227,11 +237,33 @@ class SQLiteStateAdapterTest(unittest.TestCase):
         recovered = SQLiteConversationHistoryStore(self.database).rebuild_recent(self.session)
         state, _turn_index = self.store.load_session(self.session)
 
-        self.assertEqual(12, recovered)
-        self.assertEqual(12, len(state.recent_messages))
-        self.assertEqual("message-3", state.recent_messages[0].content)
-        self.assertEqual("message-14", state.recent_messages[-1].content)
+        self.assertEqual(expected_messages, recovered)
+        self.assertEqual(expected_turns, len(state.recent_turns))
+        self.assertEqual(expected_messages, len(state.recent_messages))
+        self.assertEqual(expected_first_turn, state.recent_turns[0].turn_index)
+        self.assertEqual(
+            f"user-{expected_first_turn - 1}", state.recent_messages[0].content
+        )
+        self.assertEqual("answer-14", state.recent_messages[-1].content)
         self.assertEqual(0, state.context_tokens)
+
+
+    def test_session_store_loads_legacy_recent_message_cache(self):
+        legacy = AgentContextState(recent_messages=[HumanMessage(content="legacy")])
+        self.store.save_session(self.session, legacy, 1)
+        with self.database.transaction() as conn:
+            conn.execute(
+                "UPDATE sessions SET recent_messages=? WHERE session_id=?",
+                (
+                    '[{"type":"human","data":{"content":"legacy flat","additional_kwargs":{},"response_metadata":{},"type":"human","name":null,"id":null}}]',
+                    str(self.session.session_id),
+                ),
+            )
+
+        state, _turn_index = SQLiteSessionStore(self.database).load_context(self.session)
+
+        self.assertEqual([0], [turn.turn_index for turn in state.recent_turns])
+        self.assertEqual(["legacy flat"], [message.content for message in state.recent_messages])
 
     def test_session_store_load_context_matches_session_state(self):
         expected = AgentContextState(

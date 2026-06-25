@@ -1,4 +1,4 @@
-﻿"""Transactional outbox repository for durable background maintenance."""
+"""Transactional outbox repository for durable background maintenance."""
 
 import json
 from uuid import uuid4

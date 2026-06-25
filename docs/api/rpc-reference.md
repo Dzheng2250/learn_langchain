@@ -237,7 +237,7 @@ checkpoint 删除通过后台维护任务完成，因此返回成功不表示 ch
 
 `recovered_messages` 表示从归档消息中恢复了多少条消息到 `recent_messages`。如果 Session 已被归档，返回 `status=archived` 且 `recovered_messages=0`。
 
-**恢复原理**：`recent_messages` 是 `sessions` 行中的一个 JSON 列，缓存最近 N 条消息用于构建 LLM 输入（N 由 `RECENT_MESSAGE_LIMIT` 控制）。正常情况下每次 turn 提交时它与 `messages` 表同步写入。当 `recent_messages` 因供应商内容审查或其他异常进入自循环失败时，`session.reset` 从 `messages` 表的 `raw` 列反序列化恢复这些消息，切断循环。受影响的 session 不需要删除重建。
+**恢复原理**：`recent_messages` 是 `sessions` 行中的历史兼容 JSON 缓存列，当前保存最近 N 个完整 Turn 用于构建 LLM 输入（N 由 `RECENT_TURN_LIMIT` 控制）。一个 Turn 可以包含多条 message，例如用户输入、AI 回复和工具结果。当缓存异常或需要重建时，`session.reset` 会从 `messages.raw` 按完整 Turn 边界恢复近期上下文。
 
 ## 结果兼容规则
 

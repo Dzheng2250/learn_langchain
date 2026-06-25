@@ -34,14 +34,30 @@ class ContextSummaryHandler:
             )
         )
         messages = [message for _turn, message in indexed_messages]
-        if not self.context_manager.should_summarize(messages):
+        turn_indexes = []
+        for turn_index, _message in indexed_messages:
+            if not turn_indexes or turn_indexes[-1] != turn_index:
+                turn_indexes.append(turn_index)
+        try:
+            should_summarize = self.context_manager.should_summarize(
+                messages,
+                turn_count=len(turn_indexes),
+            )
+        except TypeError:
+            should_summarize = self.context_manager.should_summarize(messages)
+        if not should_summarize:
             return
-        retained = indexed_messages[-self.context_manager.recent_message_limit:]
-        if not retained:
+        recent_turn_limit = getattr(
+            self.context_manager,
+            "recent_turn_limit",
+            self.context_manager.recent_message_limit,
+        )
+        retained_turns = set(turn_indexes[-recent_turn_limit:])
+        if not retained_turns:
             return
         # summary_through_turn is a Turn boundary, so never summarize only
         # part of a Turn and then make the remaining messages unreachable.
-        earliest_retained_turn = retained[0][0]
+        earliest_retained_turn = min(retained_turns)
         old = [item for item in indexed_messages if item[0] < earliest_retained_turn]
         if not old:
             return

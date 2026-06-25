@@ -124,7 +124,7 @@ class LocalStateStore:
     def rebuild_recent_messages_from_archive(self, session: SessionContext) -> int:
         """Rebuild ``recent_messages`` from archived message history.
 
-        Loads the most recent ``RECENT_MESSAGE_LIMIT`` messages from the
+        Loads the most recent ``RECENT_TURN_LIMIT`` complete Turns from the
         ``messages`` table, deserialises their ``raw`` JSON via
         ``messages_from_dict``, and writes them back into the session row.
         ``context_tokens`` is reset to 0 so the next compression decision is

@@ -37,8 +37,8 @@ class TurnFinalizer:
         usage: dict | None = None,
     ) -> FinalizationResult:
         """Commit a completed Turn without invoking LLM-backed maintenance."""
-        messages = self.context_manager.extract_turn_messages(previous_state, final_messages)
-        fast_state = self.context_manager.build_fast_state(previous_state, final_messages)
+        messages = self.context_manager.extract_turn_messages(previous_state, final_messages, turn_index)
+        fast_state = self.context_manager.build_fast_state(previous_state, final_messages, turn_index)
         # Update context_tokens with this turn's actual LLM input_tokens so
         # the maintenance handler and next session.status see the real value.
         if usage and usage.get("input_tokens"):

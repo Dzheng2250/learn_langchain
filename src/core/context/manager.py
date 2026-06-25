@@ -3,11 +3,11 @@
 from langchain_core.messages import HumanMessage, SystemMessage
 
 from src.config.settings import (
-    RECENT_MESSAGE_LIMIT,
+    RECENT_TURN_LIMIT,
     SESSION_SUMMARY_MAX_CHARS,
     SUMMARY_SOURCE_CHAR_LIMIT,
     SUMMARY_TRIGGER_CHAR_LIMIT,
-    SUMMARY_TRIGGER_MESSAGE_LIMIT,
+    SUMMARY_TRIGGER_TURN_LIMIT,
     SUMMARY_TRIGGER_TOKEN_LIMIT,
 )
 from src.core.telemetry import emit_event, record_error
@@ -15,7 +15,7 @@ from src.core.context.messages import (
     SUMMARY_MESSAGE_PREFIX,
     strip_context_messages,
 )
-from src.core.context.models import AgentContextState
+from src.core.context.models import AgentContextState, TurnChunk
 from src.core.context.summary_executor import ContextSummaryExecutor
 from src.core.context.summary_policy import SummaryPolicy
 from src.core.llm.contracts import ModelProvider
@@ -27,17 +27,30 @@ class AgentContextManager:
     def __init__(
         self,
         model_provider: ModelProvider,
-        recent_message_limit: int = RECENT_MESSAGE_LIMIT,
-        summary_trigger_message_limit: int = SUMMARY_TRIGGER_MESSAGE_LIMIT,
+        recent_turn_limit: int = RECENT_TURN_LIMIT,
+        summary_trigger_turn_limit: int = SUMMARY_TRIGGER_TURN_LIMIT,
         summary_trigger_char_limit: int = SUMMARY_TRIGGER_CHAR_LIMIT,
         summary_trigger_token_limit: int = SUMMARY_TRIGGER_TOKEN_LIMIT,
         summary_max_chars: int = SESSION_SUMMARY_MAX_CHARS,
         summary_source_char_limit: int = SUMMARY_SOURCE_CHAR_LIMIT,
+        **legacy_limits,
     ) -> None:
-        self.recent_message_limit = recent_message_limit
-        self.summary_trigger_message_limit = summary_trigger_message_limit
+        if "recent_message_limit" in legacy_limits:
+            recent_turn_limit = int(legacy_limits.pop("recent_message_limit"))
+        if "summary_trigger_message_limit" in legacy_limits:
+            summary_trigger_turn_limit = int(
+                legacy_limits.pop("summary_trigger_message_limit")
+            )
+        if legacy_limits:
+            unknown = ", ".join(sorted(legacy_limits))
+            raise TypeError(f"Unknown AgentContextManager limit(s): {unknown}")
+        self.recent_turn_limit = recent_turn_limit
+        self.summary_trigger_turn_limit = summary_trigger_turn_limit
         self.summary_trigger_char_limit = summary_trigger_char_limit
         self.summary_trigger_token_limit = summary_trigger_token_limit
+        # Compatibility for tests and older internal callers.
+        self.recent_message_limit = recent_turn_limit
+        self.summary_trigger_message_limit = summary_trigger_turn_limit
         self.summary_max_chars = summary_max_chars
         self.summary_source_char_limit = summary_source_char_limit
         self.summary_executor = ContextSummaryExecutor(
@@ -46,7 +59,7 @@ class AgentContextManager:
             summary_source_char_limit=summary_source_char_limit,
         )
         self.summary_policy = SummaryPolicy(
-            message_limit=summary_trigger_message_limit,
+            turn_limit=summary_trigger_turn_limit,
             char_limit=summary_trigger_char_limit,
             token_limit=summary_trigger_token_limit,
         )
@@ -67,7 +80,7 @@ class AgentContextManager:
         if extra_system_messages:
             messages.extend(extra_system_messages)
 
-        messages.extend(state.recent_messages[-self.recent_message_limit:])
+        messages.extend(self._flatten_turns(state.recent_turns[-self.recent_turn_limit:]))
         messages.append(HumanMessage(content=user_input))
         return messages
 
@@ -75,18 +88,25 @@ class AgentContextManager:
         self,
         state: AgentContextState,
         final_messages: list,
+        turn_index: int | None = None,
         force_summarize: bool = False,
         memory_context: str = "",
     ) -> AgentContextState:
         """Update compact context after one graph execution."""
-        final_conversation_messages = strip_context_messages(final_messages)
-        unsent_previous_messages = state.recent_messages[:-self.recent_message_limit]
-        conversation_messages = [*unsent_previous_messages, *final_conversation_messages]
+        final_conversation_messages = self.extract_turn_messages(
+            state,
+            final_messages,
+            turn_index,
+        )
+        turn = self._turn_from_messages(turn_index, final_conversation_messages)
+        conversation_turns = [*state.recent_turns, turn]
+        conversation_messages = self._flatten_turns(conversation_turns)
 
         should_summarize = (
             force_summarize
             or self.summary_policy.should_summarize_state(
                 context_tokens=state.context_tokens,
+                turns=conversation_turns,
                 messages=conversation_messages,
             )
         )
@@ -96,26 +116,33 @@ class AgentContextManager:
                 "agent_context",
                 "Context summary skipped.",
                 {
+                    "turn_count": len(conversation_turns),
                     "message_count": len(conversation_messages),
-                    "recent_message_limit": self.recent_message_limit,
-                    "summary_trigger_message_limit": self.summary_trigger_message_limit,
+                    "recent_turn_limit": self.recent_turn_limit,
+                    "recent_message_limit": self.recent_turn_limit,
+                    "summary_trigger_turn_limit": self.summary_trigger_turn_limit,
+                    "summary_trigger_message_limit": self.summary_trigger_turn_limit,
                     "summary_trigger_char_limit": self.summary_trigger_char_limit,
                 },
             )
             return AgentContextState(
                 summary=state.summary,
-                recent_messages=conversation_messages,
+                recent_turns=conversation_turns,
                 context_tokens=state.context_tokens,
             )
 
-        old_messages = conversation_messages[:-self.recent_message_limit]
-        recent_messages = conversation_messages[-self.recent_message_limit:]
+        old_turns = conversation_turns[:-self.recent_turn_limit]
+        recent_turns = conversation_turns[-self.recent_turn_limit:]
+        old_messages = self._flatten_turns(old_turns)
+        recent_messages = self._flatten_turns(recent_turns)
         emit_event(
             "context_summarize_triggered",
             "agent_context",
             "Context summary triggered.",
             {
                 "force_summarize": force_summarize,
+                "old_turn_count": len(old_turns),
+                "recent_turn_count": len(recent_turns),
                 "old_message_count": len(old_messages),
                 "recent_message_count": len(recent_messages),
             },
@@ -129,15 +156,18 @@ class AgentContextManager:
                 "agent_context",
                 "context_summary",
                 exc,
-                "Context summary failed, truncating to recent messages only.",
-                {"old_message_count": len(old_messages)},
+                "Context summary failed, truncating to recent Turns only.",
+                {
+                    "old_turn_count": len(old_turns),
+                    "old_message_count": len(old_messages),
+                },
                 event_type="context_summary_failed",
             )
-            # Degrade gracefully: keep the previous summary and drop old
-            # messages without compressing, to prevent unbounded growth.
+            # Degrade gracefully: keep the previous summary and drop old Turns
+            # without compressing, to prevent unbounded growth.
             return AgentContextState(
                 summary=state.summary,
-                recent_messages=conversation_messages[-self.recent_message_limit:],
+                recent_turns=recent_turns,
                 context_tokens=state.context_tokens,
             )
 
@@ -148,39 +178,71 @@ class AgentContextManager:
         )
         return AgentContextState(
             summary=summary,
-            recent_messages=recent_messages,
+            recent_turns=recent_turns,
             context_tokens=new_context_tokens,
         )
 
-    def build_fast_state(self, state: AgentContextState, final_messages: list) -> AgentContextState:
+    def build_fast_state(
+        self,
+        state: AgentContextState,
+        final_messages: list,
+        turn_index: int | None = None,
+    ) -> AgentContextState:
         """Build bounded committed context without invoking a summary model."""
-        final_conversation_messages = strip_context_messages(final_messages)
-        unsent_previous_messages = state.recent_messages[:-self.recent_message_limit]
-        conversation_messages = [*unsent_previous_messages, *final_conversation_messages]
+        final_conversation_messages = self.extract_turn_messages(
+            state,
+            final_messages,
+            turn_index,
+        )
+        turn = self._turn_from_messages(turn_index, final_conversation_messages)
+        conversation_turns = [*state.recent_turns, turn]
         return AgentContextState(
             summary=state.summary,
-            recent_messages=conversation_messages[-self.recent_message_limit:],
+            recent_turns=conversation_turns[-self.recent_turn_limit:],
             context_tokens=state.context_tokens,
         )
 
-    def should_summarize(self, messages: list) -> bool:
+    def should_summarize(self, messages: list, turn_count: int | None = None) -> bool:
         """Expose the summary policy to durable maintenance handlers."""
-        return self.summary_policy.should_summarize_messages(messages)
+        return self.summary_policy.should_summarize_messages(
+            messages,
+            turn_count=turn_count,
+        )
 
     def summarize_messages(self, previous_summary: str, messages: list, memory_context: str = "") -> str:
         """Create a derived summary outside the response critical path."""
         summary, _, _ = self._summarize_messages(previous_summary, messages, memory_context)
         return summary
 
-    def extract_turn_messages(self, state: AgentContextState, final_messages: list) -> list:
+    def extract_turn_messages(
+        self,
+        state: AgentContextState,
+        final_messages: list,
+        turn_index: int | None = None,
+    ) -> list:
         """Return only messages created by the current Turn.
 
         Synthetic summary and memory messages are removed first. This remains
         stable across checkpoint resumes even if injected memory changes.
         """
         conversation = strip_context_messages(final_messages)
-        loaded_recent_count = min(len(state.recent_messages), self.recent_message_limit)
-        return conversation[loaded_recent_count:]
+        if turn_index is None:
+            loaded_recent_count = min(len(state.recent_messages), self.recent_turn_limit)
+            return conversation[loaded_recent_count:]
+        loaded_before_current = 0
+        loaded_current = 0
+        for recent_turn in state.recent_turns:
+            if recent_turn.turn_index == turn_index:
+                loaded_current = len(recent_turn.messages)
+            else:
+                loaded_before_current += len(recent_turn.messages)
+        offset = loaded_before_current + loaded_current
+        if len(conversation) < offset:
+            # Some direct unit callers pass only the current Turn instead of the
+            # full graph message list. In that shape only same-Turn resume
+            # messages can be skipped.
+            offset = loaded_current
+        return conversation[offset:]
 
     def _summarize_messages(self, previous_summary: str, messages: list, memory_context: str = "") -> tuple[str, int, int]:
         """Compress older messages into a structured session summary.
@@ -198,3 +260,11 @@ class AgentContextManager:
     def _create_summary_llm(self):
         """Compatibility wrapper for tests and older internal callers."""
         return self.summary_executor._create_summary_llm()
+
+    @staticmethod
+    def _flatten_turns(turns: list[TurnChunk]) -> list:
+        return [message for turn in turns for message in turn.messages]
+
+    @staticmethod
+    def _turn_from_messages(turn_index: int | None, messages: list) -> TurnChunk:
+        return TurnChunk(0 if turn_index is None else int(turn_index), list(messages))
