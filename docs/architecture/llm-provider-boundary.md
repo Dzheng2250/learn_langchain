@@ -187,3 +187,15 @@ class LlmClient(Protocol):
 - 原始 provider metadata 的安全摘要。
 
 到这一步后，Agent、Summary 和 Memory 才能只依赖项目内部模型，不关心底层是 LangChain、Anthropic SDK、OpenAI SDK 还是其他 adapter。
+## Reasoning event boundary
+
+`message_content_text()` continues to filter `thinking`, `reasoning`, `redacted_thinking`, `thinking_delta`, `input_json_delta`, and `signature_delta` from ordinary answer text. This keeps CLI/TUI token output clean and prevents tool argument deltas from appearing as prose.
+
+When reasoning display is enabled, `stream_graph_events()` extracts reasoning with `reasoning_content_text()` and emits `reasoning_started` / `reasoning_delta` / `reasoning_finished`. This is a diagnostic/UI channel only:
+
+- text blocks become `token` events;
+- thinking/reasoning blocks become reasoning events;
+- tool_use/tool_call blocks become tool step events;
+- signature and redacted thinking payloads are not exposed as raw text.
+
+The raw LangChain message may still be preserved in `messages.raw`; the projected `messages.content` remains user-visible text only.

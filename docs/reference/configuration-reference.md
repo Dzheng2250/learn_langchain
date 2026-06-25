@@ -53,6 +53,8 @@ learn-agent start
 | `LEARN_AGENT_LLM_RETRY_BASE_DELAY_SECONDS` | `1` | 无服务端等待提示时的指数退避起始秒数。 |
 | `LEARN_AGENT_LLM_RETRY_MAX_DELAY_SECONDS` | `30` | 单次模型重试等待的最大秒数；服务端 `Retry-After` 也会被此值截断。 |
 | `LEARN_AGENT_LLM_RETRY_JITTER_RATIO` | `0.1` | 本地退避等待的随机抖动比例，用于避免多个请求同时恢复后再次撞到限流。 |
+| `LEARN_AGENT_REASONING_DISPLAY` | `collapsed` | TUI/CLI 对模型 thinking/reasoning 块的展示模式：`hidden` 不发送，`metadata` 只显示字数，`collapsed` 发送可折叠内容，`expanded` 默认展开。 |
+| `LEARN_AGENT_REASONING_PREVIEW_LIMIT` | `12000` | 单次 reasoning 内容可发送给前端的最大字符数；`metadata` 与 `hidden` 模式不会发送原文。 |
 
 旧变量 `ALIYUN_API_KEY` 与 `ALIYUN_BASE_URL` 已废弃，不再作为默认 Anthropic 配置回退；新配置必须使用通用名称。
 

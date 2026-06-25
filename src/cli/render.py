@@ -156,6 +156,19 @@ class AgentEventRenderer:
             )
             self.received_token = False
             self.current_attempt_id = None
+        elif event == "reasoning_started":
+            print("\n[thinking]", flush=True)
+        elif event == "reasoning_delta":
+            count = int(data.get("char_count") or 0)
+            redacted = " redacted" if data.get("redacted") else " hidden"
+            if data.get("content"):
+                print(f"\n[thinking: {count} chars]", flush=True)
+            else:
+                print(f"\n[thinking: {count} chars{redacted}]", flush=True)
+        elif event == "reasoning_finished":
+            count = int(data.get("char_count") or 0)
+            redacted = " redacted" if data.get("redacted") else " hidden"
+            print(f"\n[thinking_done: {count} chars{redacted}]", flush=True)
         elif event == "model_retry_scheduled":
             next_attempt = data.get("next_attempt", "?")
             maximum = data.get("max_attempts", "?")

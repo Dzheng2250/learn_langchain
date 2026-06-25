@@ -235,3 +235,19 @@ CLI/TUI 仅在没有收到 token 时将其作为输出兜底，避免重复显�
 - Core 不再向断开的客户端发送事件。
 - Core 会在开始下一 Slice 前暂停 Execution。
 - 客户端应使用 `session.status` 查询状态，而不是自动重发非幂等请求。
+## Reasoning / thinking events
+
+Core keeps normal assistant text and provider reasoning on separate event lines. `token` is still only user-visible answer text. Anthropic `thinking`, `reasoning`, and `thinking_delta` blocks are exposed, when configured, through these events:
+
+```json
+{"event":"reasoning_started","data":{"source":"parent_agent","display":"metadata","expanded":false}}
+{"event":"reasoning_delta","data":{"content":"...","char_count":120,"redacted":false}}
+{"event":"reasoning_finished","data":{"char_count":856,"redacted":false}}
+```
+
+Frontend rules:
+
+- `reasoning_delta.content` is present only when `LEARN_AGENT_REASONING_DISPLAY` is `collapsed` or `expanded`.
+- `metadata` mode sends start/finish and character counts, but not raw reasoning text.
+- `redacted_thinking` never exposes raw content; clients should show only redacted metadata.
+- Reasoning events must not be appended to the final assistant message or saved as user-visible answer text.

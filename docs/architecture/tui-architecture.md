@@ -382,3 +382,8 @@ def _fake_log(self):
 4. 通信逻辑放入 `client.py`，不写在 screen 中。
 5. 不得导入 `src.core.*`（与 CLI 规则一致）。
 6. 新增 `/` 命令时在 `ChatScreen._dispatch_command()` 中添加分支，并在 `/help` 中登记。
+## Thinking block rendering
+
+The TUI renders model thinking as a separate replaceable block rather than mixing it into the assistant token stream. The latest reasoning block shows a compact header such as `Thinking` or `Thought - 856 chars`; when raw reasoning is available, `ctrl+t` toggles expanded/collapsed display. In `LEARN_AGENT_REASONING_DISPLAY=metadata` mode, raw thinking text is intentionally not sent to the frontend, so expanding the block shows a short explanation instead of the hidden content. The default `collapsed` mode sends reasoning content but keeps it folded until `ctrl+t`.
+
+This block follows the same scroll policy as streamed answers: it auto-follows only while the user is already at the bottom, and user scrolling takes priority. `ctrl+o` remains dedicated to tool execution details; `ctrl+t` controls reasoning visibility.
