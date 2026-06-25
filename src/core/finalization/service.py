@@ -1,4 +1,4 @@
-﻿"""Prepare and commit only the work required before releasing a response."""
+"""Prepare and commit only the work required before releasing a response."""
 
 from src.core.finalization.models import CompletedTurn, FinalizationResult
 from src.core.maintenance.models import MaintenanceJobSpec

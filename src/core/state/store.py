@@ -1,4 +1,4 @@
-﻿"""Compatibility facade for SQLite-backed local state stores."""
+"""Compatibility facade for SQLite-backed local state stores."""
 
 from uuid import UUID
 

@@ -1,4 +1,4 @@
-﻿"""Summary trigger policy for compact Session context."""
+"""Summary trigger policy for compact Session context."""
 
 from src.core.common.content import message_content_text
 

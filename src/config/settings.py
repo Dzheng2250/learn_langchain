@@ -1,4 +1,4 @@
-﻿"""Non-secret runtime configuration.
+"""Non-secret runtime configuration.
 
 Committed defaults live here. Deployment-specific values and secrets can be
 overridden with environment variables or the Core user-level .env file.
