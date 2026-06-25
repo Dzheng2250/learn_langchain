@@ -74,6 +74,10 @@ CREATE TABLE IF NOT EXISTS messages (
 );
 
 
+-- v1 models a single linear compression lineage per Session. branch_id is
+-- reserved for future branch-local windows; supporting multiple active branches
+-- will require moving active_context_window_id from sessions to a branch-level
+-- mapping or to the branches table.
 CREATE TABLE IF NOT EXISTS context_windows (
     window_id TEXT PRIMARY KEY,
     workspace_id TEXT NOT NULL,

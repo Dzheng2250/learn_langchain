@@ -367,6 +367,58 @@ class SQLiteStateAdapterTest(unittest.TestCase):
         state, _turn_index = SQLiteSessionStore(self.database).load_context(self.session)
 
         self.assertEqual("window summary", state.summary)
+
+    def test_summary_store_skips_empty_compaction_window(self):
+        adapter = SQLiteSummaryStore(self.database)
+
+        changed = adapter.update_summary_cas(
+            self.session,
+            expected_summary_through_turn=0,
+            summary_through_turn=0,
+            summary="same watermark",
+        )
+
+        with self.database.connect() as conn:
+            count = conn.execute(
+                "SELECT COUNT(*) AS count FROM context_windows WHERE session_id=?",
+                (str(self.session.session_id),),
+            ).fetchone()["count"]
+            summary = conn.execute(
+                "SELECT summary FROM sessions WHERE session_id=?",
+                (str(self.session.session_id),),
+            ).fetchone()["summary"]
+
+        self.assertTrue(changed)
+        self.assertEqual(1, count)
+        self.assertEqual("", summary)
+
+    def test_summary_store_repairs_missing_active_window_with_event(self):
+        sink = RecordingSink()
+        install_event_bus(EventBus([sink]))
+        with self.database.transaction() as conn:
+            conn.execute("DELETE FROM context_windows WHERE session_id=?", (str(self.session.session_id),))
+            conn.execute(
+                "UPDATE sessions SET active_context_window_id=NULL, summary='legacy summary' WHERE session_id=?",
+                (str(self.session.session_id),),
+            )
+
+        summary, watermark, messages = SQLiteSummaryStore(self.database).load_summary_source(
+            self.session,
+            0,
+        )
+
+        with self.database.connect() as conn:
+            active = conn.execute(
+                "SELECT active_context_window_id FROM sessions WHERE session_id=?",
+                (str(self.session.session_id),),
+            ).fetchone()["active_context_window_id"]
+
+        self.assertEqual("legacy summary", summary)
+        self.assertEqual(0, watermark)
+        self.assertEqual([], messages)
+        self.assertEqual(f"root-{self.session.session_id}", active)
+        self.assertIn("context_window_repaired", [event.event_type for event in sink.events])
+
     def test_summary_store_loads_only_unsummarized_messages(self):
         self.archive_and_save(
             1,

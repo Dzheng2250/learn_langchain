@@ -106,6 +106,8 @@ Saga / 恢复协调原则一致：跨数据库清理是可重试的辅助动作�
 `context_windows` 保存不可变的摘要血统。每次后台压缩成功都会插入一个新窗口，并把
 `sessions.active_context_window_id` 指向它。旧窗口不会被覆盖，因此可以追溯“这次摘要基于哪个上一代摘要、覆盖了哪段 turn”。
 
+当前 v1 只实现单 Session 的线性压缩血统。`context_windows.branch_id` 是为后续分支级窗口预留的字段，目前不会参与窗口路由；如果未来支持从旧 turn 派生多个活跃分支，需要把 `active_context_window_id` 从 `sessions` 迁移到 `branches`，或新增 `branch -> active_window` 映射表。
+
 | 字段 | 含义 |
 |---|---|
 | `window_id` | 当前窗口 ID |

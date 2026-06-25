@@ -8,6 +8,8 @@ from uuid import uuid4
 
 from langchain_core.messages import messages_from_dict
 
+from src.core.telemetry import emit_event
+
 if TYPE_CHECKING:
     from src.core.state.database import LocalStateDatabase
     from src.core.workspace.models import SessionContext
@@ -26,7 +28,7 @@ class SQLiteSummaryStore:
     ) -> tuple[str, int, list[tuple[int, object]]]:
         """Load committed messages newer than the active context window."""
         with self.database.connect() as conn:
-            window = self._active_window(conn, session)
+            window = self._ensure_active_window(conn, session)
             rows = conn.execute(
                 """
                 SELECT turn_index, raw FROM messages
@@ -63,8 +65,14 @@ class SQLiteSummaryStore:
         summary: str,
     ) -> bool:
         """Create a new context window when the active window is still current."""
+        if summary_through_turn <= expected_summary_through_turn:
+            return True
         with self.database.transaction() as conn:
-            current = self._active_window(conn, session)
+            current = self._get_active_window(conn, session)
+            if current is None:
+                raise RuntimeError(
+                    "Session has no active context window before summary maintenance."
+                )
             if int(current["summary_through_turn"]) != expected_summary_through_turn:
                 return False
             source_count = conn.execute(
@@ -107,7 +115,7 @@ class SQLiteSummaryStore:
                     current["window_id"],
                     summary,
                     summary_through_turn,
-                    expected_summary_through_turn + 1 if summary_through_turn > expected_summary_through_turn else summary_through_turn,
+                    expected_summary_through_turn + 1,
                     summary_through_turn,
                     int(session_row["turn_index"]),
                     int(source_count),
@@ -139,8 +147,9 @@ class SQLiteSummaryStore:
             )
         return cur.rowcount == 1
 
-    def _active_window(self, conn, session: SessionContext):
-        row = conn.execute(
+    def _get_active_window(self, conn, session: SessionContext):
+        """Return the active window row without repairing missing lineage."""
+        return conn.execute(
             """
             SELECT cw.* FROM sessions s
             JOIN context_windows cw ON cw.window_id = s.active_context_window_id
@@ -148,6 +157,10 @@ class SQLiteSummaryStore:
             """,
             (str(session.workspace.workspace_id), str(session.session_id)),
         ).fetchone()
+
+    def _ensure_active_window(self, conn, session: SessionContext):
+        """Return the active window, repairing legacy rows that lack one."""
+        row = self._get_active_window(conn, session)
         if row:
             return row
         session_row = conn.execute(
@@ -161,6 +174,17 @@ class SQLiteSummaryStore:
         if not session_row:
             raise RuntimeError("Session disappeared before context summary maintenance.")
         window_id = f"root-{session_row['session_id']}"
+        emit_event(
+            "context_window_repaired",
+            "sqlite_summary_store",
+            "Created a missing root context window for a legacy session row.",
+            {
+                "workspace_id": str(session.workspace.workspace_id),
+                "session_id": str(session.session_id),
+                "window_id": window_id,
+            },
+            level="warning",
+        )
         conn.execute(
             """
             INSERT OR IGNORE INTO context_windows(
