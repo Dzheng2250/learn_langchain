@@ -49,6 +49,22 @@ def stream_graph_events(
     reasoning_chars = 0
     reasoning_redacted = False
 
+    def finish_reasoning():
+        nonlocal reasoning_started, reasoning_chars, reasoning_redacted
+        if not reasoning_started:
+            return []
+        event = _reasoning_event(
+            "reasoning_finished",
+            char_count=reasoning_chars,
+            redacted=reasoning_redacted,
+            attempt_id=current_attempt_id(),
+            display=reasoning_display,
+        )
+        reasoning_started = False
+        reasoning_chars = 0
+        reasoning_redacted = False
+        return [event]
+
     yield {
         "event": "step",
         "data": {
@@ -97,17 +113,7 @@ def stream_graph_events(
                             )
                     text = message_content_text(message_chunk)
                     if text:
-                        if reasoning_started:
-                            yield _reasoning_event(
-                                "reasoning_finished",
-                                char_count=reasoning_chars,
-                                redacted=reasoning_redacted,
-                                attempt_id=current_attempt_id(),
-                                display=reasoning_display,
-                            )
-                            reasoning_started = False
-                            reasoning_chars = 0
-                            reasoning_redacted = False
+                        yield from finish_reasoning()
                         mark_attempt_output_emitted()
                         attempt_id = current_attempt_id()
                         yield {
@@ -156,6 +162,7 @@ def stream_graph_events(
                                 "graph_steps_used": graph_steps_used,
                             },
                         }
+                        yield from finish_reasoning()
                         return
                     yield from step_events_from_message(message)
     except GraphRecursionError:
@@ -176,6 +183,7 @@ def stream_graph_events(
                 "graph_steps_used": graph_steps_used,
             },
         }
+        yield from finish_reasoning()
         return
     except ToolBudgetExceeded as exc:
         emit_event(
@@ -194,6 +202,7 @@ def stream_graph_events(
                 "graph_steps_used": graph_steps_used,
             },
         }
+        yield from finish_reasoning()
         return
     except Exception as exc:
         yield graph_failure_event(
@@ -201,16 +210,10 @@ def stream_graph_events(
             graph_steps_used=graph_steps_used,
             provider_error_handler=provider_error_handler,
         )
+        yield from finish_reasoning()
         return
 
-    if reasoning_started:
-        yield _reasoning_event(
-            "reasoning_finished",
-            char_count=reasoning_chars,
-            redacted=reasoning_redacted,
-            attempt_id=current_attempt_id(),
-            display=reasoning_display,
-        )
+    yield from finish_reasoning()
 
     yield {
         "event": "done",

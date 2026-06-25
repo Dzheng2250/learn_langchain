@@ -13,6 +13,12 @@ class FakeGraph:
         yield from self.chunks
 
 
+class FailingGraph(FakeGraph):
+    def stream(self, _inputs, **_kwargs):
+        yield from self.chunks
+        raise RuntimeError("boom")
+
+
 class StreamingEventsTest(unittest.TestCase):
     def test_agent_message_fallback_keeps_full_content(self):
         content = "answer-" + ("x" * 1200)
@@ -134,6 +140,32 @@ class StreamingEventsTest(unittest.TestCase):
         self.assertIn({"event": "token", "data": {"content": "answer"}}, events)
         token_payload = next(item["data"] for item in events if item["event"] == "token")
         self.assertNotIn("hidden", token_payload["content"])
+
+    def test_reasoning_finished_is_emitted_when_stream_errors(self):
+        graph = FailingGraph(
+            [
+                (
+                    "messages",
+                    (
+                        AIMessageChunk(
+                            content=[{"type": "thinking", "thinking": "before failure"}]
+                        ),
+                        {},
+                    ),
+                ),
+            ]
+        )
+
+        events = list(stream_graph_events(graph, []))
+        event_names = [item["event"] for item in events]
+
+        self.assertIn("reasoning_started", event_names)
+        self.assertIn("reasoning_finished", event_names)
+        self.assertIn("error", event_names)
+        self.assertLess(
+            event_names.index("error"),
+            event_names.index("reasoning_finished"),
+        )
 
     def test_redacted_thinking_does_not_expose_content(self):
         events = list(

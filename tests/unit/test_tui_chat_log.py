@@ -9,7 +9,7 @@ from rich.text import Text
 
 from src.tui.screens.chat import ChatScreen
 from src.tui.renderer import render_event, render_task_progress
-from src.tui.widgets.chat_log import ChatLog, _LogEntry
+from src.tui.widgets.chat_log import ChatLog, _LogEntry, _ReasoningState
 
 
 class FakeEntryWidget:
@@ -43,12 +43,7 @@ class TuiChatLogTest(unittest.TestCase):
         log._tool_events_visible = False
         log._reasoning_widget = None
         log._reasoning_index = None
-        log._reasoning_content = ""
-        log._reasoning_char_count = 0
-        log._reasoning_redacted = False
-        log._reasoning_expanded = False
-        log._reasoning_finished = False
-        log._reasoning_display = "metadata"
+        log._reasoning_target_index = None
         log._stream_committed_length = 0
         log._markdown_render_limit = 50_000
         log._partial_markdown_min_chars = 240
@@ -97,6 +92,13 @@ class TuiChatLogTest(unittest.TestCase):
         def _new_widget(self, entry):
             if entry.mode in {"markup", "tool"}:
                 return FakeEntryWidget(entry.content)
+            if entry.mode == "reasoning":
+                return FakeEntryWidget(
+                    ChatLog._reasoning_markup(
+                        self,
+                        entry.reasoning or _ReasoningState(),
+                    )
+                )
             return FakeEntryWidget(ChatLog._renderable_for_entry(self, entry))
 
         log.mount = MethodType(mount, log)
@@ -247,6 +249,30 @@ class TuiChatLogTest(unittest.TestCase):
         rendered = _rendered_text(log.widgets[0])
         self.assertIn("Thought - 42 chars", rendered)
         self.assertIn("LEARN_AGENT_REASONING_DISPLAY=metadata", rendered)
+
+    def test_toggle_reasoning_controls_historical_blocks(self):
+        log = self._fake_log()
+
+        ChatLog.start_reasoning(log, expanded=False, display="collapsed")
+        ChatLog.append_reasoning(log, "first thought", char_count=13)
+        ChatLog.finish_reasoning(log, char_count=13)
+        ChatLog.write_event(log, "[dim]separator[/dim]")
+        ChatLog.start_reasoning(log, expanded=False, display="collapsed")
+        ChatLog.append_reasoning(log, "second thought", char_count=14)
+        ChatLog.finish_reasoning(log, char_count=14)
+
+        ChatLog.toggle_reasoning(log)
+
+        rendered = [_rendered_text(widget) for widget in log.widgets]
+        self.assertTrue(any("first thought" in item for item in rendered))
+        self.assertTrue(any("second thought" in item for item in rendered))
+
+        ChatLog.toggle_reasoning(log)
+
+        rendered = [_rendered_text(widget) for widget in log.widgets]
+        self.assertFalse(any("first thought" in item for item in rendered))
+        self.assertFalse(any("second thought" in item for item in rendered))
+
     def test_tui_reasoning_events_do_not_use_token_buffer(self):
         log = self._fake_log()
         screen = ChatScreen.__new__(ChatScreen)
@@ -280,7 +306,7 @@ class TuiChatLogTest(unittest.TestCase):
         self.assertEqual("answer", _rendered_text(log.widgets[-1]))
         self.assertEqual("answer", log._token_buf)
         self.assertTrue(screen._streamed_response_active)
-        self.assertEqual("collapsed", log._reasoning_display)
+        self.assertEqual("collapsed", log._entries[0].reasoning.display)
 
     def test_tool_events_can_be_expanded_and_collapsed_after_storage(self):
         log = self._fake_log()

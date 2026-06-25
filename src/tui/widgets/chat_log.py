@@ -21,6 +21,18 @@ USER_SCROLL_PAUSE_SECONDS = 1.5
 FORCED_FOLLOW_SECONDS = 0.75
 
 
+@dataclass
+class _ReasoningState:
+    """Mutable display state for one reasoning/thinking block."""
+
+    content: str = ""
+    char_count: int = 0
+    redacted: bool = False
+    expanded: bool = False
+    finished: bool = False
+    display: str = "metadata"
+
+
 @dataclass(frozen=True)
 class _LogEntry:
     """A committed visual log entry.
@@ -29,11 +41,13 @@ class _LogEntry:
     - ``markup``: trusted TUI markup produced by ``src.tui.renderer``.
     - ``plain``: literal text; Rich markup is not interpreted.
     - ``tool``: trusted Rich markup for collapsible tool execution details.
+    - ``reasoning``: model thinking block with per-entry fold state.
     - ``markdown``: completed assistant answer rendered once with Markdown.
     """
 
     content: str
     mode: str = "markup"
+    reasoning: _ReasoningState | None = None
 
 
 class ChatLog(VerticalScroll):
@@ -60,12 +74,7 @@ class ChatLog(VerticalScroll):
         self._tool_events_visible: bool = False
         self._reasoning_widget: Static | None = None
         self._reasoning_index: int | None = None
-        self._reasoning_content: str = ""
-        self._reasoning_char_count: int = 0
-        self._reasoning_redacted: bool = False
-        self._reasoning_expanded: bool = False
-        self._reasoning_finished: bool = False
-        self._reasoning_display: str = "metadata"
+        self._reasoning_target_index: int | None = None
         self._stream_committed_length: int = 0
         self._markdown_render_limit: int = MARKDOWN_RENDER_LIMIT
         self._partial_markdown_min_chars: int = PARTIAL_MARKDOWN_MIN_CHARS
@@ -138,15 +147,11 @@ class ChatLog(VerticalScroll):
         """Start a replaceable reasoning/thinking block."""
         self.flush_tokens()
         self._capture_scroll_follow_state()
-        self._reasoning_content = ""
-        self._reasoning_char_count = 0
-        self._reasoning_redacted = False
-        self._reasoning_expanded = expanded
-        self._reasoning_finished = False
-        self._reasoning_display = display or "metadata"
-        entry = _LogEntry(self._reasoning_markup(), "markup")
+        state = _ReasoningState(expanded=expanded, display=display or "metadata")
+        entry = _LogEntry("", "reasoning", reasoning=state)
         self._entries.append(entry)
         self._reasoning_index = len(self._entries) - 1
+        self._reasoning_target_index = self._reasoning_index
         self._reasoning_widget = self._append_entry(entry)
         self._scroll_to_bottom()
 
@@ -158,63 +163,120 @@ class ChatLog(VerticalScroll):
         redacted: bool = False,
     ) -> None:
         """Update the active reasoning block without touching answer tokens."""
-        if self._reasoning_widget is None or self._reasoning_index is None:
+        entry, widget, index = self._active_reasoning_entry()
+        if entry is None or widget is None or index is None:
             self.start_reasoning(expanded=False)
+            entry, widget, index = self._active_reasoning_entry()
+        if entry is None or widget is None or index is None or entry.reasoning is None:
+            return
+        state = entry.reasoning
         if content:
-            self._reasoning_content += content
-        self._reasoning_char_count = max(self._reasoning_char_count, int(char_count or 0))
-        self._reasoning_redacted = self._reasoning_redacted or redacted
-        self._replace_reasoning_entry()
+            state.content += content
+        state.char_count = max(state.char_count, int(char_count or 0))
+        state.redacted = state.redacted or redacted
+        self._replace_reasoning_entry(index, widget, state)
 
     def finish_reasoning(self, *, char_count: int = 0, redacted: bool = False) -> None:
         """Mark the active reasoning block complete."""
-        if self._reasoning_widget is None or self._reasoning_index is None:
+        entry, widget, index = self._active_reasoning_entry()
+        if entry is None or widget is None or index is None:
             self.start_reasoning(expanded=False)
-        self._reasoning_char_count = max(self._reasoning_char_count, int(char_count or 0))
-        self._reasoning_redacted = self._reasoning_redacted or redacted
-        self._reasoning_finished = True
-        self._replace_reasoning_entry()
+            entry, widget, index = self._active_reasoning_entry()
+        if entry is None or widget is None or index is None or entry.reasoning is None:
+            return
+        state = entry.reasoning
+        state.char_count = max(state.char_count, int(char_count or 0))
+        state.redacted = state.redacted or redacted
+        state.finished = True
+        self._replace_reasoning_entry(index, widget, state)
 
     def toggle_reasoning(self) -> None:
-        """Expand or collapse the latest reasoning block."""
-        if self._reasoning_widget is None or self._reasoning_index is None:
+        """Expand or collapse every reasoning block, including history."""
+        indexes = [
+            index
+            for index, entry in enumerate(self._entries)
+            if entry.mode == "reasoning" and entry.reasoning is not None
+        ]
+        if not indexes:
             return
-        self._reasoning_expanded = not self._reasoning_expanded
-        self._replace_reasoning_entry()
+        expand = any(not self._entries[index].reasoning.expanded for index in indexes)
+        for index in indexes:
+            entry = self._entries[index]
+            if entry.reasoning is None:
+                continue
+            entry.reasoning.expanded = expand
+            widget = self._widget_for_entry_index(index)
+            if widget is not None:
+                self._replace_reasoning_entry(index, widget, entry.reasoning, follow=False)
+        self._reasoning_target_index = indexes[-1]
 
-    def _replace_reasoning_entry(self) -> None:
-        """Replace the current reasoning entry in place."""
-        if self._reasoning_widget is None or self._reasoning_index is None:
-            return
-        entry = _LogEntry(self._reasoning_markup(), "markup")
-        self._entries[self._reasoning_index] = entry
-        self._update_widget(self._reasoning_widget, entry)
-        self._scroll_to_bottom()
+    def _active_reasoning_entry(self):
+        """Return the current stream reasoning entry and mounted widget."""
+        if self._reasoning_index is None or self._reasoning_widget is None:
+            return None, None, None
+        if not self._is_reasoning_index(self._reasoning_index):
+            return None, None, None
+        return self._entries[self._reasoning_index], self._reasoning_widget, self._reasoning_index
 
-    def _reasoning_markup(self) -> str:
-        """Render the current reasoning block as collapsible Rich markup."""
-        count = self._reasoning_char_count or len(self._reasoning_content)
-        state = "Thought" if self._reasoning_finished else "Thinking"
+    def _is_reasoning_index(self, index: int) -> bool:
+        return 0 <= index < len(self._entries) and self._entries[index].mode == "reasoning"
+
+    def _widget_for_entry_index(self, target_index: int):
+        """Find the mounted widget corresponding to an entry index."""
+        visible_index = 0
+        for index, entry in enumerate(self._entries):
+            if entry.mode == "tool" and not self._tool_events_visible:
+                continue
+            if index == target_index:
+                children = list(getattr(self, "children", []))
+                if not children:
+                    children = list(getattr(self, "widgets", []))
+                if 0 <= visible_index < len(children):
+                    widget = children[visible_index]
+                    if isinstance(widget, Static) or hasattr(widget, "update"):
+                        return widget
+                return None
+            visible_index += 1
+        return None
+
+    def _replace_reasoning_entry(
+        self,
+        index: int,
+        widget,
+        state: _ReasoningState,
+        *,
+        follow: bool = True,
+    ) -> None:
+        """Replace one reasoning entry in place."""
+        entry = _LogEntry("", "reasoning", reasoning=state)
+        self._entries[index] = entry
+        self._update_widget(widget, entry)
+        if follow:
+            self._scroll_to_bottom()
+
+    def _reasoning_markup(self, state: _ReasoningState) -> str:
+        """Render one reasoning block as collapsible Rich markup."""
+        count = state.char_count or len(state.content)
+        label = "Thought" if state.finished else "Thinking"
         suffix = f" - {count} chars" if count else ""
-        if self._reasoning_redacted:
+        if state.redacted:
             suffix += " - redacted"
-        toggle = "[-]" if self._reasoning_expanded else "[+]"
-        header = f"[dim]{toggle} {state}{suffix}[/dim]"
-        if not self._reasoning_expanded:
+        toggle = "[-]" if state.expanded else "[+]"
+        header = f"[dim]{toggle} {label}{suffix}[/dim]"
+        if not state.expanded:
             return header
-        if self._reasoning_content:
-            return f"{header}\n[dim]{escape(self._reasoning_content)}[/dim]"
-        if self._reasoning_redacted:
+        if state.content:
+            return f"{header}\n[dim]{escape(state.content)}[/dim]"
+        if state.redacted:
             reason = "Provider returned redacted thinking; raw content is unavailable."
-        elif self._reasoning_display in {"metadata", "hidden"}:
+        elif state.display in {"metadata", "hidden"}:
             reason = (
                 "Thinking text is hidden by LEARN_AGENT_REASONING_DISPLAY="
-                f"{escape(self._reasoning_display)}."
+                f"{escape(state.display)}."
             )
         else:
             reason = "No reasoning text was provided by the model stream."
         return f"{header}\n[dim]{reason}[/dim]"
-
     def write_task_progress(self, markup: str) -> None:
         """Create or replace the latest visible private-task progress block."""
         self.flush_tokens()
@@ -264,12 +326,7 @@ class ChatLog(VerticalScroll):
         self._tool_events_visible = False
         self._reasoning_widget = None
         self._reasoning_index = None
-        self._reasoning_content = ""
-        self._reasoning_char_count = 0
-        self._reasoning_redacted = False
-        self._reasoning_expanded = False
-        self._reasoning_finished = False
-        self._reasoning_display = "metadata"
+        self._reasoning_target_index = None
         self._stream_committed_length = 0
         self._auto_scroll = True
         self._user_scroll_paused = False
@@ -445,6 +502,8 @@ class ChatLog(VerticalScroll):
                 self._task_progress_widget = widget
             if index == self._reasoning_index:
                 self._reasoning_widget = widget
+            if index == self._reasoning_target_index and entry.mode == "reasoning":
+                self._reasoning_target_index = index
 
     def _new_widget(self, entry: _LogEntry) -> Static:
         """Create a Textual widget for one log entry.
@@ -456,6 +515,9 @@ class ChatLog(VerticalScroll):
         """
         if entry.mode in {"markup", "tool"}:
             return Static(entry.content, markup=True, classes=f"chat-log-entry chat-log-{entry.mode}")
+        if entry.mode == "reasoning":
+            markup = self._reasoning_markup(entry.reasoning or _ReasoningState())
+            return Static(markup, markup=True, classes="chat-log-entry chat-log-reasoning")
         return Static(
             self._renderable_for_entry(entry),
             markup=False,
@@ -466,6 +528,9 @@ class ChatLog(VerticalScroll):
         """Update an existing entry widget in place."""
         if entry.mode in {"markup", "tool"}:
             widget.update(entry.content)
+            return
+        if entry.mode == "reasoning":
+            widget.update(self._reasoning_markup(entry.reasoning or _ReasoningState()))
             return
         widget.update(self._renderable_for_entry(entry))
 
