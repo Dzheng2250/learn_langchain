@@ -105,12 +105,6 @@ class TelemetryTest(unittest.TestCase):
         self.assertEqual(7, event.turn_index)
         self.assertEqual("run-a", event.run_id)
 
-    def test_legacy_hooks_imports_remain_available(self) -> None:
-        from src.core.hooks import AgentEvent, set_event_context
-
-        self.assertIs(AgentEvent, TelemetryEvent)
-        self.assertIs(set_event_context, bind_context)
-
     def test_failing_sink_does_not_interrupt_emit(self) -> None:
         sink = MemorySink()
         install_event_bus(EventBus([FailingSink(), sink]))

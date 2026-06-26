@@ -266,7 +266,20 @@ with event_span("memory_extract", "memory_store"):
 3. 在 `factory.py` 中由配置决定是否组装。
 4. 阻塞或高延迟 Sink 应包装在 `BufferedEventSink` 中。
 
-## 7. 当前可靠性边界
+## 7. Hooks 命名空间已释放
+
+历史版本曾使用 `src/core/hooks` 承载 Telemetry 兼容导入。该旧包已经移除，Telemetry 的唯一入口是 `src.core.telemetry`。
+
+当前约定：
+
+- 新代码不得导入 `src.core.hooks`。
+- `AgentEvent`、`AgentEventContext`、`EventPublisher` 等旧名称不再保留。
+- 观测事件使用 `TelemetryEvent`、`TelemetryContext`、`EventBus`、Recorder 和 Sink。
+- `src/core/hooks` 这个路径保留给未来真正的 Hook 模块，不得再用于 Telemetry 别名。
+
+未来如果要设计真正的 Hook 系统，应单独定义 `Hook`、`HookRegistry`、触发点、同步/异步语义、失败隔离和权限边界；不能复用旧 Telemetry 命名。
+
+## 8. 当前可靠性边界
 
 - Telemetry 是 best-effort 观测，不是业务事务日志。
 - 队列满时新事件会被丢弃并输出调试信息。
@@ -275,7 +288,6 @@ with event_span("memory_extract", "memory_store"):
 - SQLite Telemetry DB 不是 Session/Execution 权威状态，损坏时不影响任务恢复。
 - `agent_events` 写入失败不会让 Agent Turn 失败。
 - 事件 payload 会按敏感字段名称脱敏，并按配置限制长度。
-- `src/core/hooks` 目前仅作为旧导入路径兼容层，新代码不得继续依赖它。
 
 如果未来事件承担计费、审批或合规审计，应改用持久消息队列或事务 Outbox，不能继续依赖
 当前 best-effort 内存队列。
