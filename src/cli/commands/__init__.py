@@ -7,6 +7,7 @@ from .stop import register as register_stop
 from .session import register as register_session
 from .trace import register as register_trace
 from .tui import register as register_tui
+from .approval import register as register_approval
 
 
 def register_commands(subparsers, config) -> None:
@@ -18,6 +19,7 @@ def register_commands(subparsers, config) -> None:
     register_session(subparsers, config)
     register_trace(subparsers, config)
     register_tui(subparsers, config)
+    register_approval(subparsers, config)
 
 
 __all__ = ["register_commands"]

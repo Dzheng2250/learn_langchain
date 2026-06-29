@@ -169,6 +169,18 @@ class AgentEventRenderer:
             count = int(data.get("char_count") or 0)
             redacted = " redacted" if data.get("redacted") else " hidden"
             print(f"\n[thinking_done: {count} chars{redacted}]", flush=True)
+        elif event == "tool_approval_required":
+            request_id = data.get("request_id", "")
+            tool = data.get("tool", "unknown")
+            detail = _generic_tool_args_detail(data.get("args"))
+            print(f"\n[tool_approval_required: {tool}]", flush=True)
+            if detail:
+                print(detail, flush=True)
+            print(
+                "Resolve with: learn-agent approval resolve "
+                f"{request_id} allow_once",
+                flush=True,
+            )
         elif event == "model_retry_scheduled":
             next_attempt = data.get("next_attempt", "?")
             maximum = data.get("max_attempts", "?")

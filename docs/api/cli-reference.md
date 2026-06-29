@@ -29,6 +29,8 @@
 | `learn-agent session discard` | 丢弃待恢复任务 | 是 |
 | `learn-agent session reset` | 从归档消息重建 Session 缓存 | 是 |
 | `learn-agent session delete` | 归档或硬删除 Session | 是 |
+| `learn-agent approval list` | 查询待审批工具调用 | 是 |
+| `learn-agent approval resolve` | 审批并恢复工具调用 | 是 |
 | `learn-agent trace` | 查询本地系统 Trace | 否 |
 
 `learn-agent-core` 是管理与调试入口，不用于日常对话：
@@ -108,6 +110,17 @@ learn-agent session delete --session old-session --hard
 - `reset` 从 `messages` 表的归档消息重建 `sessions.recent_messages` 缓存，同时将 `context_tokens`
   重置为 0。用于解决 `recent_messages` 中包含导致 LLM 供应商拒绝请求的内容时的 session "卡死"问题。
 - `delete` 默认归档 Session，使其不可继续使用但保留历史；`--hard` 才会永久删除 Session 及其本地关联数据。
+
+## Trace 查询
+
+## 工具审批
+
+```shell
+learn-agent approval list --session default
+learn-agent approval resolve <request_id> allow_once --session default
+```
+
+审批响应支持单次、Session 和 Workspace 范围的 allow/deny。复合 shell 命令只能单次审批，不能保存为持久规则。
 
 ## Trace 查询
 

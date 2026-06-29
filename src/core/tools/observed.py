@@ -141,12 +141,15 @@ class ObservedToolNode(ToolNode):
         *,
         event_source: str = "agent_tool_node",
         risk_by_name: dict[str, ToolRisk] | None = None,
+        pipeline=None,
         **kwargs,
     ) -> None:
         existing_wrapper = kwargs.pop("wrap_tool_call", None)
 
         def observed_wrapper(request, execute):
             """Compose centralized observation with an optional existing wrapper."""
+            if pipeline is not None:
+                return pipeline.invoke(request, execute)
             if existing_wrapper is None:
                 return _observe_tool_call(event_source, request, execute, risk_by_name)
 

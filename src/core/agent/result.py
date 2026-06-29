@@ -37,6 +37,10 @@ class TurnResultBuilder:
             self.result["status"] = "ok"
             self.result.update(item["data"])
             return
+        if item["event"] == "paused":
+            self.result["status"] = "paused"
+            self.result.update(item["data"])
+            return
         if item["event"] != "error":
             return
         data = item["data"]

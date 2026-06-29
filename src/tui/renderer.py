@@ -115,6 +115,12 @@ def render_event(params: dict[str, Any]) -> str | None:
     if event == "paused":
         return _render_paused(data)
 
+    if event == "tool_approval_required":
+        return (
+            "[yellow bold]Tool approval required[/yellow bold]\n"
+            f"[yellow]{data.get('tool', 'unknown')}[/yellow]"
+        )
+
     if event == "model_retry_scheduled":
         return (
             "[yellow]Model request will retry: "

@@ -2,6 +2,7 @@
 
 from collections.abc import Iterator
 from dataclasses import dataclass
+from langgraph.types import Command
 
 from src.config.settings import MAX_AUTO_SLICES_PER_GRANT
 from src.core.agent.budget import (
@@ -78,6 +79,7 @@ class TurnExecutionLoop:
         *,
         execution=None,
         resume: bool = False,
+        resume_value: dict | None = None,
         control: ExecutionControl | None = None,
     ) -> Iterator[dict]:
         """Run bounded Slices and persist either completion or recoverable pause."""
@@ -113,6 +115,8 @@ class TurnExecutionLoop:
                 workspace_id=str(session.workspace.workspace_id),
                 session_id=str(session.session_id),
                 execution_id=execution.execution_id if execution else None,
+                run_id=run_id,
+                workspace_root=str(session.workspace.root),
             )
             total_tool_calls = 0
             budget = ExecutionBudget()
@@ -122,7 +126,10 @@ class TurnExecutionLoop:
                 if budget.wall_time_exhausted():
                     exhausted_reason = StopReason.GRANT_WALL_TIME_LIMIT.value
                     break
-                slice_input = None if resume or slice_number > 1 else input_messages
+                if resume and slice_number == 1 and resume_value is not None:
+                    slice_input = Command(resume=resume_value)
+                else:
+                    slice_input = None if resume or slice_number > 1 else input_messages
                 paused_for_budget = False
                 slice_result = yield from self.slice_execution_service.stream_slice(
                     graph=graph,
@@ -182,7 +189,10 @@ class TurnExecutionLoop:
                     return
                 if not paused_for_budget:
                     return
-                if exhausted_reason == StopReason.BUDGET_LIMIT.value:
+                if exhausted_reason in {
+                    StopReason.BUDGET_LIMIT.value,
+                    StopReason.TOOL_APPROVAL.value,
+                }:
                     break
                 if checkpoint_thread_id is None:
                     # Compatibility services without a checkpointer cannot

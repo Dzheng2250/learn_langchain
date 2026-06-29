@@ -139,6 +139,9 @@ active context window 的 summary_text
 | `executions` | 保存一项可能跨多个 Slice 的工作状态 |
 | `execution_slices` | 保存每次有界 LangGraph 运行的预算和停止原因 |
 | `tool_ledger` | 为工具调用审计预留账本结构 |
+| `tool_approval_requests` | 保存与 Execution/tool_call 绑定的待审批请求及处理结果 |
+| `tool_permission_rules` | 保存 Session 或 Workspace 范围的 allow/deny 规则 |
+| `tool_approval_audit` | 保存不可变的审批响应审计记录 |
 
 `executions.status` 表示业务执行状态，例如：
 
@@ -146,6 +149,7 @@ active context window 的 summary_text
 - `paused_budget`：达到本次预算边界，可以恢复。
 - `paused_error`：发生错误后暂停。
 - `paused_confirmation`：等待外部确认。
+- `paused_confirmation` 的 `stop_reason=tool_approval` 表示 LangGraph checkpoint 正等待 `approval.resolve` 的恢复值。
 - `paused_recovery`：Core 重启后发现 checkpoint 仍存在，等待恢复。
 - `unrecoverable_checkpoint`：业务状态认为任务未完成，但 checkpoint 已丢失。
 - `completed`：任务已完成。

@@ -14,6 +14,7 @@ from src.core.telemetry import record_error
 from src.core.tracing import bind_trace_context, reset_trace_context
 from src.ipc.models import (
     AgentEventNotification,
+    ApprovalResolveParams,
     ChatParams,
     SessionDeleteParams,
     SessionParams,
@@ -28,9 +29,11 @@ class AgentHandlers:
         self,
         agent_service: AgentTurnRunner,
         session_service: SessionLifecycleController | None = None,
+        approval_service=None,
     ) -> None:
         self.agent_service = agent_service
         self.session_service = session_service or agent_service
+        self.approval_service = approval_service
 
     def register(self, router: RpcRouter) -> None:
         """Expose chat and explicit Session recovery methods."""
@@ -40,6 +43,37 @@ class AgentHandlers:
         router.register("session.discard", SessionParams, self.session_discard)
         router.register("session.delete", SessionDeleteParams, self.session_delete)
         router.register("session.reset", SessionParams, self.session_reset)
+        if self.approval_service is not None:
+            router.register("approval.list", SessionParams, self.approval_list)
+            router.register("approval.resolve", ApprovalResolveParams, self.approval_resolve)
+
+    async def approval_list(self, params: SessionParams, _context: RequestContext) -> dict:
+        return await asyncio.to_thread(
+            self.approval_service.list_pending,
+            params.workspace_root,
+            params.session_name,
+        )
+
+    async def approval_resolve(self, params: ApprovalResolveParams, context: RequestContext) -> dict:
+        resume_value = await asyncio.to_thread(
+            self.approval_service.prepare_response,
+            params.workspace_root,
+            params.session_name,
+            params.request_id,
+            params.response,
+        )
+        run_id = uuid4().hex
+        control = ExecutionControl()
+        on_event = self._notification_callback(context, run_id, control)
+        return await self.agent_service.resume_execution(
+            params.workspace_root,
+            params.session_name,
+            "",
+            on_event,
+            run_id=run_id,
+            control=control,
+            resume_value=resume_value,
+        )
 
     async def chat(self, params: ChatParams, context: RequestContext) -> dict:
         """Execute one Turn and bridge worker events to RPC notifications."""

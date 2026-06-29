@@ -122,6 +122,7 @@ class AgentRequestStreamService:
         run_id: str,
         instruction: str = "",
         control: ExecutionControl | None = None,
+        resume_value: dict | None = None,
     ) -> Iterator[dict]:
         """Resume the Session's pending execution with a new bounded Grant."""
         workspace = self.session_store.resolve_workspace(workspace_root)
@@ -151,5 +152,6 @@ class AgentRequestStreamService:
                 run_id,
                 execution=pending,
                 resume=True,
+                resume_value=resume_value,
                 control=control,
             )

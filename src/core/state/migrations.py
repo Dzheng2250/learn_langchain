@@ -1,7 +1,7 @@
 """Idempotent additive migrations for the authoritative local state database."""
 
 
-LATEST_SCHEMA_VERSION = 7
+LATEST_SCHEMA_VERSION = 8
 
 
 def apply_local_migrations(conn) -> None:
@@ -63,6 +63,61 @@ def apply_local_migrations(conn) -> None:
     if current_version < 7:
         _ensure_context_window_lineage(conn)
         _record_migration(conn, 7, "context_window_lineage")
+    if current_version < 8:
+        _ensure_tool_approval_tables(conn)
+        _record_migration(conn, 8, "tool_approval_policy")
+
+
+def _ensure_tool_approval_tables(conn) -> None:
+    """Add durable approval requests, scoped rules, and audit records."""
+    statements = (
+        """
+        CREATE TABLE IF NOT EXISTS tool_approval_requests (
+            request_id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL,
+            session_id TEXT NOT NULL, execution_id TEXT NOT NULL,
+            tool_call_id TEXT NOT NULL, tool_name TEXT NOT NULL,
+            actor TEXT NOT NULL, args_summary TEXT NOT NULL DEFAULT '{}',
+            capabilities TEXT NOT NULL DEFAULT '[]', rule_key TEXT NOT NULL DEFAULT '',
+            persistable INTEGER NOT NULL DEFAULT 0, reason TEXT NOT NULL DEFAULT '',
+            status TEXT NOT NULL DEFAULT 'pending', response TEXT,
+            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP, resolved_at TEXT,
+            UNIQUE(execution_id, tool_call_id),
+            FOREIGN KEY(execution_id) REFERENCES executions(execution_id) ON DELETE CASCADE
+        )
+        """,
+        """
+        CREATE TABLE IF NOT EXISTS tool_permission_rules (
+            rule_id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL,
+            session_id TEXT, tool_name TEXT NOT NULL, rule_key TEXT NOT NULL,
+            effect TEXT NOT NULL, created_from_request_id TEXT,
+            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            UNIQUE(workspace_id, session_id, tool_name, rule_key),
+            FOREIGN KEY(workspace_id) REFERENCES workspaces(workspace_id) ON DELETE CASCADE,
+            FOREIGN KEY(created_from_request_id) REFERENCES tool_approval_requests(request_id) ON DELETE SET NULL
+        )
+        """,
+        """
+        CREATE TABLE IF NOT EXISTS tool_approval_audit (
+            audit_id TEXT PRIMARY KEY, request_id TEXT NOT NULL,
+            workspace_id TEXT NOT NULL, session_id TEXT NOT NULL,
+            execution_id TEXT NOT NULL, tool_call_id TEXT NOT NULL,
+            tool_name TEXT NOT NULL, response TEXT NOT NULL,
+            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY(request_id) REFERENCES tool_approval_requests(request_id) ON DELETE CASCADE
+        )
+        """,
+        """
+        CREATE INDEX IF NOT EXISTS idx_tool_approval_pending
+        ON tool_approval_requests(status, workspace_id, session_id, created_at)
+        """,
+        """
+        CREATE INDEX IF NOT EXISTS idx_tool_permission_rules_lookup
+        ON tool_permission_rules(workspace_id, tool_name, rule_key, session_id)
+        """,
+    )
+    for statement in statements:
+        conn.execute(statement)
 
 
 

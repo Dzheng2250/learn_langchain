@@ -21,6 +21,7 @@ def create_parent_graph(
     *,
     checkpointer=None,
     risk_by_name=None,
+    tool_pipeline=None,
     task_planning_enabled: bool = False,
 ):
     """Create one compiled graph permanently bound to a WorkspaceRuntime."""
@@ -66,7 +67,14 @@ def create_parent_graph(
 
     builder = StateGraph(MessagesState, context_schema=ToolExecutionContext)
     builder.add_node("agent", agent_node)
-    builder.add_node("tools", ObservedToolNode(parent_tools, risk_by_name=risk_by_name))
+    builder.add_node(
+        "tools",
+        ObservedToolNode(
+            parent_tools,
+            risk_by_name=risk_by_name,
+            pipeline=tool_pipeline,
+        ),
+    )
     # The graph is the AgentLoop: LLM output without tool calls terminates;
     # tool calls execute centrally, append ToolMessages, then return to LLM.
     builder.add_edge(START, "agent")

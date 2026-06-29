@@ -60,6 +60,16 @@ class SessionResumeParams(SessionParams):
     instruction: str = Field(default="", max_length=20_000)
 
 
+class ApprovalResolveParams(SessionParams):
+    """Resolve one pending tool approval and resume its Execution."""
+
+    request_id: str = Field(min_length=1, max_length=200)
+    response: Literal[
+        "allow_once", "allow_session", "allow_workspace",
+        "deny_once", "deny_session", "deny_workspace",
+    ]
+
+
 class JsonRpcError(StrictModel):
     """Standard JSON-RPC error object."""
     code: int

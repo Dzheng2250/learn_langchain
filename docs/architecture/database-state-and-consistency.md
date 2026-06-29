@@ -28,6 +28,8 @@ Core 崩溃后如何恢复。阅读本文不要求预先了解数据库事务或
 
 本文不解释 Agent 如何决定下一步、工具如何执行、RPC 如何传输或 CLI 如何渲染。
 
+工具审批的权威请求、作用域规则和审计记录保存在 `state.db`。LangGraph checkpoint 保存暂停位置；`tool_approval_requests` 保存用户需要理解和处理的业务事实。两者缺一不可：只有审批行而没有 checkpoint 时不能恢复执行，只有 checkpoint 而没有审批行时前端不能安全确认调用身份。详见 [Tool 安全、审批与 Hook 架构](/docs/architecture/tool-security-and-approval.md)。
+
 - Agent 循环和工具调用见 [Agent 执行架构](/docs/architecture/agent-execution-architecture.md)。
 - Core 进程生命周期见 [CoreApp 与 Transport 架构](/docs/architecture/core-architecture.md)。
 - 对外 RPC 与事件字段见 `/docs/api/`。

@@ -3,6 +3,7 @@
 from langchain_core.messages import AIMessageChunk
 from langchain_core.messages import HumanMessage
 from langgraph.errors import GraphRecursionError
+from langgraph.types import Command
 
 from src.config.settings import REASONING_DISPLAY, REASONING_PREVIEW_LIMIT
 from src.core.common.content import message_content_text, reasoning_content_text
@@ -30,14 +31,19 @@ def stream_graph_events(
 ):
     """Yield events for one Slice; step-limit exhaustion remains recoverable."""
     limits = run_context.limits if run_context else RunLimits()
-    inputs = {"messages": input_messages} if input_messages is not None else None
+    resume_command = isinstance(input_messages, Command)
+    inputs = (
+        input_messages
+        if resume_command
+        else ({"messages": input_messages} if input_messages is not None else None)
+    )
     final_state = None
     config = {"recursion_limit": limits.max_graph_steps}
     if checkpoint_thread_id:
         config["configurable"] = {"thread_id": checkpoint_thread_id}
     # Values snapshots contain the whole message state. Track the previous
     # length so each completed message emits a step event exactly once.
-    if inputs is None and checkpoint_thread_id:
+    if (inputs is None or resume_command) and checkpoint_thread_id:
         seen_message_count = len(app.get_state(config).values.get("messages", []))
     else:
         seen_message_count = len((inputs or {}).get("messages", []))
@@ -165,6 +171,29 @@ def stream_graph_events(
                         yield from finish_reasoning()
                         return
                     yield from step_events_from_message(message)
+        if checkpoint_thread_id and hasattr(app, "get_state"):
+            snapshot = app.get_state(config)
+            interrupts = tuple(getattr(snapshot, "interrupts", ()) or ())
+            if interrupts:
+                payload = interrupts[0].value
+                request = payload.get("request", {}) if isinstance(payload, dict) else {}
+                yield {
+                    "event": "tool_approval_required",
+                    "data": request,
+                }
+                yield {
+                    "event": "paused",
+                    "data": {
+                        "type": StopReason.TOOL_APPROVAL.value,
+                        "stop_reason": StopReason.TOOL_APPROVAL.value,
+                        "message": "Tool execution is waiting for approval.",
+                        "approval_request": request,
+                        "tool_call_count": tool_call_count,
+                        "graph_steps_used": graph_steps_used,
+                    },
+                }
+                yield from finish_reasoning()
+                return
     except GraphRecursionError:
         emit_event(
             "recursion_limit",
