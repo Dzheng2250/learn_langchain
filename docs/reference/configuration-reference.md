@@ -96,14 +96,11 @@ telemetry/      默认 JSONL 观测事件
 | `LEARN_AGENT_MAX_PARALLEL_TOOL_CALLS` | `4` | 同一 Grant 中允许并行执行的工具数。 |
 | `LEARN_AGENT_TOOL_APPROVAL_ENABLED` | `true` | 是否启用工具策略审批；需要审批时暂停当前 Execution。 |
 | `LEARN_AGENT_HOST_EXECUTION_ENABLED` | `false` | 是否允许注册主机完全访问工具；此类工具仍必须逐次审批。 |
-| `LEARN_AGENT_TOOL_HOOK_TIMEOUT_SECONDS` | `2` | 进程内 pre-tool Hook 的目标超时秒数；Hook 失败时拒绝调用。 |
 | `LEARN_AGENT_TOOL_DEFAULT_TIMEOUT_SECONDS` | `60` | 未声明专用超时的工具默认执行上限。 |
 | `LEARN_AGENT_NETWORK_POLICY` | `deny` | 工具网络默认策略，与文件和命令权限分别判断。 |
-| `LEARN_AGENT_TOOL_APPROVAL_ENABLED` | `true` | 是否启用工具策略审批。需要审批时暂停当前 Execution，并等待前端调用 `approval.resolve`。 |
-| `LEARN_AGENT_HOST_EXECUTION_ENABLED` | `false` | 是否允许注册主机完全访问工具；即使开启，此类工具仍必须逐次审批。 |
-| `LEARN_AGENT_TOOL_HOOK_TIMEOUT_SECONDS` | `2` | 进程内 pre-tool Hook 的目标超时秒数；Hook 失败时拒绝工具调用。 |
-| `LEARN_AGENT_TOOL_DEFAULT_TIMEOUT_SECONDS` | `60` | 未声明专用超时的工具默认执行上限。 |
-| `LEARN_AGENT_NETWORK_POLICY` | `deny` | 工具网络默认策略；网络能力与文件、命令权限分开判断。 |
+| `LEARN_AGENT_HOOKS_ENABLED` | `true` | 是否启用系统级 Agent 生命周期 Hook。 |
+| `LEARN_AGENT_HOOK_CONFIG_FILES` | 空 | 额外 Hook JSON 文件；多个路径使用操作系统路径分隔符。 |
+| `LEARN_AGENT_PROJECT_HOOKS_ENABLED` | `false` | 是否信任并加载 Workspace 内 `.learn-agent/hooks.json`。 |
 | `LEARN_AGENT_MAX_CONTROLLED_EXECUTIONS_PER_GRANT` | `12` | 命令、容器等高风险受控执行的额度。 |
 | `LEARN_AGENT_MAX_DELEGATIONS_PER_GRANT` | `6` | 父 Agent 委派子 Agent 的额度。 |
 | `LEARN_AGENT_HARD_MAX_TOOL_CALLS_PER_GRANT` | `100` | 所有工具调用的紧急硬上限，用于阻止失控循环。 |

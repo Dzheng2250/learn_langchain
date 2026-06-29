@@ -237,3 +237,25 @@ A 项目的 Session 数据错误关联到 B 项目。
 - `idx_memories_workspace`：按 Workspace 检索重要记忆。
 - `idx_maintenance_jobs_ready`：按状态、执行时间和优先级认领任务。
 - `idx_maintenance_jobs_session`：查询一个 Session 的待处理和失败任务数量。
+
+## 3. Tool 审批 Schema 升级与回滚
+
+Schema v8 引入 `tool_approval_requests`、`tool_permission_rules` 和 `tool_approval_audit`。Schema v9 修复增量升级数据库中 `tool_permission_rules` 缺少 Session 复合外键的问题，并在迁移时删除无法匹配现有 Session 的孤立 Session 规则；Workspace 级规则不受影响。
+
+升级由 `LocalStateDatabase.initialize()` 在单一事务内自动完成。升级失败时整个初始化事务回滚，旧数据库仍保持可用。
+
+不支持把已经由新版本写入的数据库直接交给只认识 v7 的旧 Core。需要回滚程序版本时：
+
+1. 停止 daemon，并备份完整 `state.db` 及 checkpoint 数据库。
+2. 优先恢复升级前备份，这是唯一保留审批历史的无损方案。
+3. 若明确接受丢弃 Tool 审批记录，可在离线副本中依次删除三个 Tool 审批表，并删除 `local_schema_migrations` 中版本 8、9 的记录。
+4. 使用目标旧版本启动前运行 SQLite `PRAGMA foreign_key_check` 和完整测试。
+
+示例离线清理顺序：
+
+```sql
+DROP TABLE tool_approval_audit;
+DROP TABLE tool_permission_rules;
+DROP TABLE tool_approval_requests;
+DELETE FROM local_schema_migrations WHERE version IN (8, 9);
+```

@@ -7,12 +7,6 @@ from typing import Any
 from src.core.tools.catalog import ToolCapability, ToolSpec
 
 
-class HookAction(StrEnum):
-    CONTINUE = "continue"
-    REPLACE_ARGS = "replace_args"
-    REJECT = "reject"
-
-
 class PolicyAction(StrEnum):
     ALLOW = "allow"
     ASK = "ask"
@@ -59,13 +53,6 @@ class ToolCallContext:
 
     def with_args(self, args: dict[str, Any]):
         return replace(self, args=dict(args))
-
-
-@dataclass(frozen=True)
-class HookDecision:
-    action: HookAction = HookAction.CONTINUE
-    args: dict[str, Any] | None = None
-    reason: str = ""
 
 
 @dataclass(frozen=True)

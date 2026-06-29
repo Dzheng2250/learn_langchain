@@ -3,6 +3,7 @@
 from dependency_injector import containers, providers
 
 from src.config.maintenance import MaintenanceSettings
+from src.config.hooks import HookSettings
 from src.config.llm import LlmRetrySettings
 from src.config.settings import (
     CORE_AGENT_WORKERS,
@@ -13,7 +14,6 @@ from src.config.settings import (
     HOST_EXECUTION_ENABLED,
     TOOL_APPROVAL_ENABLED,
     TOOL_DEFAULT_TIMEOUT_SECONDS,
-    TOOL_HOOK_TIMEOUT_SECONDS,
     TOOL_NETWORK_POLICY,
 )
 from src.core.adapters.sqlite import (
@@ -58,6 +58,7 @@ from src.core.errors.provider_failure import ProviderFailureService
 from src.core.execution import ExecutionLifecycleService
 from src.core.finalization import CompletedTurnCommitter, TurnFinalizer
 from src.core.handlers import AgentHandlers, CoreHandlers
+from src.core.hooks import HookRuntimeRegistry
 from src.core.llm.provider import AnthropicProvider
 from src.core.llm.resilience import ResilientModelProvider
 from src.core.maintenance import (
@@ -127,6 +128,8 @@ class CoreContainer(containers.DeclarativeContainer):
     memory_enabled = providers.Object(MEMORY_ENABLED)
     maintenance_settings = providers.Singleton(MaintenanceSettings.load)
     session_lock_registry = providers.Singleton(SessionLockRegistry)
+    hook_settings = providers.Singleton(HookSettings.load)
+    hook_runtime = providers.Singleton(HookRuntimeRegistry, settings=hook_settings)
     turn_worker = providers.Factory(
         TurnWorkerExecutor,
         max_workers=CORE_AGENT_WORKERS,
@@ -216,6 +219,7 @@ class CoreContainer(containers.DeclarativeContainer):
         workspace_repository=workspace_repository,
         summary_store=summary_store,
         context_manager=context_manager,
+        hook_runtime=hook_runtime,
     )
     memory_extraction_handler = providers.Factory(
         MemoryExtractionHandler,
@@ -302,6 +306,7 @@ class CoreContainer(containers.DeclarativeContainer):
         error_handler=turn_loop_error_handler,
         pause_handler=turn_loop_pause_handler,
         config=loop_config,
+        hook_runtime=hook_runtime,
     )
     recovery_coordinator = providers.Factory(
         ExecutionRecoveryCoordinator,
@@ -319,9 +324,9 @@ class CoreContainer(containers.DeclarativeContainer):
         approval_repository=tool_approval_repository,
         host_execution_enabled=providers.Object(HOST_EXECUTION_ENABLED),
         approval_enabled=providers.Object(TOOL_APPROVAL_ENABLED),
-        hook_timeout_seconds=providers.Object(TOOL_HOOK_TIMEOUT_SECONDS),
         default_timeout_seconds=providers.Object(TOOL_DEFAULT_TIMEOUT_SECONDS),
         network_policy=providers.Object(TOOL_NETWORK_POLICY),
+        hook_runtime=hook_runtime,
     )
     runtime_registry = providers.Singleton(
         WorkspaceRuntimeRegistry,
@@ -340,6 +345,7 @@ class CoreContainer(containers.DeclarativeContainer):
         execution_lifecycle=execution_lifecycle_service,
         runtime_graph_resolver=runtime_graph_resolver,
         turn_execution_loop=turn_execution_loop,
+        hook_runtime=hook_runtime,
     )
     sync_turn_runner = providers.Factory(
         AgentSyncTurnRunner,

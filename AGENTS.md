@@ -1,5 +1,7 @@
 # Repository Guidelines
 
+本文件提供自动化贡献者的仓库级速查；更完整的工程约束以 `CLAUDE.md`、`README.md` 和 `docs/` 中登记的权威文档为准。命令或规范发生变化时，应同步检查这些入口，避免重复说明产生漂移。
+
 ## 项目结构与模块组织
 
 源码位于 `src/`。Core daemon、Agent 执行、状态、Telemetry、Trace、工具和 Workspace 逻辑位于 `src/core/`；CLI 命令位于 `src/cli/`；TUI 界面位于 `src/tui/`；配置入口位于 `src/config/`。测试按职责放在 `tests/unit`、`tests/integration`、`tests/contracts` 和 `tests/optional`。文档位于 `docs/`，并按架构、API、开发、运维、质量和治理分类维护。

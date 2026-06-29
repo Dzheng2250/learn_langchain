@@ -1,8 +1,8 @@
 """Approval service and persistence contract."""
 
-import re
 from typing import Protocol
 
+from src.core.common.redaction import sanitize_value
 from src.core.telemetry import emit_event
 
 from src.core.tools.security.models import ApprovalResponse
@@ -52,28 +52,4 @@ class ApprovalService:
 
 
 def _safe_args_summary(args: dict) -> dict:
-    sensitive = {"token", "api_key", "apikey", "password", "secret", "authorization"}
-    result = {}
-    for key, value in args.items():
-        if key.lower() in sensitive:
-            result[key] = "<redacted>"
-        elif isinstance(value, str):
-            result[key] = _redact_text(value[:500])
-        elif isinstance(value, (int, float, bool)) or value is None:
-            result[key] = value
-        elif isinstance(value, (list, tuple, dict)):
-            result[key] = f"<{type(value).__name__}:{len(value)}>"
-        else:
-            result[key] = f"<{type(value).__name__}>"
-    return result
-
-
-def _redact_text(value: str) -> str:
-    patterns = (
-        r"(?i)(authorization\s*[:=]\s*)(\S+)",
-        r"(?i)((?:api[_-]?key|token|password|secret)\s*=\s*)(\S+)",
-        r"(?i)(--(?:api[_-]?key|token|password|secret)\s+)(\S+)",
-    )
-    for pattern in patterns:
-        value = re.sub(pattern, r"\1<redacted>", value)
-    return value
+    return sanitize_value(args, text_limit=500, list_limit=20)

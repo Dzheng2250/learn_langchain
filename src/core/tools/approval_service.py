@@ -31,7 +31,13 @@ class ToolApprovalService:
             raise PermissionError("Approval request belongs to another Workspace.")
         if pending["session_id"] != str(session.session_id):
             raise PermissionError("Approval request belongs to another Session.")
-        selected = ApprovalResponse(response)
+        try:
+            selected = ApprovalResponse(response)
+        except ValueError as exc:
+            supported = ", ".join(item.value for item in ApprovalResponse)
+            raise ValueError(
+                f"Unsupported approval response {response!r}; expected one of: {supported}."
+            ) from exc
         if selected.scope != "once" and not pending["persistable"]:
             raise ValueError("This command cannot create a persistent permission rule.")
         return {"request_id": request_id, "response": selected.value}

@@ -11,6 +11,7 @@ from langgraph.prebuilt import InjectedState, tools_condition
 from src.config.settings import SUBAGENT_CONTEXT_MESSAGE_LIMIT, SUBAGENT_MAX_STEPS, SUBAGENT_RESULT_LIMIT
 from src.core.common.content import message_content_text
 from src.core.common.debug import format_message
+from src.core.hooks import HookAction, HookContext, HookPoint, NOOP_HOOK_DISPATCHER
 from src.core.llm.contracts import LlmPurpose, ModelProvider
 from src.core.prompts import SUBAGENT_SYSTEM_PROMPT, build_subagent_task_prompt
 from src.core.tools.observed import ObservedToolNode
@@ -22,9 +23,12 @@ def create_delegate_tool(
     *,
     max_steps: int = SUBAGENT_MAX_STEPS,
     risk_by_name=None,
+    hook_dispatcher=None,
+    workspace=None,
 ):
     """Create a delegate tool whose sub-agent cannot recursively delegate."""
     provider = model_provider
+    hooks = hook_dispatcher or NOOP_HOOK_DISPATCHER
     llm = provider.create_chat_model(
         LlmPurpose.SUBAGENT,
         temperature=0,
@@ -64,6 +68,19 @@ def create_delegate_tool(
         state: Annotated[dict, InjectedState()] = None,
     ) -> str:
         """Delegate bounded workspace research to a non-recursive sub-agent."""
+        workspace_id = str(getattr(workspace, "workspace_id", ""))
+        workspace_root = str(getattr(workspace, "root", ""))
+        start_context, start_decision = hooks.dispatch(HookContext(
+            point=HookPoint.SUBAGENT_START,
+            subject="default",
+            workspace_id=workspace_id,
+            workspace_root=workspace_root,
+            payload={"task": task, "context": context},
+        ))
+        if start_decision.action in {HookAction.REJECT, HookAction.DENY}:
+            return f"Sub-agent delegation rejected: {start_decision.reason}"
+        task = str(start_context.payload.get("task", task))
+        context = str(start_context.payload.get("context", context))
         messages = (state or {}).get("messages", [])[-SUBAGENT_CONTEXT_MESSAGE_LIMIT:]
         parent_context = "\n\n".join(format_message(message) for message in messages)
         prompt = build_subagent_task_prompt(task, context, parent_context)
@@ -73,7 +90,17 @@ def create_delegate_tool(
                 config={"recursion_limit": max_steps},
             )
         except GraphRecursionError:
-            return f"Sub-agent exceeded its {max_steps}-step limit."
-        return message_content_text(result["messages"][-1])[:SUBAGENT_RESULT_LIMIT]
+            output = f"Sub-agent exceeded its {max_steps}-step limit."
+        else:
+            output = message_content_text(result["messages"][-1])[:SUBAGENT_RESULT_LIMIT]
+        stop_context, stop_decision = hooks.dispatch(HookContext(
+            point=HookPoint.SUBAGENT_STOP,
+            subject="default",
+            workspace_id=workspace_id,
+            workspace_root=workspace_root,
+            payload={"task": task, "result": output},
+        ))
+        output = str(stop_context.payload.get("result", output))
+        return output
 
     return delegate_to_subagent

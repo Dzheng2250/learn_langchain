@@ -18,17 +18,19 @@
 
 ```text
 ToolRegistry
-  -> PreToolHook
+  -> HookDispatcher.PreToolUse
   -> ToolPolicyEngine
+  -> HookDispatcher.PermissionRequest
   -> ApprovalService / LangGraph interrupt
   -> CapabilityEnforcer
   -> ToolExecutor
-  -> PostToolHook / Telemetry
+  -> HookDispatcher.PostToolUse
+  -> Telemetry
 ```
 
 `ToolRegistry` 只管理不可变元数据与 Agent audience，不负责授权。`ToolSpec` 必须声明 capability、approval、sandbox、network 和 timeout。`ObservedToolNode` 只作为 LangGraph 适配器，具体策略由 `ToolExecutionPipeline` 处理。
 
-Hook 是可信的进程内扩展点：可以规范参数或拒绝调用，但不能主动授予权限。参数替换后必须重新执行 schema 与权限校验。pre-hook 失败采用 fail-closed；post/error hook 失败只记录，不覆盖工具结果。
+Tool 安全模块不再定义私有 Hook。它消费系统级 `PreToolUse`、`PermissionRequest` 和 `PostToolUse` 三个相位；完整模型、配置和失败策略见 [Agent 生命周期 Hook 架构](/docs/architecture/agent-lifecycle-hooks.md)。参数替换后必须重新执行 schema 与权限校验，Hook 不能绕过硬边界或创建永久授权。
 
 ## 审批与恢复
 
@@ -45,3 +47,11 @@ Hook 是可信的进程内扩展点：可以规范参数或拒绝调用，但不
 ## 扩展要求
 
 新增工具必须通过 registry、policy、path/network、approval、audience 和敏感参数测试。不得把未经注册的 LangChain tool 直接注入图中，也不得把 Hook 当作权限授予接口。
+
+## 待审批生命周期
+
+审批等待是持久化暂停，不设置自动超时：用户可能在 daemon 重启后继续处理同一 Execution。`approval.list` 只返回仍绑定可恢复 Execution 的请求；用户不再继续时，应通过 `session discard` 或 Session 删除显式结束。Session 硬删除会经 Execution 外键级联清理审批请求和审计记录。
+
+同一 `execution_id + tool_call_id` 的请求会在 checkpoint 重放时复用，不能删除 `create_request()` 的幂等查询。审批响应只能成功提交一次；并发或重复响应不会追加第二条审计记录。
+
+网络策略仅接受 `deny`、`allowlist`、`allow`。未知配置启动即失败，不能按“非 deny 即允许”处理。

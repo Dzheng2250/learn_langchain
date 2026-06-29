@@ -20,6 +20,8 @@ from src.core.agent.loop_errors import TurnLoopErrorHandler
 from src.core.agent.loop_pause import TurnLoopPauseHandler
 from src.core.agent.run_observer import TurnRunObserver
 from src.core.agent.slices import SliceExecutionService
+from src.core.common.content import message_content_text
+from src.core.hooks import HookAction, HookContext, HookPoint, NOOP_HOOK_DISPATCHER
 from src.core.state.types import ExecutionStatus
 from src.core.tasks.context import ToolExecutionContext
 from src.core.telemetry import (
@@ -60,6 +62,7 @@ class TurnExecutionLoop:
         error_handler: TurnLoopErrorHandler,
         pause_handler: TurnLoopPauseHandler,
         config: LoopConfig,
+        hook_runtime=None,
     ) -> None:
         self.turn_coordinator = turn_coordinator
         self.run_limits = run_limits
@@ -68,6 +71,7 @@ class TurnExecutionLoop:
         self.error_handler = error_handler
         self.pause_handler = pause_handler
         self.config = config
+        self.hook_runtime = hook_runtime
         self.max_auto_slices = max(1, int(self.config.max_auto_slices))
 
     def stream_locked_turn(
@@ -161,6 +165,27 @@ class TurnExecutionLoop:
                 elif slice_result.done_item is not None:
                     item = slice_result.done_item
                     final_messages = item["data"]["messages"]
+                    hooks = (
+                        self.hook_runtime.get(session.workspace.root)
+                        if self.hook_runtime is not None else NOOP_HOOK_DISPATCHER
+                    )
+                    _stop_context, stop_decision = hooks.dispatch(HookContext(
+                        point=HookPoint.STOP,
+                        workspace_id=str(session.workspace.workspace_id),
+                        session_id=str(session.session_id),
+                        execution_id=execution.execution_id if execution else "",
+                        run_id=run_id,
+                        workspace_root=str(session.workspace.root),
+                        payload={
+                            "final_text": message_content_text(final_messages[-1]) if final_messages else "",
+                            "tool_call_count": total_tool_calls,
+                            "slice_number": slice_number,
+                        },
+                    ))
+                    if stop_decision.action in {HookAction.REJECT, HookAction.DENY}:
+                        raise RuntimeError(
+                            stop_decision.reason or "Stop hook rejected turn completion."
+                        )
                     active_slice_id = slice_id
                     finalization = self.turn_coordinator.finalize(
                         session=session,

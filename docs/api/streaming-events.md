@@ -132,27 +132,6 @@ Core 会在当前 LLM 调用内部处理短期限流、网络中断和临时服�
 
 ## `step`
 
-## `tool_approval_required`
-
-工具策略要求人工确认时发送：
-
-```json
-{
-  "event": "tool_approval_required",
-  "data": {
-    "request_id": "approval-id",
-    "tool": "run_command_in_container",
-    "args": {"command": "python -m unittest"},
-    "capabilities": ["command_execution", "file_read"],
-    "persistable": true
-  }
-}
-```
-
-随后 Execution 以 `stop_reason=tool_approval` 暂停。参数已经过敏感字段过滤和长度限制，前端不得把它当作完整原始调用存档。
-
-## `step`
-
 步骤事件用于展示 Agent 进度。
 
 ### Agent 开始

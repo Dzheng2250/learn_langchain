@@ -227,8 +227,8 @@ CREATE TABLE IF NOT EXISTS tool_permission_rules (
     created_from_request_id TEXT REFERENCES tool_approval_requests(request_id) ON DELETE SET NULL,
     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    UNIQUE(workspace_id, session_id, tool_name, rule_key)
-    ,FOREIGN KEY(workspace_id, session_id)
+    UNIQUE(workspace_id, session_id, tool_name, rule_key),
+    FOREIGN KEY(workspace_id, session_id)
         REFERENCES sessions(workspace_id, session_id) ON DELETE CASCADE
 );
 

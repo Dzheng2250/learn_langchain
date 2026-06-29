@@ -1,7 +1,7 @@
-"""Idempotent additive migrations for the authoritative local state database."""
+"""Idempotent transactional migrations for the authoritative local state database."""
 
 
-LATEST_SCHEMA_VERSION = 8
+LATEST_SCHEMA_VERSION = 9
 
 
 def apply_local_migrations(conn) -> None:
@@ -66,6 +66,9 @@ def apply_local_migrations(conn) -> None:
     if current_version < 8:
         _ensure_tool_approval_tables(conn)
         _record_migration(conn, 8, "tool_approval_policy")
+    if current_version < 9:
+        _ensure_tool_permission_session_foreign_key(conn)
+        _record_migration(conn, 9, "tool_permission_session_integrity")
 
 
 def _ensure_tool_approval_tables(conn) -> None:
@@ -94,6 +97,8 @@ def _ensure_tool_approval_tables(conn) -> None:
             updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
             UNIQUE(workspace_id, session_id, tool_name, rule_key),
             FOREIGN KEY(workspace_id) REFERENCES workspaces(workspace_id) ON DELETE CASCADE,
+            FOREIGN KEY(workspace_id, session_id)
+                REFERENCES sessions(workspace_id, session_id) ON DELETE CASCADE,
             FOREIGN KEY(created_from_request_id) REFERENCES tool_approval_requests(request_id) ON DELETE SET NULL
         )
         """,
@@ -119,6 +124,64 @@ def _ensure_tool_approval_tables(conn) -> None:
     for statement in statements:
         conn.execute(statement)
 
+
+def _ensure_tool_permission_session_foreign_key(conn) -> None:
+    """Rebuild v8 permission rules when the Session composite FK is absent."""
+    if not _table_exists(conn, "tool_permission_rules"):
+        return
+    foreign_keys = conn.execute(
+        "PRAGMA foreign_key_list(tool_permission_rules)"
+    ).fetchall()
+    grouped: dict[int, set[tuple[str, str]]] = {}
+    for row in foreign_keys:
+        if row["table"] == "sessions":
+            grouped.setdefault(int(row["id"]), set()).add(
+                (str(row["from"]), str(row["to"]))
+            )
+    expected = {("workspace_id", "workspace_id"), ("session_id", "session_id")}
+    if expected in grouped.values():
+        return
+    conn.execute(
+        """
+        CREATE TABLE tool_permission_rules_v9 (
+            rule_id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL,
+            session_id TEXT, tool_name TEXT NOT NULL, rule_key TEXT NOT NULL,
+            effect TEXT NOT NULL CHECK(effect IN ('allow', 'deny')),
+            created_from_request_id TEXT,
+            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            UNIQUE(workspace_id, session_id, tool_name, rule_key),
+            FOREIGN KEY(workspace_id) REFERENCES workspaces(workspace_id) ON DELETE CASCADE,
+            FOREIGN KEY(workspace_id, session_id)
+                REFERENCES sessions(workspace_id, session_id) ON DELETE CASCADE,
+            FOREIGN KEY(created_from_request_id)
+                REFERENCES tool_approval_requests(request_id) ON DELETE SET NULL
+        )
+        """
+    )
+    conn.execute(
+        """
+        INSERT INTO tool_permission_rules_v9(
+            rule_id, workspace_id, session_id, tool_name, rule_key, effect,
+            created_from_request_id, created_at, updated_at
+        )
+        SELECT r.rule_id, r.workspace_id, r.session_id, r.tool_name, r.rule_key,
+               r.effect, r.created_from_request_id, r.created_at, r.updated_at
+        FROM tool_permission_rules r
+        WHERE r.session_id IS NULL OR EXISTS (
+            SELECT 1 FROM sessions s
+            WHERE s.workspace_id=r.workspace_id AND s.session_id=r.session_id
+        )
+        """
+    )
+    conn.execute("DROP TABLE tool_permission_rules")
+    conn.execute("ALTER TABLE tool_permission_rules_v9 RENAME TO tool_permission_rules")
+    conn.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_tool_permission_rules_lookup
+        ON tool_permission_rules(workspace_id, tool_name, rule_key, session_id)
+        """
+    )
 
 
 def _table_exists(conn, table: str) -> bool:

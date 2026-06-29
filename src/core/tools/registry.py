@@ -11,7 +11,7 @@ from src.core.tools.catalog import (
     ApprovalRequirement, SandboxMode, ToolAudience, ToolCapability,
     ToolRegistry, ToolRisk, ToolSpec,
 )
-from src.core.tools.security import ApprovalService, DefaultToolPolicyEngine, HookRunner, ToolExecutionPipeline
+from src.core.tools.security import ApprovalService, DefaultToolPolicyEngine, ToolExecutionPipeline
 from src.core.tools.security.enforcement import CapabilityEnforcer
 from src.core.tools.commands import create_run_command_in_container
 from src.core.tools.skills import create_skill_tools
@@ -40,9 +40,9 @@ def create_workspace_toolset(
     approval_repository=None,
     host_execution_enabled: bool = False,
     approval_enabled: bool = True,
-    hook_timeout_seconds: float = 2.0,
     default_timeout_seconds: float = 60.0,
     network_policy: str = "deny",
+    hook_dispatcher=None,
 ) -> WorkspaceToolset:
     """Create, classify, and freeze all tools available in one Workspace."""
     provider = model_provider
@@ -101,6 +101,8 @@ def create_workspace_toolset(
         provider,
         max_steps=subagent_max_steps,
         risk_by_name=base_risks,
+        hook_dispatcher=hook_dispatcher,
+        workspace=workspace,
     )
     register(
         delegate, {ToolAudience.PARENT}, ToolRisk.DELEGATION,
@@ -117,7 +119,7 @@ def create_workspace_toolset(
                 host_execution_enabled=host_execution_enabled,
             ),
             approvals=ApprovalService(approval_repository),
-            hooks=HookRunner(timeout_seconds=hook_timeout_seconds),
+            hook_dispatcher=hook_dispatcher,
             enforcer=CapabilityEnforcer(network_policy=network_policy),
         )
     return WorkspaceToolset(

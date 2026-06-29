@@ -53,12 +53,14 @@ class SQLiteToolApprovalRepository:
                 raise ValueError("Tool approval request is missing or already resolved.")
             if row["execution_id"] != context.execution_id or row["tool_call_id"] != context.tool_call_id:
                 raise PermissionError("Approval request identity does not match the tool call.")
-            conn.execute(
+            updated = conn.execute(
                 """UPDATE tool_approval_requests
                    SET status='resolved', response=?, resolved_at=CURRENT_TIMESTAMP
                    WHERE request_id=? AND status='pending'""",
                 (response.value, request_id),
             )
+            if updated.rowcount != 1:
+                raise ValueError("Tool approval request was resolved concurrently.")
             if response.scope != "once":
                 if not persistable or not rule_key:
                     raise PermissionError("This approval cannot be persisted.")

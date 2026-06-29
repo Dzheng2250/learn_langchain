@@ -37,9 +37,9 @@ class WorkspaceRuntimeFactory:
         approval_repository=None,
         host_execution_enabled: bool = False,
         approval_enabled: bool = True,
-        hook_timeout_seconds: float = 2.0,
         default_timeout_seconds: float = 60.0,
         network_policy: str = "deny",
+        hook_runtime=None,
     ) -> None:
         self.model_provider = model_provider
         self.run_limits = run_limits or RunLimits()
@@ -49,14 +49,18 @@ class WorkspaceRuntimeFactory:
         self.approval_repository = approval_repository
         self.host_execution_enabled = host_execution_enabled
         self.approval_enabled = approval_enabled
-        self.hook_timeout_seconds = hook_timeout_seconds
         self.default_timeout_seconds = default_timeout_seconds
         self.network_policy = network_policy
+        self.hook_runtime = hook_runtime
 
     def create(self, workspace: WorkspaceContext) -> WorkspaceRuntime:
         """Build Workspace-bound tools and compile the parent Agent graph."""
         # Every factory below receives the immutable workspace root. Tools and
         # graphs therefore cannot be rebound by mutating process-global state.
+        hook_dispatcher = (
+            self.hook_runtime.get(workspace.root)
+            if self.hook_runtime is not None else None
+        )
         toolset = create_workspace_toolset(
             workspace,
             self.model_provider,
@@ -64,9 +68,9 @@ class WorkspaceRuntimeFactory:
             approval_repository=self.approval_repository,
             host_execution_enabled=self.host_execution_enabled,
             approval_enabled=self.approval_enabled,
-            hook_timeout_seconds=self.hook_timeout_seconds,
             default_timeout_seconds=self.default_timeout_seconds,
             network_policy=self.network_policy,
+            hook_dispatcher=hook_dispatcher,
         )
         goal_toolset = create_workspace_toolset(
             workspace,
@@ -76,9 +80,9 @@ class WorkspaceRuntimeFactory:
             approval_repository=self.approval_repository,
             host_execution_enabled=self.host_execution_enabled,
             approval_enabled=self.approval_enabled,
-            hook_timeout_seconds=self.hook_timeout_seconds,
             default_timeout_seconds=self.default_timeout_seconds,
             network_policy=self.network_policy,
+            hook_dispatcher=hook_dispatcher,
         )
         checkpointer = (
             self.checkpointer_provider()

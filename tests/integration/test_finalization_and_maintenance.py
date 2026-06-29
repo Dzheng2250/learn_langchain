@@ -679,6 +679,48 @@ class LocalSchemaMigrationTest(unittest.TestCase):
             )
         conn.close()
 
+    def test_v9_repairs_tool_permission_session_foreign_key(self):
+        database = LocalStateDatabase(":memory:")
+        self.addCleanup(database.close)
+        database.initialize()
+        with database.transaction() as conn:
+            conn.execute("DROP INDEX IF EXISTS idx_tool_permission_rules_lookup")
+            conn.execute("DROP TABLE tool_permission_rules")
+            conn.execute(
+                """
+                CREATE TABLE tool_permission_rules (
+                    rule_id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL,
+                    session_id TEXT, tool_name TEXT NOT NULL, rule_key TEXT NOT NULL,
+                    effect TEXT NOT NULL, created_from_request_id TEXT,
+                    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                    UNIQUE(workspace_id, session_id, tool_name, rule_key),
+                    FOREIGN KEY(workspace_id) REFERENCES workspaces(workspace_id)
+                        ON DELETE CASCADE,
+                    FOREIGN KEY(created_from_request_id)
+                        REFERENCES tool_approval_requests(request_id) ON DELETE SET NULL
+                )
+                """
+            )
+            conn.execute("DELETE FROM local_schema_migrations WHERE version=9")
+            apply_local_migrations(conn)
+            rows = conn.execute(
+                "PRAGMA foreign_key_list(tool_permission_rules)"
+            ).fetchall()
+
+        session_links = {
+            (row["from"], row["to"])
+            for row in rows
+            if row["table"] == "sessions"
+        }
+        self.assertEqual(
+            {
+                ("workspace_id", "workspace_id"),
+                ("session_id", "session_id"),
+            },
+            session_links,
+        )
+
     def test_newer_local_schema_version_is_rejected(self):
         database = LocalStateDatabase(":memory:")
         self.addCleanup(database.close)

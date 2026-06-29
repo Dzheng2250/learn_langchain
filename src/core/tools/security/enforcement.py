@@ -10,6 +10,11 @@ class CapabilityEnforcer:
     PATH_KEYS = ("path", "file", "directory")
 
     def __init__(self, *, network_policy: str = "deny") -> None:
+        allowed = {item.value for item in NetworkMode}
+        if network_policy not in allowed:
+            raise ValueError(
+                "network_policy must be one of: " + ", ".join(sorted(allowed))
+            )
         self.network_policy = network_policy
 
     def validate(self, context) -> None:

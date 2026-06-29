@@ -88,7 +88,7 @@ class ChatScreen(Screen):
         self._event_queue: asyncio.Queue[dict[str, Any] | None] = asyncio.Queue(maxsize=2000)
         self._event_worker_task: asyncio.Task[Any] | None = None
         self._input_task: asyncio.Task[Any] | None = None
-        self._pending_approval_id: str | None = None
+        self._pending_approval_ids: set[str] = set()
 
     def compose(self):
         yield StatusBar()
@@ -283,7 +283,7 @@ class ChatScreen(Screen):
             log.write_event("  /resume      — resume paused execution")
             log.write_event("  /discard     — discard paused execution")
             log.write_event("  /approvals   — list pending tool approvals")
-            log.write_event("  /approve <response> — resolve the latest approval")
+            log.write_event("  /approve [request_id] <response> — resolve an approval")
             log.write_event("  /session <n> — switch session")
             log.write_event("  /clear       — clear the log")
             log.write_event("  Ctrl+O       — show/hide tool details")
@@ -486,28 +486,51 @@ class ChatScreen(Screen):
                 },
             )
             requests = result.get("requests", [])
+            self._pending_approval_ids = {
+                str(request["request_id"]) for request in requests
+            }
             if not requests:
                 self._log_note("No pending tool approvals.")
             for request in requests:
-                self._pending_approval_id = request["request_id"]
                 self.query_one(ChatLog).write_event(
                     f"[yellow]Approval {escape(request['request_id'])}: "
                     f"{escape(request['tool'])} {escape(str(request.get('args', {})))}[/yellow]"
                 )
+            if len(requests) > 1:
+                self._log_note(
+                    "Multiple approvals are pending. Use "
+                    "/approve <request_id> <response>."
+                )
         finally:
             await client.close()
 
-    async def _resolve_approval(self, response: str) -> None:
-        if not self._pending_approval_id:
-            await self._list_approvals()
-        if not self._pending_approval_id:
-            return
+    async def _resolve_approval(self, arguments: str) -> None:
         allowed = {
             "allow_once", "allow_session", "allow_workspace",
             "deny_once", "deny_session", "deny_workspace",
         }
+        parts = arguments.split()
+        request_id = None
+        response = parts[-1] if parts else ""
+        if len(parts) == 2:
+            request_id = parts[0]
+        elif len(parts) != 1:
+            self._log_note("Usage: /approve [request_id] <response>")
+            return
         if response not in allowed:
             self._log_note("Approval response must be allow_once, allow_session, allow_workspace, deny_once, deny_session, or deny_workspace.")
+            return
+        if request_id is None:
+            if not self._pending_approval_ids:
+                await self._list_approvals()
+            if len(self._pending_approval_ids) > 1:
+                self._log_note(
+                    "Multiple approvals are pending. Use "
+                    "/approve <request_id> <response>."
+                )
+                return
+            request_id = next(iter(self._pending_approval_ids), None)
+        if not request_id:
             return
         self._busy = True
         current_task = asyncio.current_task()
@@ -525,13 +548,13 @@ class ChatScreen(Screen):
                     "auth_token": self._auth_token,
                     "workspace_root": self._workspace_root,
                     "session_name": self._session_name,
-                    "request_id": self._pending_approval_id,
+                    "request_id": request_id,
                     "response": response,
                 },
                 on_event=self._on_event,
             )
             await self._wait_for_event_queue()
-            self._pending_approval_id = None
+            self._pending_approval_ids.discard(request_id)
             self._handle_result(result)
         except CoreAuthenticationError:
             self._log_error("Authentication failed while resolving approval.")
@@ -608,7 +631,9 @@ class ChatScreen(Screen):
             return
         data = params.get("data", {})
         if event == "tool_approval_required":
-            self._pending_approval_id = str(data.get("request_id") or "") or None
+            request_id = str(data.get("request_id") or "")
+            if request_id:
+                self._pending_approval_ids.add(request_id)
             self.query_one(ChatLog).write_event(
                 "[yellow bold]Tool approval required[/yellow bold]\n"
                 f"[yellow]{escape(str(data.get('tool', 'unknown')))} "
@@ -784,6 +809,7 @@ class ChatScreen(Screen):
         self._inflight_client = None
         self._busy = False
         self._streamed_response_active = False
+        self._pending_approval_ids.clear()
 
         if task is not None and not task.done():
             task.cancel()

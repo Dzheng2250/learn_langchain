@@ -11,15 +11,19 @@ from langgraph.types import Command
 
 from src.core.adapters.sqlite.tool_approvals import SQLiteToolApprovalRepository
 from src.core.state import ExecutionRepository, LocalStateDatabase, LocalWorkspaceRepository
+from src.core.hooks import (
+    HookAction, HookContext, HookDecision, HookDispatcher, HookFailureMode,
+    HookPoint, HookRegistry, HookSpec,
+)
 from src.core.tools.catalog import (
     ApprovalRequirement, NetworkMode, SandboxMode, ToolAudience,
     ToolCapability, ToolRegistry, ToolRisk, ToolSpec,
 )
 from src.core.tools.security.approval import ApprovalService
 from src.core.tools.security.command_rules import command_rule_key
-from src.core.tools.security.hooks import HookRunner
+from src.core.tools.security.enforcement import CapabilityEnforcer
 from src.core.tools.security.models import (
-    ApprovalResponse, HookAction, HookDecision, PolicyAction, ToolCallContext,
+    ApprovalResponse, PolicyAction, ToolCallContext,
 )
 from src.core.tools.security.policy import DefaultToolPolicyEngine
 from src.core.tools.security.pipeline import ToolExecutionPipeline
@@ -89,10 +93,20 @@ class ToolSecurityTest(unittest.TestCase):
 
     def test_failing_pre_hook_rejects_call(self):
         class BrokenHook:
-            def before_tool(self, _context):
+            def handle(self, _context):
                 raise RuntimeError("private")
 
-        _context, decision = HookRunner([BrokenHook()]).before(self.context)
+        registry = HookRegistry()
+        registry.register(HookSpec(
+            "broken", HookPoint.PRE_TOOL_USE, BrokenHook(),
+            failure_mode=HookFailureMode.CLOSED,
+        ))
+        registry.freeze()
+        _context, decision = HookDispatcher(registry).dispatch(HookContext(
+            HookPoint.PRE_TOOL_USE,
+            subject="command",
+            payload={"args": self.context.args},
+        ))
         self.assertEqual(HookAction.REJECT, decision.action)
         self.assertNotIn("private", decision.reason)
 
@@ -124,6 +138,21 @@ class ToolSecurityTest(unittest.TestCase):
                 (str(self.session.session_id),),
             ).fetchone()[0]
         self.assertEqual(0, count)
+        with self.database.connect() as conn:
+            self.assertEqual(
+                0,
+                conn.execute(
+                    "SELECT COUNT(*) FROM tool_approval_requests WHERE session_id = ?",
+                    (str(self.session.session_id),),
+                ).fetchone()[0],
+            )
+            self.assertEqual(
+                0,
+                conn.execute(
+                    "SELECT COUNT(*) FROM tool_approval_audit WHERE session_id = ?",
+                    (str(self.session.session_id),),
+                ).fetchone()[0],
+            )
 
     def test_approval_summary_redacts_secret_and_is_single_use(self):
         context = self.context.with_args({
@@ -134,7 +163,7 @@ class ToolSecurityTest(unittest.TestCase):
             context, rule_key="tool:command", persistable=True
         )
         request = ApprovalService(self.repository).request(context, decision)
-        self.assertEqual("<redacted>", request["args"]["api_key"])
+        self.assertEqual("[REDACTED]", request["args"]["api_key"])
         self.assertNotIn("secret", request["args"]["command"])
         self.assertNotIn("hidden", request["args"]["command"])
         self.repository.apply_response(
@@ -146,6 +175,32 @@ class ToolSecurityTest(unittest.TestCase):
                 request["request_id"], ApprovalResponse.ALLOW_ONCE,
                 context=context, rule_key="tool:command", persistable=True,
             )
+        with self.database.connect() as conn:
+            self.assertEqual(
+                1,
+                conn.execute(
+                    "SELECT COUNT(*) FROM tool_approval_audit WHERE request_id=?",
+                    (request["request_id"],),
+                ).fetchone()[0],
+            )
+
+    def test_invalid_network_policy_fails_closed(self):
+        with self.assertRaisesRegex(ValueError, "network_policy"):
+            CapabilityEnforcer(network_policy="disabled")
+
+    def test_approval_redacts_before_truncating_long_values(self):
+        secret = "s" * 200
+        context = self.context.with_args({
+            "command": ("x" * 450) + " --token " + secret,
+            "nested": {"authorization": secret},
+        })
+        decision = DefaultToolPolicyEngine(self.repository).evaluate(
+            context, rule_key="tool:command", persistable=True
+        )
+        request = ApprovalService(self.repository).request(context, decision)
+        rendered = str(request["args"])
+        self.assertNotIn(secret, rendered)
+        self.assertIn("[REDACTED]", rendered)
 
     def test_compound_shell_rule_is_not_persistable(self):
         _key, persistable = command_rule_key("echo ok | grep ok")
@@ -226,6 +281,56 @@ class ToolSecurityTest(unittest.TestCase):
         )
         self.assertEqual(["python -V"], calls)
         self.assertEqual("done", second[-1]["event"])
+
+    def test_permission_hook_can_allow_once_without_persisting_rule(self):
+        calls = []
+
+        @tool
+        def command(command: str) -> str:
+            """Record one automatically approved test command."""
+            calls.append(command)
+            return "ok"
+
+        class ApprovalAgent:
+            def handle(self, _context):
+                return HookDecision(HookAction.ALLOW_ONCE, reason="low risk")
+
+        hooks = HookRegistry()
+        hooks.register(HookSpec(
+            "approval-agent", HookPoint.PERMISSION_REQUEST, ApprovalAgent(),
+            matcher="^command$",
+        ))
+        hooks.freeze()
+        spec = _spec(tool=command)
+        pipeline = ToolExecutionPipeline(
+            {"command": spec},
+            policy=DefaultToolPolicyEngine(self.repository),
+            approvals=ApprovalService(self.repository),
+            hook_dispatcher=HookDispatcher(hooks),
+        )
+        builder = StateGraph(MessagesState, context_schema=ToolExecutionContext)
+        builder.add_node("tools", ObservedToolNode([command], pipeline=pipeline))
+        builder.add_edge(START, "tools")
+        builder.add_edge("tools", END)
+        graph = builder.compile(checkpointer=MemorySaver())
+        events = list(stream_graph_events(
+            graph,
+            [AIMessage(content="", tool_calls=[{
+                "name": "command", "args": {"command": "python -V"},
+                "id": "auto-approval", "type": "tool_call",
+            }])],
+            checkpoint_thread_id="auto-approval-thread",
+            tool_context=ToolExecutionContext(
+                self.context.workspace_id, self.context.session_id,
+                self.context.execution_id, self.context.run_id,
+                "parent", self.context.workspace_root,
+            ),
+        ))
+        self.assertEqual(["python -V"], calls)
+        self.assertNotIn("tool_approval_required", {item["event"] for item in events})
+        with self.database.connect() as conn:
+            count = conn.execute("SELECT COUNT(*) FROM tool_permission_rules").fetchone()[0]
+        self.assertEqual(0, count)
 
 
 if __name__ == "__main__":
