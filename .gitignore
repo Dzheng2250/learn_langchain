@@ -10,4 +10,5 @@ __pycache__/
 面试答辩文档.md
 .codegraph
 .claude
+.agents
 test.ipynb
