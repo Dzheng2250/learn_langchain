@@ -1,6 +1,7 @@
 """Unit tests for tool registration, hooks, policy, and approval persistence."""
 
 import unittest
+from dataclasses import replace
 from pathlib import Path
 
 from langchain_core.messages import AIMessage
@@ -91,6 +92,25 @@ class ToolSecurityTest(unittest.TestCase):
         self.assertIs(registry.tools_for(ToolAudience.PARENT)[0], registry.tools_for(ToolAudience.PARENT)[0])
         self.assertEqual(1, len(created))
 
+    def test_registry_returns_tools_and_specs_in_name_order(self):
+        @tool
+        def zebra() -> str:
+            """Return the last test tool."""
+            return "z"
+
+        @tool
+        def alpha() -> str:
+            """Return the first test tool."""
+            return "a"
+
+        registry = ToolRegistry()
+        registry.register(_spec(name="zebra", tool=zebra))
+        registry.register(_spec(name="alpha", tool=alpha))
+        registry.freeze()
+
+        self.assertEqual(["alpha", "zebra"], [spec.name for spec in registry.specs_for(ToolAudience.PARENT)])
+        self.assertEqual(["alpha", "zebra"], [item.name for item in registry.tools_for(ToolAudience.PARENT)])
+
     def test_failing_pre_hook_rejects_call(self):
         class BrokenHook:
             def handle(self, _context):
@@ -122,23 +142,47 @@ class ToolSecurityTest(unittest.TestCase):
         denied = policy.evaluate(self.context, rule_key="tool:command", persistable=True)
         self.assertEqual(PolicyAction.DENY, denied.action)
 
-    def test_hard_delete_removes_session_scoped_rules(self):
+    def test_hard_delete_removes_session_scoped_approval_records_and_keeps_workspace_rules(self):
         decision = DefaultToolPolicyEngine(self.repository).evaluate(
             self.context, rule_key="tool:command", persistable=True
         )
-        request = ApprovalService(self.repository).request(self.context, decision)
+        resolved_request = ApprovalService(self.repository).request(self.context, decision)
         self.repository.apply_response(
-            request["request_id"], ApprovalResponse.DENY_SESSION,
+            resolved_request["request_id"], ApprovalResponse.DENY_SESSION,
             context=self.context, rule_key="tool:command", persistable=True,
         )
+        pending_context = replace(self.context, tool_call_id="pending-delete-call")
+        pending_decision = DefaultToolPolicyEngine(self.repository).evaluate(
+            pending_context, rule_key="tool:pending", persistable=True
+        )
+        ApprovalService(self.repository).request(pending_context, pending_decision)
+        workspace_context = replace(self.context, tool_call_id="workspace-rule-call")
+        workspace_request = ApprovalService(self.repository).request(
+            workspace_context,
+            decision,
+        )
+        self.repository.apply_response(
+            workspace_request["request_id"], ApprovalResponse.ALLOW_WORKSPACE,
+            context=workspace_context,
+            rule_key="tool:workspace", persistable=True,
+        )
+
         self.assertTrue(self.workspaces.delete_session(self.session))
+
         with self.database.connect() as conn:
-            count = conn.execute(
-                "SELECT COUNT(*) FROM tool_permission_rules WHERE session_id = ?",
-                (str(self.session.session_id),),
-            ).fetchone()[0]
-        self.assertEqual(0, count)
-        with self.database.connect() as conn:
+            self.assertEqual(
+                0,
+                conn.execute(
+                    "SELECT COUNT(*) FROM tool_permission_rules WHERE session_id = ?",
+                    (str(self.session.session_id),),
+                ).fetchone()[0],
+            )
+            self.assertEqual(
+                1,
+                conn.execute(
+                    "SELECT COUNT(*) FROM tool_permission_rules WHERE session_id IS NULL",
+                ).fetchone()[0],
+            )
             self.assertEqual(
                 0,
                 conn.execute(

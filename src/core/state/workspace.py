@@ -151,7 +151,7 @@ class LocalWorkspaceRepository:
             conn.execute(
                 """
                 DELETE FROM tool_approval_requests
-                WHERE workspace_id = ? AND sessi on_id = ?
+                WHERE workspace_id = ? AND session_id = ?
                 """,
                 (str(session.workspace.workspace_id), str(session.session_id)),
             )

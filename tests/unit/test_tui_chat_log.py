@@ -403,7 +403,7 @@ class TuiChatLogTest(unittest.TestCase):
         log = self._fake_log()
         screen = ChatScreen.__new__(ChatScreen)
         screen._streamed_response_active = True
-        screen._pending_approval_ids = {"approval-1"}
+        screen._pending_approval_ids = {"approval-1", "approval-2"}
 
         def query_one(_self, _widget_type):
             return log
@@ -989,7 +989,7 @@ class TuiChatLogTest(unittest.TestCase):
         screen._inflight_task = task
         screen._inflight_client = client
         screen._streamed_response_active = True
-        screen._pending_approval_ids = {"approval-1"}
+        screen._pending_approval_ids = {"approval-1", "approval-2"}
 
         def query_one(_self, _widget_type):
             return log
