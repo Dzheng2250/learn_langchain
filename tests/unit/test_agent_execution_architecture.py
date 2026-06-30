@@ -1,3 +1,4 @@
+import asyncio
 import unittest
 from pathlib import Path
 from unittest.mock import Mock, patch
@@ -39,6 +40,35 @@ class FakeModel:
     def invoke(self, _messages, config=None):
         self.received_configs.append(config)
         return AIMessage(content="[]")
+
+
+class RecordingRunnable:
+    def __init__(self):
+        self.calls = []
+
+    def _record(self, method, value, config, kwargs):
+        self.calls.append((method, value, config, kwargs))
+        return method
+
+    def invoke(self, value, config=None, **kwargs):
+        return self._record("invoke", value, config, kwargs)
+
+    async def ainvoke(self, value, config=None, **kwargs):
+        return self._record("ainvoke", value, config, kwargs)
+
+    def stream(self, value, config=None, **kwargs):
+        yield self._record("stream", value, config, kwargs)
+
+    async def astream(self, value, config=None, **kwargs):
+        yield self._record("astream", value, config, kwargs)
+
+    def batch(self, values, config=None, **kwargs):
+        self._record("batch", values, config, kwargs)
+        return ["batch"] * len(values)
+
+    async def abatch(self, values, config=None, **kwargs):
+        self._record("abatch", values, config, kwargs)
+        return ["abatch"] * len(values)
 
 
 class RecordingProvider:
@@ -342,6 +372,79 @@ class AgentExecutionArchitectureTest(unittest.TestCase):
         messages = [SystemMessage(content="system"), HumanMessage(content="current")]
 
         self.assertIs(messages, policy.apply_messages(messages))
+    def test_prompt_cache_runnable_rewrites_every_execution_entry_point(self):
+        inner = RecordingRunnable()
+        runnable = PromptCacheRunnable(inner)
+        messages = [
+            SystemMessage(content="system"),
+            AIMessage(content="completed"),
+            HumanMessage(content="current"),
+        ]
+        config = {"tags": ["cache-test"]}
+
+        self.assertEqual("invoke", runnable.invoke(messages, config=config, mode="sync"))
+        self.assertEqual(
+            "ainvoke",
+            asyncio.run(runnable.ainvoke(messages, config=config, mode="async")),
+        )
+        self.assertEqual(
+            ["stream"],
+            list(runnable.stream(messages, config=config, mode="stream")),
+        )
+
+        async def collect_astream():
+            return [
+                chunk
+                async for chunk in runnable.astream(
+                    messages,
+                    config=config,
+                    mode="astream",
+                )
+            ]
+
+        self.assertEqual(["astream"], asyncio.run(collect_astream()))
+        self.assertEqual(
+            ["batch", "batch"],
+            runnable.batch([messages, messages], config=config, mode="batch"),
+        )
+        self.assertEqual(
+            ["abatch", "abatch"],
+            asyncio.run(
+                runnable.abatch(
+                    [messages, messages],
+                    config=config,
+                    mode="abatch",
+                )
+            ),
+        )
+
+        self.assertEqual(
+            ["invoke", "ainvoke", "stream", "astream", "batch", "abatch"],
+            [method for method, *_rest in inner.calls],
+        )
+        expected_modes = {
+            "invoke": "sync",
+            "ainvoke": "async",
+            "stream": "stream",
+            "astream": "astream",
+            "batch": "batch",
+            "abatch": "abatch",
+        }
+        for method, value, received_config, kwargs in inner.calls:
+            rewritten_inputs = value if method in {"batch", "abatch"} else [value]
+            self.assertIs(config, received_config)
+            self.assertEqual(expected_modes[method], kwargs["mode"])
+            for rewritten in rewritten_inputs:
+                self.assertEqual(
+                    {"type": "ephemeral", "ttl": "5m"},
+                    rewritten[0].content[0]["cache_control"],
+                )
+                self.assertEqual(
+                    {"type": "ephemeral", "ttl": "5m"},
+                    rewritten[1].content[0]["cache_control"],
+                )
+                self.assertNotIn("cache_control", rewritten[2].content[0])
+
     def test_provider_reports_missing_api_key_without_network_request(self):
         status = AnthropicProvider(
             model="test-model",

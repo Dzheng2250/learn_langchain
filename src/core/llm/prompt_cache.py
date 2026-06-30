@@ -72,7 +72,7 @@ class PromptCachePolicy:
 
 
 class PromptCacheRunnable(Runnable):
-    """Runnable wrapper that rewrites LangChain messages before model invoke."""
+    """Rewrite LangChain messages before every supported Runnable entry point."""
 
     def __init__(self, inner, policy: PromptCachePolicy | None = None) -> None:
         self.inner = inner
@@ -80,6 +80,42 @@ class PromptCacheRunnable(Runnable):
 
     def invoke(self, input, config=None, **kwargs):
         return self.inner.invoke(self.policy.apply_messages(input), config=config, **kwargs)
+
+    async def ainvoke(self, input, config=None, **kwargs):
+        return await self.inner.ainvoke(
+            self.policy.apply_messages(input),
+            config=config,
+            **kwargs,
+        )
+
+    def stream(self, input, config=None, **kwargs):
+        yield from self.inner.stream(
+            self.policy.apply_messages(input),
+            config=config,
+            **kwargs,
+        )
+
+    async def astream(self, input, config=None, **kwargs):
+        async for chunk in self.inner.astream(
+            self.policy.apply_messages(input),
+            config=config,
+            **kwargs,
+        ):
+            yield chunk
+
+    def batch(self, inputs, config=None, **kwargs):
+        return self.inner.batch(
+            [self.policy.apply_messages(item) for item in inputs],
+            config=config,
+            **kwargs,
+        )
+
+    async def abatch(self, inputs, config=None, **kwargs):
+        return await self.inner.abatch(
+            [self.policy.apply_messages(item) for item in inputs],
+            config=config,
+            **kwargs,
+        )
 
     def __getattr__(self, name: str):
         return getattr(self.inner, name)
