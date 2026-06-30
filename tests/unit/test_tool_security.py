@@ -269,6 +269,73 @@ class ToolSecurityTest(unittest.TestCase):
         )
         self.assertEqual(PolicyAction.ALLOW, allowed.action)
 
+    def test_pipeline_triggers_tool_hooks_once_when_wrapped_by_observed_node(self):
+        calls = []
+
+        @tool
+        def command(command: str) -> str:
+            """Record one direct test command."""
+            calls.append(command)
+            return "ok"
+
+        class CountingHook:
+            def __init__(self):
+                self.calls = []
+
+            def handle(self, context):
+                self.calls.append(context)
+                return HookDecision()
+
+        pre_hook = CountingHook()
+        post_hook = CountingHook()
+        hooks = HookRegistry()
+        hooks.register(HookSpec(
+            "pre", HookPoint.PRE_TOOL_USE, pre_hook, matcher="^command$"
+        ))
+        hooks.register(HookSpec(
+            "post", HookPoint.POST_TOOL_USE, post_hook, matcher="^command$"
+        ))
+        hooks.freeze()
+        spec = _spec(
+            tool=command,
+            risk=ToolRisk.READ_ONLY,
+            capabilities=frozenset(),
+            approval=ApprovalRequirement.NONE,
+        )
+        pipeline = ToolExecutionPipeline(
+            {"command": spec},
+            policy=DefaultToolPolicyEngine(self.repository),
+            approvals=ApprovalService(self.repository),
+            hook_dispatcher=HookDispatcher(hooks),
+        )
+        builder = StateGraph(MessagesState, context_schema=ToolExecutionContext)
+        builder.add_node("tools", ObservedToolNode([command], pipeline=pipeline))
+        builder.add_edge(START, "tools")
+        builder.add_edge("tools", END)
+        graph = builder.compile(checkpointer=MemorySaver())
+
+        events = list(stream_graph_events(
+            graph,
+            [AIMessage(content="", tool_calls=[{
+                "name": "command",
+                "args": {"command": "python -V"},
+                "id": "hook-once",
+                "type": "tool_call",
+            }])],
+            checkpoint_thread_id="hook-once-thread",
+            tool_context=ToolExecutionContext(
+                self.context.workspace_id, self.context.session_id,
+                self.context.execution_id, self.context.run_id,
+                "parent", self.context.workspace_root,
+            ),
+        ))
+
+        self.assertEqual(["python -V"], calls)
+        self.assertEqual("done", events[-1]["event"])
+        self.assertEqual(1, len(pre_hook.calls))
+        self.assertEqual(1, len(post_hook.calls))
+        self.assertEqual("success", post_hook.calls[0].payload["status"])
+
     def test_langgraph_interrupt_resumes_the_same_tool_call(self):
         calls = []
 

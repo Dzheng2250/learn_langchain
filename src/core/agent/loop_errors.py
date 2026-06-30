@@ -99,6 +99,7 @@ class TurnLoopErrorHandler:
             except Exception:
                 pass
         yield failed_turn_event(run_id, str(exc))
+
     def stream_unexpected_exception(
         self,
         *,

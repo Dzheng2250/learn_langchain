@@ -122,17 +122,6 @@ class ToolExecutionPipeline:
             )
             return self._error(context, exc)
         preview = message_content_text(value) or repr(value)
-        if _contains_tool_error(value):
-            self._dispatch_post_tool(context, "error", content=preview)
-            record_tool_failed(
-                self.event_source,
-                tool=context.tool_name,
-                tool_call_id=context.tool_call_id,
-                message="Tool returned an error result.",
-                payload={"content_preview": preview},
-                duration_ms=int((time.monotonic() - started_at) * 1000),
-            )
-            return value
         self._dispatch_post_tool(context, "success", content=preview)
         record_tool_finished(
             self.event_source,
@@ -233,10 +222,3 @@ class ToolExecutionPipeline:
             status="error",
             additional_kwargs={"tool_execution_status": "denied"},
         )
-
-
-def _contains_tool_error(value) -> bool:
-    """Return whether a tool result, including batched results, reports failure."""
-    if isinstance(value, (list, tuple)):
-        return any(_contains_tool_error(item) for item in value)
-    return getattr(value, "status", None) == "error"

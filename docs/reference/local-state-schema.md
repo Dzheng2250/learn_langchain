@@ -240,22 +240,30 @@ A 项目的 Session 数据错误关联到 B 项目。
 
 ## 3. Tool 审批 Schema 升级与回滚
 
-Schema v8 引入 `tool_approval_requests`、`tool_permission_rules` 和 `tool_approval_audit`。Schema v9 修复增量升级数据库中 `tool_permission_rules` 缺少 Session 复合外键的问题，并在迁移时删除无法匹配现有 Session 的孤立 Session 规则；Workspace 级规则不受影响。
+Schema v8 引入 `tool_approval_requests`、`tool_permission_rules` 和 `tool_approval_audit`。Schema v9 修复增量升级数据库中 `tool_permission_rules` 缺少 Session 复合外键的问题，并在迁移时删除无法匹配现有 Session 的孤立 Session 规则；Workspace 级规则不受影响。Schema v10 为 `tool_approval_audit(request_id)` 增加唯一索引，防止同一个审批请求生成重复审计记录。
 
-升级由 `LocalStateDatabase.initialize()` 在单一事务内自动完成。升级失败时整个初始化事务回滚，旧数据库仍保持可用。
+升级由 `LocalStateDatabase.initialize()` 在单个事务内自动完成。升级失败时整个初始化事务回滚，旧数据库仍保持可用。
 
-不支持把已经由新版本写入的数据库直接交给只认识 v7 的旧 Core。需要回滚程序版本时：
+不支持把已经由新版本写入的数据库直接交给只识别 v7 的旧 Core。需要回滚程序版本时：
 
-1. 停止 daemon，并备份完整 `state.db` 及 checkpoint 数据库。
+1. 停止 daemon，并备份完整 `state.db` 和 checkpoint 数据库。
 2. 优先恢复升级前备份，这是唯一保留审批历史的无损方案。
-3. 若明确接受丢弃 Tool 审批记录，可在离线副本中依次删除三个 Tool 审批表，并删除 `local_schema_migrations` 中版本 8、9 的记录。
-4. 使用目标旧版本启动前运行 SQLite `PRAGMA foreign_key_check` 和完整测试。
+3. 若只需要从 v10 回到 v9，可在离线副本中删除唯一索引并移除 v10 迁移记录；审批表和审批数据不需要删除。
+4. 若明确接受丢弃全部 Tool 审批记录，可在离线副本中依次删除三个 Tool 审批表，并删除 `local_schema_migrations` 中版本 8、9、10 的记录。
+5. 使用目标旧版本启动前运行 SQLite `PRAGMA foreign_key_check` 和完整测试。
 
-示例离线清理顺序：
+仅从 v10 回到 v9 的离线清理：
+
+```sql
+DROP INDEX IF EXISTS idx_tool_approval_audit_request;
+DELETE FROM local_schema_migrations WHERE version = 10;
+```
+
+丢弃全部 Tool 审批数据的离线清理：
 
 ```sql
 DROP TABLE tool_approval_audit;
 DROP TABLE tool_permission_rules;
 DROP TABLE tool_approval_requests;
-DELETE FROM local_schema_migrations WHERE version IN (8, 9);
+DELETE FROM local_schema_migrations WHERE version IN (8, 9, 10);
 ```

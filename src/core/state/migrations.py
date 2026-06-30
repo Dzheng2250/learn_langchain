@@ -202,6 +202,17 @@ def _ensure_tool_approval_audit_request_index(conn) -> None:
     )
 
 
+def _downgrade_to_v9(conn) -> None:
+    """Undo the v10 audit uniqueness migration while preserving approval data.
+
+    v10 only adds a unique index on tool_approval_audit(request_id). A manual
+    rollback to code that understands v9 can therefore drop that index and
+    remove the v10 migration marker without deleting approval tables or rows.
+    """
+    conn.execute("DROP INDEX IF EXISTS idx_tool_approval_audit_request")
+    conn.execute("DELETE FROM local_schema_migrations WHERE version=10")
+
+
 def _table_exists(conn, table: str) -> bool:
     """Return whether a table exists in the current migration fixture."""
     return bool(

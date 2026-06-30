@@ -183,7 +183,7 @@ class TurnExecutionLoop:
                         },
                     ))
                     if stop_decision.action in {HookAction.REJECT, HookAction.DENY}:
-                        raise RuntimeError(
+                        raise HookRejected(
                             stop_decision.reason or "Stop hook rejected turn completion."
                         )
                     active_slice_id = slice_id
@@ -240,6 +240,14 @@ class TurnExecutionLoop:
                 exhausted_reason=exhausted_reason,
                 slice_number=slice_number,
                 total_tool_calls=total_tool_calls,
+            )
+        except HookRejected as exc:
+            yield from self.error_handler.stream_rejected_exception(
+                run_id=run_id,
+                execution=execution,
+                active_slice_id=active_slice_id,
+                budget=budget,
+                exc=exc,
             )
         except Exception as exc:
             yield from self.error_handler.stream_unexpected_exception(

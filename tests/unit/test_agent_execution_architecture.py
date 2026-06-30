@@ -234,6 +234,22 @@ class AgentExecutionArchitectureTest(unittest.TestCase):
 
         self.assertEqual([event], sink.events)
 
+    def test_stop_hook_rejection_uses_rejected_error_path(self):
+        source = (ROOT / "src/core/agent/loop.py").read_text(encoding="utf-8")
+
+        self.assertIn("raise HookRejected(", source)
+        self.assertNotIn(
+            "raise RuntimeError(" + chr(10) + "                            stop_decision.reason",
+            source,
+        )
+        rejected_handler = source.index("except HookRejected as exc:")
+        unexpected_handler = source.index("except Exception as exc:")
+        self.assertLess(rejected_handler, unexpected_handler)
+        self.assertIn(
+            "stream_rejected_exception",
+            source[rejected_handler:unexpected_handler],
+        )
+
     def test_streaming_stops_when_tool_call_limit_is_exceeded(self):
         workspace = WorkspaceContext(uuid4(), ROOT)
         session = SessionContext(uuid4(), "default", workspace)

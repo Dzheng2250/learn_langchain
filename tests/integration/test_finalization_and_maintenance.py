@@ -21,7 +21,9 @@ from src.core.maintenance import (
 )
 from src.core.maintenance.handlers import ContextSummaryHandler
 from src.core.state import ExecutionRepository, LocalStateDatabase, LocalStateStore
-from src.core.state.migrations import LATEST_SCHEMA_VERSION, apply_local_migrations
+from src.core.state.migrations import (
+    LATEST_SCHEMA_VERSION, _downgrade_to_v9, apply_local_migrations,
+)
 from src.core.state.workspace import LocalWorkspaceRepository
 from tests.support.session_services import build_session_lifecycle_service
 
@@ -720,6 +722,37 @@ class LocalSchemaMigrationTest(unittest.TestCase):
             },
             session_links,
         )
+
+    def test_v10_downgrade_to_v9_removes_only_audit_request_index(self):
+        database = LocalStateDatabase(":memory:")
+        self.addCleanup(database.close)
+        database.initialize()
+
+        with database.transaction() as conn:
+            indexes_before = {
+                row["name"]
+                for row in conn.execute(
+                    "SELECT name FROM sqlite_master WHERE type='index'"
+                )
+            }
+            self.assertIn("idx_tool_approval_audit_request", indexes_before)
+
+            _downgrade_to_v9(conn)
+
+            indexes_after = {
+                row["name"]
+                for row in conn.execute(
+                    "SELECT name FROM sqlite_master WHERE type='index'"
+                )
+            }
+            versions = {
+                row["version"]
+                for row in conn.execute("SELECT version FROM local_schema_migrations")
+            }
+
+        self.assertNotIn("idx_tool_approval_audit_request", indexes_after)
+        self.assertNotIn(10, versions)
+        self.assertIn(9, versions)
 
     def test_newer_local_schema_version_is_rejected(self):
         database = LocalStateDatabase(":memory:")
