@@ -39,7 +39,10 @@ class TurnLoopPauseHandler:
             self.execution_store.pause(
                 execution.execution_id,
                 ExecutionStatus.PAUSED_CONFIRMATION
-                if exhausted_reason == StopReason.BUDGET_LIMIT.value
+                if exhausted_reason in {
+                    StopReason.BUDGET_LIMIT.value,
+                    StopReason.TOOL_APPROVAL.value,
+                }
                 else ExecutionStatus.PAUSED_BUDGET,
                 exhausted_reason,
                 summary,
@@ -55,4 +58,3 @@ class TurnLoopPauseHandler:
             slices_used=slice_number,
             message=summary,
         )
-

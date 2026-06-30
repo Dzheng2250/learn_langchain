@@ -62,6 +62,7 @@ class LockedTurnStreamer(Protocol):
         execution=None,
         resume: bool = False,
         control: ExecutionControl | None = None,
+        resume_value: dict | None = None,
     ) -> Iterator[dict]: ...
 
 
@@ -90,6 +91,7 @@ class AgentTurnRunner(Protocol):
         *,
         run_id: str | None = None,
         control: ExecutionControl | None = None,
+        resume_value: dict | None = None,
     ) -> dict:
         """Resume one recoverable execution without blocking the event loop."""
 

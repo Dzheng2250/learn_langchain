@@ -139,6 +139,29 @@ class LocalWorkspaceRepository:
     def delete_session(self, session: SessionContext) -> bool:
         """Permanently delete a Session and rows covered by local foreign keys."""
         with self.database.transaction() as conn:
+            # Migration-created databases may predate the composite Session FK.
+            # Remove Session-scoped grants explicitly; Workspace rules survive.
+            conn.execute(
+                """
+                DELETE FROM tool_approval_audit
+                WHERE workspace_id = ? AND session_id = ?
+                """,
+                (str(session.workspace.workspace_id), str(session.session_id)),
+            )
+            conn.execute(
+                """
+                DELETE FROM tool_approval_requests
+                WHERE workspace_id = ? AND session_id = ?
+                """,
+                (str(session.workspace.workspace_id), str(session.session_id)),
+            )
+            conn.execute(
+                """
+                DELETE FROM tool_permission_rules
+                WHERE workspace_id = ? AND session_id = ?
+                """,
+                (str(session.workspace.workspace_id), str(session.session_id)),
+            )
             cur = conn.execute(
                 """
                 DELETE FROM sessions

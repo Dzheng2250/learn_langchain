@@ -5,21 +5,13 @@ from dataclasses import dataclass
 from typing import Any
 
 from src.cli.errors import CliError
+from src.core.common.redaction import sanitize_value
 
 DETAIL_PREVIEW_LIMIT = 2000
 ARG_PREVIEW_LIMIT = 1000
 ARG_FIELD_PREVIEW_LIMIT = 240
 TASK_TOOLS = {"task_plan", "task_update", "task_list", "task_get"}
 VISIBLE_RESULT_TOOLS = TASK_TOOLS | {"delegate_to_subagent"}
-SENSITIVE_ARG_KEY_PARTS = (
-    "api_key",
-    "apikey",
-    "authorization",
-    "passwd",
-    "password",
-    "secret",
-    "token",
-)
 
 
 def _preview(value: Any, limit: int = DETAIL_PREVIEW_LIMIT) -> str:
@@ -32,31 +24,15 @@ def _preview(value: Any, limit: int = DETAIL_PREVIEW_LIMIT) -> str:
     return text
 
 
-def _is_sensitive_arg_key(key: str) -> bool:
-    """Return whether an argument key should never be rendered verbatim."""
-    key = key.casefold()
-    return any(part in key for part in SENSITIVE_ARG_KEY_PARTS) or ".env" in key
-
-
 def _sanitize_arg_value(key: str, value: Any, *, _depth: int = 0) -> Any:
     """Build a terminal-safe preview value for one tool argument."""
-    if _depth > 20:
-        return "[MAX_DEPTH]"
-    if _is_sensitive_arg_key(key):
-        return "[REDACTED]"
-    if isinstance(value, str):
-        return _preview(value, ARG_FIELD_PREVIEW_LIMIT)
-    if isinstance(value, dict):
-        return {
-            str(child_key): _sanitize_arg_value(str(child_key), child_value, _depth=_depth + 1)
-            for child_key, child_value in value.items()
-        }
-    if isinstance(value, list):
-        return [
-            _sanitize_arg_value(key, item, _depth=_depth + 1)
-            for item in value[:20]
-        ] + (["... truncated ..."] if len(value) > 20 else [])
-    return value
+    return sanitize_value(
+        value,
+        key=key,
+        text_limit=ARG_FIELD_PREVIEW_LIMIT,
+        list_limit=20,
+        depth=_depth,
+    )
 
 
 def _generic_tool_args_detail(args: Any) -> str | None:
@@ -169,6 +145,18 @@ class AgentEventRenderer:
             count = int(data.get("char_count") or 0)
             redacted = " redacted" if data.get("redacted") else " hidden"
             print(f"\n[thinking_done: {count} chars{redacted}]", flush=True)
+        elif event == "tool_approval_required":
+            request_id = data.get("request_id", "")
+            tool = data.get("tool", "unknown")
+            detail = _generic_tool_args_detail(data.get("args"))
+            print(f"\n[tool_approval_required: {tool}]", flush=True)
+            if detail:
+                print(detail, flush=True)
+            print(
+                "Resolve with: learn-agent approval resolve "
+                f"{request_id} allow_once",
+                flush=True,
+            )
         elif event == "model_retry_scheduled":
             next_attempt = data.get("next_attempt", "?")
             maximum = data.get("max_attempts", "?")

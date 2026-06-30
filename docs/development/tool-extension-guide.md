@@ -14,6 +14,8 @@
 
 ## 本文负责
 
+新增工具必须在 `ToolSpec` 中声明 `capabilities`、`approval`、`sandbox`、`network` 和 `timeout_seconds`，并由 `ToolExecutionPipeline` 执行。禁止把未经注册的 LangChain tool 直接注入图中。涉及文件写入、命令、网络或内部状态的工具必须增加权限与边界测试。系统级 Hook 的扩展方式见 [Agent 生命周期 Hook 架构](/docs/architecture/agent-lifecycle-hooks.md)；Hook 修改参数后仍需经过 schema、策略和硬边界校验。
+
 - 选择正确的工具实现模式（无状态单例 / Workspace 工厂 / ToolRuntime 注入）。
 - 编写 `@tool` 函数时正确生成 schema、docstring、参数注解。
 - 通过 `resolve_workspace_path` 与 `is_workspace_path_blocked` 实施路径安全。

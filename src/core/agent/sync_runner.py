@@ -54,6 +54,7 @@ class AgentSyncTurnRunner:
         *,
         run_id: str | None = None,
         control: ExecutionControl | None = None,
+        resume_value: dict | None = None,
     ) -> dict:
         """Consume one resumed execution stream."""
         result = TurnResultBuilder(run_id=run_id, default_error="Agent resume failed.")
@@ -65,6 +66,7 @@ class AgentSyncTurnRunner:
                 instruction=instruction,
                 run_id=result.run_id,
                 control=control,
+                resume_value=resume_value,
             ):
                 if on_event:
                     on_event(item)

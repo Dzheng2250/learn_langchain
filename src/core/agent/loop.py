@@ -2,6 +2,7 @@
 
 from collections.abc import Iterator
 from dataclasses import dataclass
+from langgraph.types import Command
 
 from src.config.settings import MAX_AUTO_SLICES_PER_GRANT
 from src.core.agent.budget import (
@@ -19,6 +20,8 @@ from src.core.agent.loop_errors import TurnLoopErrorHandler
 from src.core.agent.loop_pause import TurnLoopPauseHandler
 from src.core.agent.run_observer import TurnRunObserver
 from src.core.agent.slices import SliceExecutionService
+from src.core.common.content import message_content_text
+from src.core.hooks import HookAction, HookContext, HookPoint, HookRejected, NOOP_HOOK_DISPATCHER
 from src.core.state.types import ExecutionStatus
 from src.core.tasks.context import ToolExecutionContext
 from src.core.telemetry import (
@@ -59,6 +62,7 @@ class TurnExecutionLoop:
         error_handler: TurnLoopErrorHandler,
         pause_handler: TurnLoopPauseHandler,
         config: LoopConfig,
+        hook_runtime=None,
     ) -> None:
         self.turn_coordinator = turn_coordinator
         self.run_limits = run_limits
@@ -67,6 +71,7 @@ class TurnExecutionLoop:
         self.error_handler = error_handler
         self.pause_handler = pause_handler
         self.config = config
+        self.hook_runtime = hook_runtime
         self.max_auto_slices = max(1, int(self.config.max_auto_slices))
 
     def stream_locked_turn(
@@ -78,6 +83,7 @@ class TurnExecutionLoop:
         *,
         execution=None,
         resume: bool = False,
+        resume_value: dict | None = None,
         control: ExecutionControl | None = None,
     ) -> Iterator[dict]:
         """Run bounded Slices and persist either completion or recoverable pause."""
@@ -113,6 +119,8 @@ class TurnExecutionLoop:
                 workspace_id=str(session.workspace.workspace_id),
                 session_id=str(session.session_id),
                 execution_id=execution.execution_id if execution else None,
+                run_id=run_id,
+                workspace_root=str(session.workspace.root),
             )
             total_tool_calls = 0
             budget = ExecutionBudget()
@@ -122,7 +130,10 @@ class TurnExecutionLoop:
                 if budget.wall_time_exhausted():
                     exhausted_reason = StopReason.GRANT_WALL_TIME_LIMIT.value
                     break
-                slice_input = None if resume or slice_number > 1 else input_messages
+                if resume and slice_number == 1 and resume_value is not None:
+                    slice_input = Command(resume=resume_value)
+                else:
+                    slice_input = None if resume or slice_number > 1 else input_messages
                 paused_for_budget = False
                 slice_result = yield from self.slice_execution_service.stream_slice(
                     graph=graph,
@@ -154,6 +165,27 @@ class TurnExecutionLoop:
                 elif slice_result.done_item is not None:
                     item = slice_result.done_item
                     final_messages = item["data"]["messages"]
+                    hooks = (
+                        self.hook_runtime.get(session.workspace.root)
+                        if self.hook_runtime is not None else NOOP_HOOK_DISPATCHER
+                    )
+                    _stop_context, stop_decision = hooks.dispatch(HookContext(
+                        point=HookPoint.STOP,
+                        workspace_id=str(session.workspace.workspace_id),
+                        session_id=str(session.session_id),
+                        execution_id=execution.execution_id if execution else "",
+                        run_id=run_id,
+                        workspace_root=str(session.workspace.root),
+                        payload={
+                            "final_text": message_content_text(final_messages[-1]) if final_messages else "",
+                            "tool_call_count": total_tool_calls,
+                            "slice_number": slice_number,
+                        },
+                    ))
+                    if stop_decision.action in {HookAction.REJECT, HookAction.DENY}:
+                        raise HookRejected(
+                            stop_decision.reason or "Stop hook rejected turn completion."
+                        )
                     active_slice_id = slice_id
                     finalization = self.turn_coordinator.finalize(
                         session=session,
@@ -182,7 +214,10 @@ class TurnExecutionLoop:
                     return
                 if not paused_for_budget:
                     return
-                if exhausted_reason == StopReason.BUDGET_LIMIT.value:
+                if exhausted_reason in {
+                    StopReason.BUDGET_LIMIT.value,
+                    StopReason.TOOL_APPROVAL.value,
+                }:
                     break
                 if checkpoint_thread_id is None:
                     # Compatibility services without a checkpointer cannot
@@ -205,6 +240,14 @@ class TurnExecutionLoop:
                 exhausted_reason=exhausted_reason,
                 slice_number=slice_number,
                 total_tool_calls=total_tool_calls,
+            )
+        except HookRejected as exc:
+            yield from self.error_handler.stream_rejected_exception(
+                run_id=run_id,
+                execution=execution,
+                active_slice_id=active_slice_id,
+                budget=budget,
+                exc=exc,
             )
         except Exception as exc:
             yield from self.error_handler.stream_unexpected_exception(

@@ -1,7 +1,7 @@
-"""Idempotent additive migrations for the authoritative local state database."""
+"""Idempotent transactional migrations for the authoritative local state database."""
 
 
-LATEST_SCHEMA_VERSION = 7
+LATEST_SCHEMA_VERSION = 10
 
 
 def apply_local_migrations(conn) -> None:
@@ -16,7 +16,11 @@ def apply_local_migrations(conn) -> None:
             "Local state schema is newer than this Core version supports "
             f"({current_version} > {LATEST_SCHEMA_VERSION})."
         )
-    if current_version < 2:
+    applied_versions = {
+        int(row["version"])
+        for row in conn.execute("SELECT version FROM local_schema_migrations")
+    }
+    if current_version < 2 or 2 not in applied_versions:
         _ensure_column(
             conn,
             "sessions",
@@ -31,10 +35,10 @@ def apply_local_migrations(conn) -> None:
         )
         _ensure_column(conn, "executions", "completed_at", "TEXT")
         _record_migration(conn, 2, "durable_maintenance_and_checkpoint_state")
-    if current_version < 3:
+    if current_version < 3 or 3 not in applied_versions:
         _ensure_state_validation_triggers(conn)
         _record_migration(conn, 3, "typed_domain_state_validation")
-    if current_version < 4:
+    if current_version < 4 or 4 not in applied_versions:
         _ensure_column(
             conn,
             "executions",
@@ -49,7 +53,7 @@ def apply_local_migrations(conn) -> None:
             ("pending", "in_progress", "completed", "cancelled"),
         )
         _record_migration(conn, 4, "execution_private_tasks")
-    if current_version < 5:
+    if current_version < 5 or 5 not in applied_versions:
         _ensure_column(
             conn,
             "sessions",
@@ -57,13 +61,156 @@ def apply_local_migrations(conn) -> None:
             "INTEGER NOT NULL DEFAULT 0",
         )
         _record_migration(conn, 5, "session_context_tokens")
-    if current_version < 6:
+    if current_version < 6 or 6 not in applied_versions:
         _ensure_column(conn, "sessions", "archived_at", "TEXT")
         _record_migration(conn, 6, "session_archive_marker")
-    if current_version < 7:
+    if current_version < 7 or 7 not in applied_versions:
         _ensure_context_window_lineage(conn)
         _record_migration(conn, 7, "context_window_lineage")
+    if current_version < 8 or 8 not in applied_versions:
+        _ensure_tool_approval_tables(conn)
+        _record_migration(conn, 8, "tool_approval_policy")
+    if current_version < 9 or 9 not in applied_versions:
+        _ensure_tool_permission_session_foreign_key(conn)
+        _record_migration(conn, 9, "tool_permission_session_integrity")
+    if current_version < 10 or 10 not in applied_versions:
+        _ensure_tool_approval_audit_request_index(conn)
+        _record_migration(conn, 10, "tool_approval_audit_request_index")
 
+
+def _ensure_tool_approval_tables(conn) -> None:
+    """Add durable approval requests, scoped rules, and audit records."""
+    statements = (
+        """
+        CREATE TABLE IF NOT EXISTS tool_approval_requests (
+            request_id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL,
+            session_id TEXT NOT NULL, execution_id TEXT NOT NULL,
+            tool_call_id TEXT NOT NULL, tool_name TEXT NOT NULL,
+            actor TEXT NOT NULL, args_summary TEXT NOT NULL DEFAULT '{}',
+            capabilities TEXT NOT NULL DEFAULT '[]', rule_key TEXT NOT NULL DEFAULT '',
+            persistable INTEGER NOT NULL DEFAULT 0, reason TEXT NOT NULL DEFAULT '',
+            status TEXT NOT NULL DEFAULT 'pending', response TEXT,
+            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP, resolved_at TEXT,
+            UNIQUE(execution_id, tool_call_id),
+            FOREIGN KEY(execution_id) REFERENCES executions(execution_id) ON DELETE CASCADE
+        )
+        """,
+        """
+        CREATE TABLE IF NOT EXISTS tool_permission_rules (
+            rule_id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL,
+            session_id TEXT, tool_name TEXT NOT NULL, rule_key TEXT NOT NULL,
+            effect TEXT NOT NULL, created_from_request_id TEXT,
+            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            UNIQUE(workspace_id, session_id, tool_name, rule_key),
+            FOREIGN KEY(workspace_id) REFERENCES workspaces(workspace_id) ON DELETE CASCADE,
+            FOREIGN KEY(workspace_id, session_id)
+                REFERENCES sessions(workspace_id, session_id) ON DELETE CASCADE,
+            FOREIGN KEY(created_from_request_id) REFERENCES tool_approval_requests(request_id) ON DELETE SET NULL
+        )
+        """,
+        """
+        CREATE TABLE IF NOT EXISTS tool_approval_audit (
+            audit_id TEXT PRIMARY KEY, request_id TEXT NOT NULL,
+            workspace_id TEXT NOT NULL, session_id TEXT NOT NULL,
+            execution_id TEXT NOT NULL, tool_call_id TEXT NOT NULL,
+            tool_name TEXT NOT NULL, response TEXT NOT NULL,
+            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY(request_id) REFERENCES tool_approval_requests(request_id) ON DELETE CASCADE
+        )
+        """,
+        """
+        CREATE INDEX IF NOT EXISTS idx_tool_approval_pending
+        ON tool_approval_requests(status, workspace_id, session_id, created_at)
+        """,
+        """
+        CREATE INDEX IF NOT EXISTS idx_tool_permission_rules_lookup
+        ON tool_permission_rules(workspace_id, tool_name, rule_key, session_id)
+        """,
+    )
+    for statement in statements:
+        conn.execute(statement)
+
+
+def _ensure_tool_permission_session_foreign_key(conn) -> None:
+    """Rebuild v8 permission rules when the Session composite FK is absent."""
+    if not _table_exists(conn, "tool_permission_rules"):
+        return
+    foreign_keys = conn.execute(
+        "PRAGMA foreign_key_list(tool_permission_rules)"
+    ).fetchall()
+    grouped: dict[int, set[tuple[str, str]]] = {}
+    for row in foreign_keys:
+        if row["table"] == "sessions":
+            grouped.setdefault(int(row["id"]), set()).add(
+                (str(row["from"]), str(row["to"]))
+            )
+    expected = {("workspace_id", "workspace_id"), ("session_id", "session_id")}
+    if expected in grouped.values():
+        return
+    conn.execute(
+        """
+        CREATE TABLE tool_permission_rules_v9 (
+            rule_id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL,
+            session_id TEXT, tool_name TEXT NOT NULL, rule_key TEXT NOT NULL,
+            effect TEXT NOT NULL CHECK(effect IN ('allow', 'deny')),
+            created_from_request_id TEXT,
+            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            UNIQUE(workspace_id, session_id, tool_name, rule_key),
+            FOREIGN KEY(workspace_id) REFERENCES workspaces(workspace_id) ON DELETE CASCADE,
+            FOREIGN KEY(workspace_id, session_id)
+                REFERENCES sessions(workspace_id, session_id) ON DELETE CASCADE,
+            FOREIGN KEY(created_from_request_id)
+                REFERENCES tool_approval_requests(request_id) ON DELETE SET NULL
+        )
+        """
+    )
+    conn.execute(
+        """
+        INSERT INTO tool_permission_rules_v9(
+            rule_id, workspace_id, session_id, tool_name, rule_key, effect,
+            created_from_request_id, created_at, updated_at
+        )
+        SELECT r.rule_id, r.workspace_id, r.session_id, r.tool_name, r.rule_key,
+               r.effect, r.created_from_request_id, r.created_at, r.updated_at
+        FROM tool_permission_rules r
+        WHERE r.session_id IS NULL OR EXISTS (
+            SELECT 1 FROM sessions s
+            WHERE s.workspace_id=r.workspace_id AND s.session_id=r.session_id
+        )
+        """
+    )
+    conn.execute("DROP TABLE tool_permission_rules")
+    conn.execute("ALTER TABLE tool_permission_rules_v9 RENAME TO tool_permission_rules")
+    conn.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_tool_permission_rules_lookup
+        ON tool_permission_rules(workspace_id, tool_name, rule_key, session_id)
+        """
+    )
+
+def _ensure_tool_approval_audit_request_index(conn) -> None:
+    """Prevent duplicate audit rows for one resolved approval request."""
+    if not _table_exists(conn, "tool_approval_audit"):
+        return
+    conn.execute(
+        """
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_tool_approval_audit_request
+        ON tool_approval_audit(request_id)
+        """
+    )
+
+
+def _downgrade_to_v9(conn) -> None:
+    """Undo the v10 audit uniqueness migration while preserving approval data.
+
+    v10 only adds a unique index on tool_approval_audit(request_id). A manual
+    rollback to code that understands v9 can therefore drop that index and
+    remove the v10 migration marker without deleting approval tables or rows.
+    """
+    conn.execute("DROP INDEX IF EXISTS idx_tool_approval_audit_request")
+    conn.execute("DELETE FROM local_schema_migrations WHERE version=10")
 
 
 def _table_exists(conn, table: str) -> bool:

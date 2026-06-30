@@ -99,7 +99,11 @@ class SliceExecutionService:
                     self._finish_slice(
                         slice_id,
                         execution,
-                        status=ExecutionStatus.PAUSED_BUDGET,
+                        status=(
+                            ExecutionStatus.PAUSED_CONFIRMATION
+                            if exhausted_reason == StopReason.TOOL_APPROVAL.value
+                            else ExecutionStatus.PAUSED_BUDGET
+                        ),
                         stop_reason=exhausted_reason,
                         graph_steps_used=int(item["data"].get("graph_steps_used", 0)),
                         usage=budget.snapshot(),

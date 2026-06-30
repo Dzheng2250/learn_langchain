@@ -34,27 +34,55 @@ class WorkspaceRuntimeFactory:
         checkpointer=None,
         checkpointer_provider: Callable[[], object] | None = None,
         task_service: TaskPlanningService | None = None,
+        approval_repository=None,
+        host_execution_enabled: bool = False,
+        approval_enabled: bool = True,
+        default_timeout_seconds: float = 60.0,
+        network_policy: str = "deny",
+        hook_runtime=None,
     ) -> None:
         self.model_provider = model_provider
         self.run_limits = run_limits or RunLimits()
         self.checkpointer = checkpointer
         self.checkpointer_provider = checkpointer_provider
         self.task_service = task_service
+        self.approval_repository = approval_repository
+        self.host_execution_enabled = host_execution_enabled
+        self.approval_enabled = approval_enabled
+        self.default_timeout_seconds = default_timeout_seconds
+        self.network_policy = network_policy
+        self.hook_runtime = hook_runtime
 
     def create(self, workspace: WorkspaceContext) -> WorkspaceRuntime:
         """Build Workspace-bound tools and compile the parent Agent graph."""
         # Every factory below receives the immutable workspace root. Tools and
         # graphs therefore cannot be rebound by mutating process-global state.
+        hook_dispatcher = (
+            self.hook_runtime.get(workspace.root)
+            if self.hook_runtime is not None else None
+        )
         toolset = create_workspace_toolset(
             workspace,
             self.model_provider,
             subagent_max_steps=self.run_limits.max_subagent_steps,
+            approval_repository=self.approval_repository,
+            host_execution_enabled=self.host_execution_enabled,
+            approval_enabled=self.approval_enabled,
+            default_timeout_seconds=self.default_timeout_seconds,
+            network_policy=self.network_policy,
+            hook_dispatcher=hook_dispatcher,
         )
         goal_toolset = create_workspace_toolset(
             workspace,
             self.model_provider,
             subagent_max_steps=self.run_limits.max_subagent_steps,
             task_service=self.task_service,
+            approval_repository=self.approval_repository,
+            host_execution_enabled=self.host_execution_enabled,
+            approval_enabled=self.approval_enabled,
+            default_timeout_seconds=self.default_timeout_seconds,
+            network_policy=self.network_policy,
+            hook_dispatcher=hook_dispatcher,
         )
         checkpointer = (
             self.checkpointer_provider()
@@ -68,6 +96,7 @@ class WorkspaceRuntimeFactory:
             checkpointer=checkpointer,
             risk_by_name={spec.name: spec.risk for spec in toolset.registry.specs()},
             task_planning_enabled=False,
+            tool_pipeline=toolset.pipeline,
         )
         goal_graph = create_parent_graph(
             goal_toolset.parent_tools,
@@ -76,6 +105,7 @@ class WorkspaceRuntimeFactory:
             checkpointer=checkpointer,
             risk_by_name={spec.name: spec.risk for spec in goal_toolset.registry.specs()},
             task_planning_enabled=self.task_service is not None,
+            tool_pipeline=goal_toolset.pipeline,
         )
         return WorkspaceRuntime(workspace, toolset, graph, goal_toolset, goal_graph)
 

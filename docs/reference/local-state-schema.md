@@ -139,6 +139,9 @@ active context window 的 summary_text
 | `executions` | 保存一项可能跨多个 Slice 的工作状态 |
 | `execution_slices` | 保存每次有界 LangGraph 运行的预算和停止原因 |
 | `tool_ledger` | 为工具调用审计预留账本结构 |
+| `tool_approval_requests` | 保存与 Execution/tool_call 绑定的待审批请求及处理结果 |
+| `tool_permission_rules` | 保存 Session 或 Workspace 范围的 allow/deny 规则 |
+| `tool_approval_audit` | 保存不可变的审批响应审计记录 |
 
 `executions.status` 表示业务执行状态，例如：
 
@@ -146,6 +149,7 @@ active context window 的 summary_text
 - `paused_budget`：达到本次预算边界，可以恢复。
 - `paused_error`：发生错误后暂停。
 - `paused_confirmation`：等待外部确认。
+- `paused_confirmation` 的 `stop_reason=tool_approval` 表示 LangGraph checkpoint 正等待 `approval.resolve` 的恢复值。
 - `paused_recovery`：Core 重启后发现 checkpoint 仍存在，等待恢复。
 - `unrecoverable_checkpoint`：业务状态认为任务未完成，但 checkpoint 已丢失。
 - `completed`：任务已完成。
@@ -233,3 +237,33 @@ A 项目的 Session 数据错误关联到 B 项目。
 - `idx_memories_workspace`：按 Workspace 检索重要记忆。
 - `idx_maintenance_jobs_ready`：按状态、执行时间和优先级认领任务。
 - `idx_maintenance_jobs_session`：查询一个 Session 的待处理和失败任务数量。
+
+## 3. Tool 审批 Schema 升级与回滚
+
+Schema v8 引入 `tool_approval_requests`、`tool_permission_rules` 和 `tool_approval_audit`。Schema v9 修复增量升级数据库中 `tool_permission_rules` 缺少 Session 复合外键的问题，并在迁移时删除无法匹配现有 Session 的孤立 Session 规则；Workspace 级规则不受影响。Schema v10 为 `tool_approval_audit(request_id)` 增加唯一索引，防止同一个审批请求生成重复审计记录。
+
+升级由 `LocalStateDatabase.initialize()` 在单个事务内自动完成。升级失败时整个初始化事务回滚，旧数据库仍保持可用。
+
+不支持把已经由新版本写入的数据库直接交给只识别 v7 的旧 Core。需要回滚程序版本时：
+
+1. 停止 daemon，并备份完整 `state.db` 和 checkpoint 数据库。
+2. 优先恢复升级前备份，这是唯一保留审批历史的无损方案。
+3. 若只需要从 v10 回到 v9，可在离线副本中删除唯一索引并移除 v10 迁移记录；审批表和审批数据不需要删除。
+4. 若明确接受丢弃全部 Tool 审批记录，可在离线副本中依次删除三个 Tool 审批表，并删除 `local_schema_migrations` 中版本 8、9、10 的记录。
+5. 使用目标旧版本启动前运行 SQLite `PRAGMA foreign_key_check` 和完整测试。
+
+仅从 v10 回到 v9 的离线清理：
+
+```sql
+DROP INDEX IF EXISTS idx_tool_approval_audit_request;
+DELETE FROM local_schema_migrations WHERE version = 10;
+```
+
+丢弃全部 Tool 审批数据的离线清理：
+
+```sql
+DROP TABLE tool_approval_audit;
+DROP TABLE tool_permission_rules;
+DROP TABLE tool_approval_requests;
+DELETE FROM local_schema_migrations WHERE version IN (8, 9, 10);
+```

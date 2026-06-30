@@ -41,7 +41,7 @@ class LocalStateDatabase:
             try:
                 # sqlite3.executescript() commits an existing transaction
                 # before running. Starting the transaction inside the script
-                # keeps fresh-schema creation and additive upgrades atomic.
+                # keeps fresh-schema creation and transactional upgrades atomic.
                 conn.executescript(
                     "BEGIN IMMEDIATE;\n" + schema_path.read_text(encoding="utf-8")
                 )

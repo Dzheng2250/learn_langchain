@@ -10,6 +10,7 @@ from langgraph.prebuilt import ToolNode
 
 from src.core.common.content import message_content_text
 
+from src.core.hooks import HookAction, HookContext, HookPoint, NOOP_HOOK_DISPATCHER
 from src.core.telemetry import record_tool_failed, record_tool_finished, record_tool_started
 from src.core.agent.budget import ToolBudgetExceeded, current_execution_budget
 from src.core.tools.catalog import ToolRisk
@@ -57,6 +58,19 @@ def _tool_error_message(request, exc: Exception) -> ToolMessage:
         name=tool,
         tool_call_id=tool_call_id,
         status="error",
+    )
+
+
+def _tool_denied_message(request, reason: str) -> ToolMessage:
+    """Convert a hook rejection into a model-visible tool denial."""
+    tool = _tool_call_name(request) or "unknown"
+    tool_call_id = _tool_call_id(request) or ""
+    return ToolMessage(
+        content=f"Tool {tool} was denied: {reason}",
+        name=tool,
+        tool_call_id=tool_call_id,
+        status="error",
+        additional_kwargs={"tool_execution_status": "denied"},
     )
 
 
@@ -132,6 +146,20 @@ def _observe_tool_call(
     return result
 
 
+def _hook_context_from_request(request, point: HookPoint, payload: dict[str, Any]) -> HookContext:
+    runtime = getattr(request.runtime, "context", None)
+    return HookContext(
+        point=point,
+        subject=_tool_call_name(request) or "unknown",
+        workspace_id=str(getattr(runtime, "workspace_id", "")),
+        session_id=str(getattr(runtime, "session_id", "")),
+        execution_id=str(getattr(runtime, "execution_id", "") or ""),
+        run_id=str(getattr(runtime, "run_id", "") or ""),
+        workspace_root=str(getattr(runtime, "workspace_root", "") or ""),
+        payload=payload,
+    )
+
+
 class ObservedToolNode(ToolNode):
     """ToolNode with centralized tool boundary hook events."""
 
@@ -141,19 +169,42 @@ class ObservedToolNode(ToolNode):
         *,
         event_source: str = "agent_tool_node",
         risk_by_name: dict[str, ToolRisk] | None = None,
+        pipeline=None,
+        hook_dispatcher=None,
         **kwargs,
     ) -> None:
         existing_wrapper = kwargs.pop("wrap_tool_call", None)
+        hooks = hook_dispatcher or NOOP_HOOK_DISPATCHER
 
         def observed_wrapper(request, execute):
             """Compose centralized observation with an optional existing wrapper."""
+            if pipeline is not None:
+                return pipeline.invoke(request, execute)
+            hook_context, hook_decision = hooks.dispatch(_hook_context_from_request(
+                request,
+                HookPoint.PRE_TOOL_USE,
+                {"args": _tool_call_args(request) or {}},
+            ))
+            if hook_decision.action in {HookAction.REJECT, HookAction.DENY}:
+                return _tool_denied_message(request, hook_decision.reason or "PreToolUse hook rejected the call.")
+            replacement = hook_context.payload.get("args", _tool_call_args(request) or {})
+            if replacement != (_tool_call_args(request) or {}):
+                if not isinstance(replacement, dict):
+                    return _tool_denied_message(request, "PreToolUse hook must replace args with an object.")
+                request = request.override(tool_call={**request.tool_call, "args": replacement})
             if existing_wrapper is None:
-                return _observe_tool_call(event_source, request, execute, risk_by_name)
+                result = _observe_tool_call(event_source, request, execute, risk_by_name)
+            else:
+                def wrapped_execute(observed_request):
+                    """Preserve a caller-provided wrapper inside observation hooks."""
+                    return existing_wrapper(observed_request, execute)
 
-            def wrapped_execute(observed_request):
-                """Preserve a caller-provided wrapper inside observation hooks."""
-                return existing_wrapper(observed_request, execute)
-
-            return _observe_tool_call(event_source, request, wrapped_execute, risk_by_name)
+                result = _observe_tool_call(event_source, request, wrapped_execute, risk_by_name)
+            hooks.dispatch(_hook_context_from_request(
+                request,
+                HookPoint.POST_TOOL_USE,
+                {"status": "error" if _result_is_error(result) else "success", "content": _result_preview(result)},
+            ))
+            return result
 
         super().__init__(tools, wrap_tool_call=observed_wrapper, **kwargs)

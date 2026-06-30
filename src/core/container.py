@@ -3,6 +3,7 @@
 from dependency_injector import containers, providers
 
 from src.config.maintenance import MaintenanceSettings
+from src.config.hooks import HookSettings
 from src.config.llm import LlmRetrySettings
 from src.config.settings import (
     CORE_AGENT_WORKERS,
@@ -10,6 +11,10 @@ from src.config.settings import (
     MEMORY_ENABLED,
     MEMORY_MIN_IMPORTANCE,
     POSTGRES_PROJECTION_ENABLED,
+    HOST_EXECUTION_ENABLED,
+    TOOL_APPROVAL_ENABLED,
+    TOOL_DEFAULT_TIMEOUT_SECONDS,
+    TOOL_NETWORK_POLICY,
 )
 from src.core.adapters.sqlite import (
     SQLiteConversationHistoryStore,
@@ -17,6 +22,7 @@ from src.core.adapters.sqlite import (
     SQLiteMemoryWriteStore,
     SQLiteSessionStore,
     SQLiteSummaryStore,
+    SQLiteToolApprovalRepository,
     SQLiteStateUnitOfWorkFactory,
 )
 from src.core.adapters.sqlite.session_lifecycle import SQLiteSessionLifecycleStore
@@ -52,6 +58,7 @@ from src.core.errors.provider_failure import ProviderFailureService
 from src.core.execution import ExecutionLifecycleService
 from src.core.finalization import CompletedTurnCommitter, TurnFinalizer
 from src.core.handlers import AgentHandlers, CoreHandlers
+from src.core.hooks import HookRuntimeRegistry
 from src.core.llm.provider import AnthropicProvider
 from src.core.llm.resilience import ResilientModelProvider
 from src.core.maintenance import (
@@ -75,6 +82,7 @@ from src.core.state import (
     LocalWorkspaceRepository,
 )
 from src.core.tasks import TaskPlanningService, TaskRepository
+from src.core.tools.approval_service import ToolApprovalService
 from src.core.workspace.runtime import WorkspaceRuntimeFactory, WorkspaceRuntimeRegistry
 from src.core.tracing import TracingModelProvider
 
@@ -120,6 +128,8 @@ class CoreContainer(containers.DeclarativeContainer):
     memory_enabled = providers.Object(MEMORY_ENABLED)
     maintenance_settings = providers.Singleton(MaintenanceSettings.load)
     session_lock_registry = providers.Singleton(SessionLockRegistry)
+    hook_settings = providers.Singleton(HookSettings.load)
+    hook_runtime = providers.Singleton(HookRuntimeRegistry, settings=hook_settings)
     turn_worker = providers.Factory(
         TurnWorkerExecutor,
         max_workers=CORE_AGENT_WORKERS,
@@ -149,6 +159,10 @@ class CoreContainer(containers.DeclarativeContainer):
     task_service = providers.Factory(
         TaskPlanningService,
         repository=task_repository,
+    )
+    tool_approval_repository = providers.Singleton(
+        SQLiteToolApprovalRepository,
+        database=state_database,
     )
     context_manager = providers.Factory(
         AgentContextManager,
@@ -194,12 +208,18 @@ class CoreContainer(containers.DeclarativeContainer):
         workspace_repository=workspace_repository,
         history_store=conversation_history_store,
     )
+    tool_approval_service = providers.Factory(
+        ToolApprovalService,
+        repository=tool_approval_repository,
+        session_store=session_lifecycle_store,
+    )
 
     context_summary_handler = providers.Factory(
         ContextSummaryHandler,
         workspace_repository=workspace_repository,
         summary_store=summary_store,
         context_manager=context_manager,
+        hook_runtime=hook_runtime,
     )
     memory_extraction_handler = providers.Factory(
         MemoryExtractionHandler,
@@ -286,6 +306,7 @@ class CoreContainer(containers.DeclarativeContainer):
         error_handler=turn_loop_error_handler,
         pause_handler=turn_loop_pause_handler,
         config=loop_config,
+        hook_runtime=hook_runtime,
     )
     recovery_coordinator = providers.Factory(
         ExecutionRecoveryCoordinator,
@@ -300,6 +321,12 @@ class CoreContainer(containers.DeclarativeContainer):
         run_limits=run_limits,
         checkpointer_provider=checkpoint_manager.provided.initialize,
         task_service=task_service,
+        approval_repository=tool_approval_repository,
+        host_execution_enabled=providers.Object(HOST_EXECUTION_ENABLED),
+        approval_enabled=providers.Object(TOOL_APPROVAL_ENABLED),
+        default_timeout_seconds=providers.Object(TOOL_DEFAULT_TIMEOUT_SECONDS),
+        network_policy=providers.Object(TOOL_NETWORK_POLICY),
+        hook_runtime=hook_runtime,
     )
     runtime_registry = providers.Singleton(
         WorkspaceRuntimeRegistry,
@@ -318,6 +345,7 @@ class CoreContainer(containers.DeclarativeContainer):
         execution_lifecycle=execution_lifecycle_service,
         runtime_graph_resolver=runtime_graph_resolver,
         turn_execution_loop=turn_execution_loop,
+        hook_runtime=hook_runtime,
     )
     sync_turn_runner = providers.Factory(
         AgentSyncTurnRunner,
@@ -376,6 +404,7 @@ class CoreContainer(containers.DeclarativeContainer):
         AgentHandlers,
         agent_service=agent_service,
         session_service=session_lifecycle_service,
+        approval_service=tool_approval_service,
     )
     transport = providers.Factory(
         create_transport,

@@ -62,6 +62,7 @@ class AgentTurnService:
         *,
         run_id: str | None = None,
         control: ExecutionControl | None = None,
+        resume_value: dict | None = None,
     ) -> dict:
         """Schedule a recoverable execution resume on the bounded executor."""
         return await self.async_turn_runner.resume(
@@ -71,6 +72,7 @@ class AgentTurnService:
             on_event,
             run_id=run_id,
             control=control,
+            resume_value=resume_value,
         )
 
     def stream_turn(
