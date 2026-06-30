@@ -1,4 +1,4 @@
-﻿"""Non-secret runtime configuration.
+"""Non-secret runtime configuration.
 
 Committed defaults live here. Deployment-specific values and secrets can be
 overridden with environment variables or the Core user-level .env file.
@@ -36,6 +36,11 @@ LLM_API_KEY = env_str("LEARN_AGENT_LLM_API_KEY", "")
 LLM_BASE_URL = env_str("LEARN_AGENT_LLM_BASE_URL", "")
 REASONING_DISPLAY = env_str("LEARN_AGENT_REASONING_DISPLAY", "collapsed").strip().lower()
 REASONING_PREVIEW_LIMIT = env_int("LEARN_AGENT_REASONING_PREVIEW_LIMIT", 12000)
+PROMPT_CACHE_ENABLED = env_bool("LEARN_AGENT_PROMPT_CACHE_ENABLED", True)
+PROMPT_CACHE_TTL = env_str("LEARN_AGENT_PROMPT_CACHE_TTL", "5m").strip()
+PROMPT_CACHE_TOOLS = env_bool("LEARN_AGENT_PROMPT_CACHE_TOOLS", True)
+PROMPT_CACHE_SYSTEM = env_bool("LEARN_AGENT_PROMPT_CACHE_SYSTEM", True)
+PROMPT_CACHE_MESSAGES = env_bool("LEARN_AGENT_PROMPT_CACHE_MESSAGES", True)
 
 # Container command sandbox limits. The Workspace is copied into a temporary
 # directory and mounted read-only; command output is truncated before LLM input.

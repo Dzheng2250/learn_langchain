@@ -34,6 +34,7 @@
 | Agent Runtime 扩展 | `/docs/development/agent-runtime-extension.md` |
 | 新增工具指南（端到端教程） | `/docs/development/tool-extension-guide.md` |
 | LLM Provider 边界 | `/docs/architecture/llm-provider-boundary.md` |
+| Anthropic 前缀缓存控制 | `/docs/architecture/prompt-cache-strategy.md` |
 | Agent 函数级调用链 | `/docs/architecture/agent-execution-call-chain.md` |
 | Core 内部接口与 IoC 边界 | `/docs/architecture/interface-driven-core.md` |
 | 本地状态与数据库一致性 | `/docs/architecture/database-state-and-consistency.md` |

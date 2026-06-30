@@ -1,11 +1,17 @@
 """Concrete LangChain model provider implementations."""
 
 from langchain_anthropic import ChatAnthropic
+from langchain_anthropic.chat_models import convert_to_anthropic_tool
 
 from src.config.settings import (
     LLM_API_KEY,
     LLM_BASE_URL,
     MODEL,
+    PROMPT_CACHE_ENABLED,
+    PROMPT_CACHE_MESSAGES,
+    PROMPT_CACHE_SYSTEM,
+    PROMPT_CACHE_TOOLS,
+    PROMPT_CACHE_TTL,
 )
 from src.core.llm.contracts import (
     LlmConfigurationStatus,
@@ -13,6 +19,7 @@ from src.core.llm.contracts import (
     ModelConfiguration,
     ModelProvider,
 )
+from src.core.llm.prompt_cache import PromptCachePolicy, PromptCacheRunnable, PromptCacheSettings
 
 
 class AnthropicProvider:
@@ -64,7 +71,26 @@ class AnthropicProvider:
             metadata={"purpose": purpose.value},
             max_retries=0,
         )
-        return model.bind_tools(tools) if tools else model
+        policy = PromptCachePolicy(
+            PromptCacheSettings(
+                enabled=PROMPT_CACHE_ENABLED,
+                ttl=PROMPT_CACHE_TTL,
+                cache_system=PROMPT_CACHE_SYSTEM,
+                cache_tools=PROMPT_CACHE_TOOLS,
+                cache_messages=PROMPT_CACHE_MESSAGES,
+            )
+        )
+        formatted_tools = (
+            [dict(convert_to_anthropic_tool(tool)) for tool in tools]
+            if tools
+            else None
+        )
+        runnable = (
+            model.bind_tools(policy.apply_tools(formatted_tools))
+            if formatted_tools
+            else model
+        )
+        return PromptCacheRunnable(runnable, policy)
 
 
 __all__ = [

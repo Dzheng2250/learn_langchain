@@ -123,6 +123,7 @@ class DocumentationStructureTest(unittest.TestCase):
             "docs/architecture/tui-architecture.md",
             "docs/architecture/agent-execution-architecture.md",
             "docs/architecture/agent-execution-call-chain.md",
+            "docs/architecture/prompt-cache-strategy.md",
             "docs/decisions/cli-core-json-rpc.md",
             "docs/reference/configuration-reference.md",
             "docs/reference/local-state-schema.md",
