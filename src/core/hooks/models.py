@@ -20,6 +20,7 @@ class HookPoint(StrEnum):
 
 class HookAction(StrEnum):
     CONTINUE = "continue"
+    WARN = "warn"
     REPLACE = "replace"
     REJECT = "reject"
     ALLOW_ONCE = "allow_once"
@@ -62,20 +63,21 @@ class HookSpec:
     matcher: str = "*"
     priority: int = 100
     failure_mode: HookFailureMode = HookFailureMode.OPEN
+    timeout_seconds: float = 30.0
 
 
 ALLOWED_ACTIONS = {
-    HookPoint.SESSION_START: {HookAction.CONTINUE},
-    HookPoint.USER_PROMPT_SUBMIT: {HookAction.CONTINUE, HookAction.REPLACE, HookAction.REJECT},
-    HookPoint.PRE_TOOL_USE: {HookAction.CONTINUE, HookAction.REPLACE, HookAction.REJECT},
+    HookPoint.SESSION_START: {HookAction.CONTINUE, HookAction.WARN},
+    HookPoint.USER_PROMPT_SUBMIT: {HookAction.CONTINUE, HookAction.WARN, HookAction.REPLACE, HookAction.REJECT},
+    HookPoint.PRE_TOOL_USE: {HookAction.CONTINUE, HookAction.WARN, HookAction.REPLACE, HookAction.REJECT},
     HookPoint.PERMISSION_REQUEST: {
-        HookAction.CONTINUE, HookAction.ALLOW_ONCE, HookAction.ASK_USER,
+        HookAction.CONTINUE, HookAction.WARN, HookAction.REPLACE, HookAction.ALLOW_ONCE, HookAction.ASK_USER,
         HookAction.DENY,
     },
-    HookPoint.POST_TOOL_USE: {HookAction.CONTINUE},
-    HookPoint.PRE_COMPACT: {HookAction.CONTINUE, HookAction.REPLACE, HookAction.REJECT},
-    HookPoint.POST_COMPACT: {HookAction.CONTINUE},
-    HookPoint.SUBAGENT_START: {HookAction.CONTINUE, HookAction.REPLACE, HookAction.REJECT},
-    HookPoint.SUBAGENT_STOP: {HookAction.CONTINUE, HookAction.REPLACE},
-    HookPoint.STOP: {HookAction.CONTINUE, HookAction.REJECT},
+    HookPoint.POST_TOOL_USE: {HookAction.CONTINUE, HookAction.WARN},
+    HookPoint.PRE_COMPACT: {HookAction.CONTINUE, HookAction.WARN, HookAction.REPLACE, HookAction.REJECT},
+    HookPoint.POST_COMPACT: {HookAction.CONTINUE, HookAction.WARN},
+    HookPoint.SUBAGENT_START: {HookAction.CONTINUE, HookAction.WARN, HookAction.REPLACE, HookAction.REJECT},
+    HookPoint.SUBAGENT_STOP: {HookAction.CONTINUE, HookAction.WARN, HookAction.REPLACE},
+    HookPoint.STOP: {HookAction.CONTINUE, HookAction.WARN, HookAction.REJECT},
 }

@@ -21,7 +21,7 @@ from src.core.agent.loop_pause import TurnLoopPauseHandler
 from src.core.agent.run_observer import TurnRunObserver
 from src.core.agent.slices import SliceExecutionService
 from src.core.common.content import message_content_text
-from src.core.hooks import HookAction, HookContext, HookPoint, NOOP_HOOK_DISPATCHER
+from src.core.hooks import HookAction, HookContext, HookPoint, HookRejected, NOOP_HOOK_DISPATCHER
 from src.core.state.types import ExecutionStatus
 from src.core.tasks.context import ToolExecutionContext
 from src.core.telemetry import (

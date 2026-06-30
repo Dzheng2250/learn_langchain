@@ -109,11 +109,11 @@ class ToolRegistry:
 
     def specs(self) -> tuple[ToolSpec, ...]:
         """Return an immutable snapshot of all registered specifications."""
-        return tuple(self._specs.values())
+        return tuple(self._specs[name] for name in sorted(self._specs))
 
     def specs_for(self, audience: ToolAudience) -> tuple[ToolSpec, ...]:
         """Return specifications visible to one Agent audience."""
-        return tuple(spec for spec in self._specs.values() if audience in spec.audiences)
+        return tuple(spec for spec in self.specs() if audience in spec.audiences)
 
     def tools_for(self, audience: ToolAudience) -> list:
         """Return executable tool objects visible to one Agent audience."""

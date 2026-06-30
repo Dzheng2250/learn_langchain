@@ -1,7 +1,7 @@
 """Idempotent transactional migrations for the authoritative local state database."""
 
 
-LATEST_SCHEMA_VERSION = 9
+LATEST_SCHEMA_VERSION = 10
 
 
 def apply_local_migrations(conn) -> None:
@@ -16,7 +16,11 @@ def apply_local_migrations(conn) -> None:
             "Local state schema is newer than this Core version supports "
             f"({current_version} > {LATEST_SCHEMA_VERSION})."
         )
-    if current_version < 2:
+    applied_versions = {
+        int(row["version"])
+        for row in conn.execute("SELECT version FROM local_schema_migrations")
+    }
+    if current_version < 2 or 2 not in applied_versions:
         _ensure_column(
             conn,
             "sessions",
@@ -31,10 +35,10 @@ def apply_local_migrations(conn) -> None:
         )
         _ensure_column(conn, "executions", "completed_at", "TEXT")
         _record_migration(conn, 2, "durable_maintenance_and_checkpoint_state")
-    if current_version < 3:
+    if current_version < 3 or 3 not in applied_versions:
         _ensure_state_validation_triggers(conn)
         _record_migration(conn, 3, "typed_domain_state_validation")
-    if current_version < 4:
+    if current_version < 4 or 4 not in applied_versions:
         _ensure_column(
             conn,
             "executions",
@@ -49,7 +53,7 @@ def apply_local_migrations(conn) -> None:
             ("pending", "in_progress", "completed", "cancelled"),
         )
         _record_migration(conn, 4, "execution_private_tasks")
-    if current_version < 5:
+    if current_version < 5 or 5 not in applied_versions:
         _ensure_column(
             conn,
             "sessions",
@@ -57,18 +61,21 @@ def apply_local_migrations(conn) -> None:
             "INTEGER NOT NULL DEFAULT 0",
         )
         _record_migration(conn, 5, "session_context_tokens")
-    if current_version < 6:
+    if current_version < 6 or 6 not in applied_versions:
         _ensure_column(conn, "sessions", "archived_at", "TEXT")
         _record_migration(conn, 6, "session_archive_marker")
-    if current_version < 7:
+    if current_version < 7 or 7 not in applied_versions:
         _ensure_context_window_lineage(conn)
         _record_migration(conn, 7, "context_window_lineage")
-    if current_version < 8:
+    if current_version < 8 or 8 not in applied_versions:
         _ensure_tool_approval_tables(conn)
         _record_migration(conn, 8, "tool_approval_policy")
-    if current_version < 9:
+    if current_version < 9 or 9 not in applied_versions:
         _ensure_tool_permission_session_foreign_key(conn)
         _record_migration(conn, 9, "tool_permission_session_integrity")
+    if current_version < 10 or 10 not in applied_versions:
+        _ensure_tool_approval_audit_request_index(conn)
+        _record_migration(conn, 10, "tool_approval_audit_request_index")
 
 
 def _ensure_tool_approval_tables(conn) -> None:
@@ -180,6 +187,17 @@ def _ensure_tool_permission_session_foreign_key(conn) -> None:
         """
         CREATE INDEX IF NOT EXISTS idx_tool_permission_rules_lookup
         ON tool_permission_rules(workspace_id, tool_name, rule_key, session_id)
+        """
+    )
+
+def _ensure_tool_approval_audit_request_index(conn) -> None:
+    """Prevent duplicate audit rows for one resolved approval request."""
+    if not _table_exists(conn, "tool_approval_audit"):
+        return
+    conn.execute(
+        """
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_tool_approval_audit_request
+        ON tool_approval_audit(request_id)
         """
     )
 

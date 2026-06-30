@@ -43,7 +43,8 @@ class SQLiteToolApprovalRepository:
         return self._request_dict(row)
 
     def apply_response(self, request_id, response, *, context, rule_key, persistable) -> None:
-        response = ApprovalResponse(response)
+        if not isinstance(response, ApprovalResponse):
+            response = ApprovalResponse(response)
         with self.database.transaction() as conn:
             row = conn.execute(
                 "SELECT * FROM tool_approval_requests WHERE request_id=?",
@@ -91,7 +92,7 @@ class SQLiteToolApprovalRepository:
                         ),
                     )
             conn.execute(
-                """INSERT INTO tool_approval_audit(
+                """INSERT OR IGNORE INTO tool_approval_audit(
                        audit_id, request_id, workspace_id, session_id,
                        execution_id, tool_call_id, tool_name, response
                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",

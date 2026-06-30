@@ -29,28 +29,54 @@ class HookDispatcher:
                 decision = spec.handler.handle(current)
                 self._validate(context.point, decision)
             except Exception as exc:
+                duration_ms = int((time.monotonic() - started) * 1000)
                 emit_event(
                     "hook_failed", "hooks", "Lifecycle hook failed.",
                     {"hook_id": spec.hook_id, "point": context.point.value,
                      "error_type": type(exc).__name__},
                     level="error",
-                    duration_ms=int((time.monotonic() - started) * 1000),
+                    duration_ms=duration_ms,
                 )
                 if spec.failure_mode == HookFailureMode.CLOSED:
                     return current, HookDecision(
                         HookAction.REJECT,
                         reason=f"Hook {spec.hook_id} failed closed.",
                     )
+                last = HookDecision(
+                    HookAction.WARN,
+                    reason=f"Hook {spec.hook_id} failed open.",
+                )
                 continue
+
+            duration_seconds = time.monotonic() - started
+            if duration_seconds > spec.timeout_seconds:
+                emit_event(
+                    "hook_timeout", "hooks", "Lifecycle hook exceeded timeout.",
+                    {"hook_id": spec.hook_id, "point": context.point.value,
+                     "timeout_seconds": spec.timeout_seconds},
+                    level="error",
+                    duration_ms=int(duration_seconds * 1000),
+                )
+                if spec.failure_mode == HookFailureMode.CLOSED:
+                    return current, HookDecision(
+                        HookAction.REJECT,
+                        reason=f"Hook {spec.hook_id} exceeded its timeout.",
+                    )
+                last = HookDecision(
+                    HookAction.WARN,
+                    reason=f"Hook {spec.hook_id} exceeded its timeout but failed open.",
+                )
+                continue
+
             emit_event(
                 "hook_finished", "hooks", "Lifecycle hook finished.",
                 {"hook_id": spec.hook_id, "point": context.point.value,
                  "action": decision.action.value},
-                duration_ms=int((time.monotonic() - started) * 1000),
+                duration_ms=int(duration_seconds * 1000),
             )
             last = decision
             if decision.action == HookAction.REPLACE:
-                current = current.with_payload(decision.payload or {})
+                current = current.with_payload(_merge_payload(current.payload, decision.payload or {}))
                 continue
             if decision.action in {
                 HookAction.REJECT, HookAction.DENY,
@@ -74,3 +100,14 @@ class HookDispatcher:
 
 
 NOOP_HOOK_DISPATCHER = HookDispatcher(enabled=False)
+
+
+def _merge_payload(original, replacement):
+    """Merge hook replacement fields without dropping unrelated context."""
+    merged = dict(original)
+    for key, value in dict(replacement).items():
+        if isinstance(value, dict) and isinstance(merged.get(key), dict):
+            merged[key] = _merge_payload(merged[key], value)
+        else:
+            merged[key] = value
+    return merged

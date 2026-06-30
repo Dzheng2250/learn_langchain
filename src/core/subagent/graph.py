@@ -14,6 +14,7 @@ from src.core.common.debug import format_message
 from src.core.hooks import HookAction, HookContext, HookPoint, NOOP_HOOK_DISPATCHER
 from src.core.llm.contracts import LlmPurpose, ModelProvider
 from src.core.prompts import SUBAGENT_SYSTEM_PROMPT, build_subagent_task_prompt
+from src.core.tasks.context import ToolExecutionContext
 from src.core.tools.observed import ObservedToolNode
 
 
@@ -46,7 +47,7 @@ def create_delegate_tool(
         )
         return {"messages": [response]}
 
-    builder = StateGraph(MessagesState)
+    builder = StateGraph(MessagesState, context_schema=ToolExecutionContext)
     builder.add_node("subagent", subagent_node)
     builder.add_node(
         "tools",

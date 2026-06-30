@@ -2,7 +2,7 @@
 
 from collections.abc import Iterator
 
-from src.core.hooks import HookContext, HookPoint
+from src.core.hooks import HookContext, HookPoint, HookRejected
 from typing import Protocol
 
 from src.core.agent.contracts import (

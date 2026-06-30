@@ -68,6 +68,37 @@ class TurnLoopErrorHandler:
         self.observer.run_error_item(item)
         yield item
 
+    def stream_rejected_exception(
+        self,
+        *,
+        run_id: str,
+        execution,
+        active_slice_id: str | None,
+        budget: ExecutionBudget | None,
+        exc: Exception,
+    ) -> Iterator[dict]:
+        """Persist a hook-level rejection without reporting it as a crash."""
+        if execution is not None and self.execution_store is not None:
+            try:
+                usage = budget.snapshot() if budget is not None else None
+                if active_slice_id is not None:
+                    self.execution_store.finish_slice(
+                        active_slice_id,
+                        execution.execution_id,
+                        status=ExecutionStatus.PAUSED_ERROR,
+                        stop_reason=StopReason.TURN_ERROR.value,
+                        usage=usage,
+                    )
+                self.execution_store.pause(
+                    execution.execution_id,
+                    ExecutionStatus.PAUSED_ERROR,
+                    StopReason.TURN_ERROR.value,
+                    str(exc),
+                    usage=usage,
+                )
+            except Exception:
+                pass
+        yield failed_turn_event(run_id, str(exc))
     def stream_unexpected_exception(
         self,
         *,

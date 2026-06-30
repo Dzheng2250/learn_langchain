@@ -50,6 +50,25 @@ class ApprovalService:
         )
         return response.allowed
 
+    def allow_once_from_hook(self, context, decision) -> bool:
+        """Persist a hook-granted single-use approval for resume idempotency."""
+        request = self.request(context, decision)
+        if request.get("status") == "resolved":
+            return str(request.get("response") or "").startswith("allow_")
+        self.repository.apply_response(
+            request["request_id"],
+            ApprovalResponse.ALLOW_ONCE,
+            context=context,
+            rule_key=decision.rule_key,
+            persistable=decision.persistable,
+        )
+        emit_event(
+            "tool_approval_resolved", "tool_policy", "Tool approval resolved by hook.",
+            {"tool": context.tool_name, "request_id": request["request_id"],
+             "response": ApprovalResponse.ALLOW_ONCE.value},
+        )
+        return True
+
 
 def _safe_args_summary(args: dict) -> dict:
     return sanitize_value(args, text_limit=500, list_limit=20)

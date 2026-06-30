@@ -330,7 +330,11 @@ class ToolSecurityTest(unittest.TestCase):
         self.assertNotIn("tool_approval_required", {item["event"] for item in events})
         with self.database.connect() as conn:
             count = conn.execute("SELECT COUNT(*) FROM tool_permission_rules").fetchone()[0]
+            requests = conn.execute("SELECT COUNT(*) FROM tool_approval_requests WHERE status='resolved'").fetchone()[0]
+            audits = conn.execute("SELECT COUNT(*) FROM tool_approval_audit").fetchone()[0]
         self.assertEqual(0, count)
+        self.assertEqual(1, requests)
+        self.assertEqual(1, audits)
 
 
 if __name__ == "__main__":

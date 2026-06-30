@@ -14,10 +14,7 @@ from src.core.telemetry import record_tool_failed, record_tool_finished, record_
 from src.core.tools.catalog import ToolCapability
 from src.core.tools.security.command_rules import command_rule_key
 from src.core.tools.security.enforcement import CapabilityEnforcer
-from src.core.tools.security.models import (
-    PolicyAction, ToolCallContext,
-    ToolExecutionResult, ToolExecutionStatus,
-)
+from src.core.tools.security.models import PolicyAction, ToolCallContext
 
 
 class ToolExecutionPipeline:
@@ -63,7 +60,7 @@ class ToolExecutionPipeline:
                 )
             )
             if hook_decision.action == HookAction.ALLOW_ONCE:
-                allowed = True
+                allowed = self.approvals.allow_once_from_hook(context, decision)
             elif hook_decision.action in {HookAction.DENY, HookAction.REJECT}:
                 allowed = False
             else:
@@ -126,11 +123,6 @@ class ToolExecutionPipeline:
             return self._error(context, exc)
         preview = message_content_text(value) or repr(value)
         if _contains_tool_error(value):
-            result = ToolExecutionResult(
-                ToolExecutionStatus.ERROR,
-                value=value,
-                message=preview,
-            )
             self._dispatch_post_tool(context, "error", content=preview)
             record_tool_failed(
                 self.event_source,
@@ -141,7 +133,6 @@ class ToolExecutionPipeline:
                 duration_ms=int((time.monotonic() - started_at) * 1000),
             )
             return value
-        result = ToolExecutionResult(ToolExecutionStatus.SUCCESS, value=value)
         self._dispatch_post_tool(context, "success", content=preview)
         record_tool_finished(
             self.event_source,

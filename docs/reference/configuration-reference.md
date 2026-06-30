@@ -107,6 +107,8 @@ telemetry/      默认 JSONL 观测事件
 
 预算耗尽不会删除已提交历史；未完成执行可以通过 `learn-agent session resume` 继续。
 
+Hook 配置文件不会自动创建；使用 `learn-agent hooks path` 查看搜索路径，使用 `learn-agent hooks init` 生成安全模板。
+
 ## 5. 本地状态与 PostgreSQL
 
 当前普通对话只依赖本地 SQLite。PostgreSQL 是可选迁移来源、可选 Telemetry Sink 和未来投影目标。

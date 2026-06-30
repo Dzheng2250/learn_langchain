@@ -102,16 +102,18 @@ class HookRuntimeTest(unittest.TestCase):
     def test_json_config_builds_command_hook(self):
         path = Path("configured-hooks.json").resolve()
         document = json.dumps({"hooks": {"Stop": [{"hooks": [{
-                "id": "stop-check", "type": "command",
+                "id": "stop-check", "type": "command", "timeout": 1.5,
                 "command": [sys.executable, "-c", "print('{}')"],
             }]}]}})
         with patch.object(Path, "is_file", return_value=True), patch.object(
             Path, "read_text", return_value=document,
         ):
             dispatcher = build_hook_dispatcher([path])
+            spec = dispatcher.registry.specs()[0]
             _context, decision = dispatcher.dispatch(HookContext(HookPoint.STOP))
+        self.assertEqual(1.5, spec.timeout_seconds)
+        self.assertEqual(1.5, spec.handler.timeout_seconds)
         self.assertEqual(HookAction.CONTINUE, decision.action)
-
 
 if __name__ == "__main__":
     unittest.main()

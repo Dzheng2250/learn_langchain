@@ -36,11 +36,13 @@ def _register_file(registry: HookRegistry, path: Path) -> None:
                 command = item.get("command")
                 if not isinstance(command, list) or not all(isinstance(part, str) for part in command):
                     raise ValueError("Command hooks must use an argv string array")
+                timeout_seconds = float(item.get("timeout", 30))
                 registry.register(HookSpec(
                     hook_id=str(item.get("id") or f"{path.name}:{point.value}:{group_index}:{handler_index}"),
                     point=point,
-                    handler=CommandHook(tuple(command), float(item.get("timeout", 30))),
+                    handler=CommandHook(tuple(command), timeout_seconds),
                     matcher=matcher,
                     priority=int(item.get("priority", 100)),
                     failure_mode=HookFailureMode(item.get("failure_mode", "open")),
+                    timeout_seconds=timeout_seconds,
                 ))

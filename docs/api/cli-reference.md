@@ -31,6 +31,9 @@
 | `learn-agent session delete` | 归档或硬删除 Session | 是 |
 | `learn-agent approval list` | 查询待审批工具调用 | 是 |
 | `learn-agent approval resolve` | 审批并恢复工具调用 | 是 |
+| `learn-agent hooks path` | 查看 Hook 配置文件搜索路径 | 否 |
+| `learn-agent hooks init` | 生成用户级 `hooks.json` 模板 | 否 |
+| `learn-agent hooks validate` | 校验当前 Hook 配置文件 | 否 |
 | `learn-agent trace` | 查询本地系统 Trace | 否 |
 
 `learn-agent-core` 是管理与调试入口，不用于日常对话：
@@ -111,8 +114,6 @@ learn-agent session delete --session old-session --hard
   重置为 0。用于解决 `recent_messages` 中包含导致 LLM 供应商拒绝请求的内容时的 session "卡死"问题。
 - `delete` 默认归档 Session，使其不可继续使用但保留历史；`--hard` 才会永久删除 Session 及其本地关联数据。
 
-## Trace 查询
-
 ## 工具审批
 
 ```shell
@@ -122,6 +123,22 @@ learn-agent approval resolve <request_id> allow_once --session default
 
 审批响应支持单次、Session 和 Workspace 范围的 allow/deny。复合 shell 命令只能单次审批，不能保存为持久规则。
 
+## Hook 配置
+
+```shell
+learn-agent hooks path
+learn-agent hooks init
+learn-agent hooks init --path D:\hooks\hooks.json --force
+learn-agent hooks init --project --workspace D:\project
+learn-agent hooks validate --workspace D:\project
+```
+
+- `path` 显示 Core 会读取的 `hooks.json` 路径及文件是否存在。
+- `init` 生成安全模板；模板默认不启用任何外部命令，只在 `_examples` 中给出配置示例。使用 `--project` 时写入 Workspace 下的 `.learn-agent/hooks.json`。
+- `validate` 按当前配置解析 Hook 文件，但不会执行 Hook 命令；传入 `--workspace` 时会同时检查项目级路径。
+
+默认用户级配置文件位于平台配置目录下的 `hooks.json`，例如 Windows 上通常是
+`C:\Users\<user>\AppData\Local\learn-agent\hooks.json`。系统不会自动创建该文件。
 ## Trace 查询
 
 ```shell

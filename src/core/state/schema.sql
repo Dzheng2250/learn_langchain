@@ -358,6 +358,9 @@ ON execution_tasks(execution_id, ordinal, task_key);
 CREATE INDEX IF NOT EXISTS idx_tool_approval_pending
 ON tool_approval_requests(status, workspace_id, session_id, created_at);
 
+CREATE UNIQUE INDEX IF NOT EXISTS idx_tool_approval_audit_request
+ON tool_approval_audit(request_id);
+
 CREATE INDEX IF NOT EXISTS idx_tool_permission_rules_lookup
 ON tool_permission_rules(workspace_id, tool_name, rule_key, session_id);
 

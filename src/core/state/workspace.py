@@ -143,6 +143,20 @@ class LocalWorkspaceRepository:
             # Remove Session-scoped grants explicitly; Workspace rules survive.
             conn.execute(
                 """
+                DELETE FROM tool_approval_audit
+                WHERE workspace_id = ? AND session_id = ?
+                """,
+                (str(session.workspace.workspace_id), str(session.session_id)),
+            )
+            conn.execute(
+                """
+                DELETE FROM tool_approval_requests
+                WHERE workspace_id = ? AND sessi on_id = ?
+                """,
+                (str(session.workspace.workspace_id), str(session.session_id)),
+            )
+            conn.execute(
+                """
                 DELETE FROM tool_permission_rules
                 WHERE workspace_id = ? AND session_id = ?
                 """,

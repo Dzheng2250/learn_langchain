@@ -47,7 +47,7 @@ Hook 可以影响流程；Telemetry 只能观察。Hook 不能覆盖 Workspace �
 
 ## 配置与命令协议
 
-用户级默认读取 `<user_config_dir>/learn-agent/hooks.json`。设置 `LEARN_AGENT_PROJECT_HOOKS_ENABLED=true` 后，额外读取 `<workspace>/.learn-agent/hooks.json`。也可通过 `LEARN_AGENT_HOOK_CONFIG_FILES` 使用系统路径分隔符配置多个文件。
+用户级默认读取平台配置目录下的 `hooks.json`，例如 Windows 上通常是 `C:\Users\<user>\AppData\Local\learn-agent\hooks.json`。Core 不会自动创建该文件；需要使用 `learn-agent hooks init` 生成模板，或手动创建。`learn-agent hooks path` 可查看当前会读取哪些文件，`learn-agent hooks validate` 可在不执行 Hook 命令的前提下验证配置格式。也可通过 `LEARN_AGENT_HOOK_CONFIG_FILES` 使用系统路径分隔符配置多个额外文件。
 
 ```json
 {
