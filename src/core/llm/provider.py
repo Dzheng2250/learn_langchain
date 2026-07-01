@@ -1,6 +1,8 @@
 """Concrete LangChain model provider implementations."""
 
 from langchain_anthropic import ChatAnthropic
+# Internal compatibility dependency: contract tests must catch changes when
+# upgrading langchain-anthropic because no public converter exposes cache fields.
 from langchain_anthropic.chat_models import convert_to_anthropic_tool
 
 from src.config.settings import (

@@ -45,6 +45,7 @@ class FakeModel:
 class RecordingRunnable:
     def __init__(self):
         self.calls = []
+        self.model_name = "recording-model"
 
     def _record(self, method, value, config, kwargs):
         self.calls.append((method, value, config, kwargs))
@@ -69,6 +70,9 @@ class RecordingRunnable:
     async def abatch(self, values, config=None, **kwargs):
         self._record("abatch", values, config, kwargs)
         return ["abatch"] * len(values)
+
+    def future_execution_method(self, value):
+        return value
 
 
 class RecordingProvider:
@@ -251,6 +255,7 @@ class AgentExecutionArchitectureTest(unittest.TestCase):
             {"type": "ephemeral", "ttl": "5m"},
             rewritten[1].content[0]["cache_control"],
         )
+
     def test_prompt_cache_policy_marks_latest_tool_result_during_tool_loop(self):
         policy = PromptCachePolicy(PromptCacheSettings(enabled=True, ttl="5m"))
         messages = [
@@ -295,6 +300,7 @@ class AgentExecutionArchitectureTest(unittest.TestCase):
             rewritten[-2].content[0]["cache_control"],
         )
         self.assertNotIn("cache_control", rewritten[-1].content[0])
+
     def test_prompt_cache_policy_replaces_existing_message_breakpoints(self):
         policy = PromptCachePolicy(PromptCacheSettings(enabled=True, ttl="5m"))
         stale = {"type": "ephemeral", "ttl": "1h"}
@@ -351,6 +357,7 @@ class AgentExecutionArchitectureTest(unittest.TestCase):
             {"type": "ephemeral", "ttl": "5m"},
             rewritten[1]["cache_control"],
         )
+
     def test_prompt_cache_policy_normalizes_text_blocks_without_type(self):
         policy = PromptCachePolicy(PromptCacheSettings(enabled=True, ttl="5m"))
         messages = [
@@ -367,11 +374,13 @@ class AgentExecutionArchitectureTest(unittest.TestCase):
         self.assertEqual({"type": "ephemeral", "ttl": "5m"}, rewritten[1].content[0]["cache_control"])
         self.assertEqual([{"type": "text", "text": "next question"}], rewritten[2].content)
         self.assertNotIn("cache_control", rewritten[2].content[0])
+
     def test_prompt_cache_policy_can_be_disabled(self):
         policy = PromptCachePolicy(PromptCacheSettings(enabled=False))
         messages = [SystemMessage(content="system"), HumanMessage(content="current")]
 
         self.assertIs(messages, policy.apply_messages(messages))
+
     def test_prompt_cache_runnable_rewrites_every_execution_entry_point(self):
         inner = RecordingRunnable()
         runnable = PromptCacheRunnable(inner)
@@ -444,6 +453,19 @@ class AgentExecutionArchitectureTest(unittest.TestCase):
                     rewritten[1].content[0]["cache_control"],
                 )
                 self.assertNotIn("cache_control", rewritten[2].content[0])
+
+    def test_prompt_cache_runnable_warns_only_for_unwrapped_methods(self):
+        runnable = PromptCacheRunnable(RecordingRunnable())
+
+        with self.assertNoLogs("src.core.llm.prompt_cache", level="WARNING"):
+            self.assertEqual("recording-model", runnable.model_name)
+
+        with self.assertLogs("src.core.llm.prompt_cache", level="WARNING") as captured:
+            method = runnable.future_execution_method
+
+        self.assertEqual("value", method("value"))
+        self.assertIn("future_execution_method", captured.output[0])
+        self.assertIn("without prompt cache injection", captured.output[0])
 
     def test_provider_reports_missing_api_key_without_network_request(self):
         status = AnthropicProvider(

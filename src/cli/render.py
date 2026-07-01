@@ -111,6 +111,7 @@ class AgentEventRenderer:
     done_announced: bool = False
     error_message: str | None = None
     current_attempt_id: str | None = None
+    pending_approval: dict | None = None
 
     def render(self, params: dict) -> None:
         """Render one ``agent.event`` notification without changing business state."""
@@ -146,6 +147,7 @@ class AgentEventRenderer:
             redacted = " redacted" if data.get("redacted") else " hidden"
             print(f"\n[thinking_done: {count} chars{redacted}]", flush=True)
         elif event == "tool_approval_required":
+            self.pending_approval = dict(data)
             request_id = data.get("request_id", "")
             tool = data.get("tool", "unknown")
             detail = _generic_tool_args_detail(data.get("args"))

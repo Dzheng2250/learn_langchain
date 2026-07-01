@@ -3,10 +3,14 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import logging
 from typing import Any
 
 from langchain_core.messages import BaseMessage, HumanMessage, SystemMessage
 from langchain_core.runnables import Runnable
+
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -118,7 +122,14 @@ class PromptCacheRunnable(Runnable):
         )
 
     def __getattr__(self, name: str):
-        return getattr(self.inner, name)
+        attribute = getattr(self.inner, name)
+        if callable(attribute) and not name.startswith("_"):
+            logger.warning(
+                "PromptCacheRunnable method %s is delegated without prompt cache "
+                "injection; add an explicit wrapper before using it for model input.",
+                name,
+            )
+        return attribute
 
 
 def _last_stable_history_index(
@@ -287,6 +298,7 @@ def _is_cacheable_block(block: Any, code_execution_tool_ids: set[str]) -> bool:
             "code_execution"
         ):
             return False
+        return True
     if (
         block_type == "tool_result"
         and str(block.get("tool_use_id", "")) in code_execution_tool_ids
