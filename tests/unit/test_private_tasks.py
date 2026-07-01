@@ -4,8 +4,11 @@ from types import SimpleNamespace
 
 from langchain_core.messages import AIMessage
 from langchain_core.utils.function_calling import convert_to_openai_tool
+from langgraph.checkpoint.memory import MemorySaver
+from langgraph.graph import END, START, MessagesState, StateGraph
 
 from src.config.tasks import TaskSettings
+from src.core.adapters.sqlite.tool_approvals import SQLiteToolApprovalRepository
 from src.core.llm.provider import LlmPurpose
 from src.core.state import ExecutionRepository, LocalStateDatabase, LocalWorkspaceRepository
 from src.core.tasks import (
@@ -17,8 +20,18 @@ from src.core.tasks import (
 )
 from src.core.tasks.models import TaskPlanItem
 from src.core.tasks.validation import TaskPlanValidator
-from src.core.tools.catalog import ToolAudience, ToolRisk
+from src.core.tools.catalog import (
+    ApprovalRequirement,
+    ToolAudience,
+    ToolCapability,
+    ToolRisk,
+    ToolSpec,
+)
+from src.core.tools.observed import ObservedToolNode
 from src.core.tools.registry import create_workspace_toolset
+from src.core.tools.security.approval import ApprovalService
+from src.core.tools.security.pipeline import ToolExecutionPipeline
+from src.core.tools.security.policy import DefaultToolPolicyEngine
 
 
 class FakeChatModel:
@@ -226,6 +239,57 @@ class PrivateTaskTest(unittest.TestCase):
 
         self.assertNotIn("runtime", str(schemas))
         self.assertEqual({"properties": {}, "type": "object"}, schemas["task_list"])
+
+    def test_task_plan_executes_through_security_pipeline_with_injected_runtime(self):
+        task_plan = next(
+            tool for tool in create_task_tools(self.service) if tool.name == "task_plan"
+        )
+        spec = ToolSpec(
+            name="task_plan",
+            tool=task_plan,
+            audiences=frozenset({ToolAudience.PARENT}),
+            risk=ToolRisk.INTERNAL_STATE,
+            capabilities=frozenset({ToolCapability.INTERNAL_STATE}),
+            approval=ApprovalRequirement.NONE,
+        )
+        approvals = SQLiteToolApprovalRepository(self.database)
+        pipeline = ToolExecutionPipeline(
+            {"task_plan": spec},
+            policy=DefaultToolPolicyEngine(approvals),
+            approvals=ApprovalService(approvals),
+        )
+        builder = StateGraph(MessagesState, context_schema=ToolExecutionContext)
+        builder.add_node("tools", ObservedToolNode([task_plan], pipeline=pipeline))
+        builder.add_edge(START, "tools")
+        builder.add_edge("tools", END)
+        graph = builder.compile(checkpointer=MemorySaver())
+        tool_call = AIMessage(
+            content="",
+            tool_calls=[
+                {
+                    "name": "task_plan",
+                    "args": {
+                        "tasks": [
+                            {
+                                "task_key": "implement",
+                                "subject": "Implement factorial",
+                            }
+                        ]
+                    },
+                    "id": "task-plan-call",
+                    "type": "tool_call",
+                }
+            ],
+        )
+
+        result = graph.invoke(
+            {"messages": [tool_call]},
+            config={"configurable": {"thread_id": "task-plan-pipeline"}},
+            context=self.context,
+        )
+
+        self.assertIn("Task plan saved.", result["messages"][-1].content)
+        self.assertIsNotNone(self.repository.get(self.context, "implement"))
 
     def test_task_tools_return_clear_error_without_execution_context(self):
         task_list = next(tool for tool in create_task_tools(self.service) if tool.name == "task_list")

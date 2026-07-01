@@ -177,7 +177,10 @@ class ToolExecutionPipeline:
 
     @staticmethod
     def _validated_request(request, context):
-        schema = getattr(request.tool, "args_schema", None)
+        # Validate only arguments exposed to the model. ``args_schema`` also
+        # contains LangGraph-injected parameters such as ToolRuntime, which are
+        # deliberately absent from the LLM tool call and injected by ToolNode.
+        schema = getattr(request.tool, "tool_call_schema", None)
         args = context.args
         if schema is not None:
             args = schema.model_validate(args).model_dump()
