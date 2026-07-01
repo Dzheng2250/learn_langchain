@@ -23,7 +23,7 @@ Core daemon 的外部通信能力。
 
 | 读者目标 | 阅读顺序 |
 |---|---|
-| 实现新的 TUI/GUI 前端 | [IPC 协议](/docs/api/ipc-protocol.md) -> [RPC 方法参考](/docs/api/rpc-reference.md) -> [流式事件参考](/docs/api/streaming-events.md) -> [前端接入指南](/docs/api/tui-client-guide.md) |
+| 实现新的 TUI/GUI 前端 | [前端开发完整接入指南](/docs/api/frontend-integration-guide.md) -> [RPC 方法参考](/docs/api/rpc-reference.md) -> [流式事件参考](/docs/api/streaming-events.md) |
 | 调试一次请求失败 | [错误与恢复参考](/docs/api/error-reference.md) -> [RPC 方法参考](/docs/api/rpc-reference.md) -> [系统 Trace](/docs/architecture/system-tracing.md) |
 | 使用命令行 | [CLI 命令参考](/docs/api/cli-reference.md) |
 | 使用内置 TUI | [TUI 使用与命令参考](/docs/api/tui-reference.md) |
@@ -66,9 +66,10 @@ Core daemon 的外部通信能力。
 ### 5. 前端与 CLI
 
 - [CLI 命令参考](/docs/api/cli-reference.md)
+- [前端开发完整接入指南](/docs/api/frontend-integration-guide.md)
 - [前端接入指南](/docs/api/tui-client-guide.md)
 
-负责说明用户命令和前端客户端的接入职责。
+完整接入指南负责端到端客户端流程；原 TUI 接入指南保留为简要实现说明。CLI 参考负责用户命令。
 
 前端不得直接访问 `state.db`、`checkpoints.db`、工具实现或 Agent 内部服务。所有业务操作必须通过
 Core daemon 的 RPC。

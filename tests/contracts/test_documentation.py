@@ -114,6 +114,7 @@ class DocumentationStructureTest(unittest.TestCase):
             "docs/api/streaming-events.md",
             "docs/api/error-reference.md",
             "docs/api/tui-reference.md",
+            "docs/api/frontend-integration-guide.md",
             "docs/api/tui-client-guide.md",
             "docs/api/cli-reference.md",
             "docs/api/protocol-compatibility.md",
