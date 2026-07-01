@@ -147,15 +147,19 @@ def _observe_tool_call(
 
 
 def _hook_context_from_request(request, point: HookPoint, payload: dict[str, Any]) -> HookContext:
+    # LangGraph's ToolRuntime is a TypedDict. In Python 3.12 getattr
+    # does not read TypedDict keys, so fall back to dict access.
     runtime = getattr(request.runtime, "context", None)
+    if runtime is None and isinstance(request.runtime, dict):
+        runtime = request.runtime.get("context")
     return HookContext(
         point=point,
         subject=_tool_call_name(request) or "unknown",
-        workspace_id=str(getattr(runtime, "workspace_id", "")),
-        session_id=str(getattr(runtime, "session_id", "")),
-        execution_id=str(getattr(runtime, "execution_id", "") or ""),
-        run_id=str(getattr(runtime, "run_id", "") or ""),
-        workspace_root=str(getattr(runtime, "workspace_root", "") or ""),
+        workspace_id=str(getattr(runtime, "workspace_id", "")) if runtime is not None else "",
+        session_id=str(getattr(runtime, "session_id", "")) if runtime is not None else "",
+        execution_id=str(getattr(runtime, "execution_id", "") or "") if runtime is not None else "",
+        run_id=str(getattr(runtime, "run_id", "") or "") if runtime is not None else "",
+        workspace_root=str(getattr(runtime, "workspace_root", "") or "") if runtime is not None else "",
         payload=payload,
     )
 

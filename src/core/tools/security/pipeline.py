@@ -160,23 +160,27 @@ class ToolExecutionPipeline:
         spec = self.specs.get(name)
         if spec is None:
             raise PermissionError(f"Unregistered tool: {name}")
+        # LangGraph's ToolRuntime is a TypedDict. In Python 3.12 getattr
+        # does not read TypedDict keys, so fall back to dict access.
         runtime = getattr(request.runtime, "context", None)
+        if runtime is None and isinstance(request.runtime, dict):
+            runtime = request.runtime.get("context")
         return ToolCallContext(
             name,
             call.get("id") or "",
             dict(call.get("args") or {}),
-            str(getattr(runtime, "workspace_id", "")),
-            str(getattr(runtime, "session_id", "")),
-            getattr(runtime, "execution_id", None),
-            getattr(runtime, "run_id", None),
-            getattr(runtime, "actor", "parent"),
+            str(getattr(runtime, "workspace_id", "")) if runtime is not None else "",
+            str(getattr(runtime, "session_id", "")) if runtime is not None else "",
+            getattr(runtime, "execution_id", None) if runtime is not None else None,
+            getattr(runtime, "run_id", None) if runtime is not None else None,
+            getattr(runtime, "actor", "parent") if runtime is not None else "parent",
             spec,
-            getattr(runtime, "workspace_root", ""),
+            getattr(runtime, "workspace_root", "") if runtime is not None else "",
         )
 
     @staticmethod
     def _validated_request(request, context):
-        schema = getattr(request.tool, "args_schema", None)
+        schema = getattr(request.tool, "tool_call_schema", None)
         args = context.args
         if schema is not None:
             args = schema.model_validate(args).model_dump()

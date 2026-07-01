@@ -12,6 +12,11 @@ from src.core.tasks.service import TaskPlanningService
 def _context_from_runtime(runtime: ToolRuntime) -> ToolExecutionContext:
     """Read the graph-injected Execution identity from LangGraph runtime."""
     context = getattr(runtime, "context", None)
+    # LangGraph's ToolRuntime is a TypedDict (dict subclass). In Python 3.12
+    # getattr does not read TypedDict keys (added in Python 3.13 via PEP 705),
+    # so fall back to dict access when getattr returns None.
+    if context is None and isinstance(runtime, dict):
+        context = runtime.get("context")
     if isinstance(context, ToolExecutionContext):
         return context
     if isinstance(context, dict):
