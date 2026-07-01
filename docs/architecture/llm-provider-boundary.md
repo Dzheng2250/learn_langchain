@@ -34,7 +34,15 @@ AgentGraph / Summary / Memory / FileSummary
 - 从 `LEARN_AGENT_LLM_API_KEY`、`LEARN_AGENT_MODEL` 和 `LEARN_AGENT_LLM_BASE_URL` 读取配置。
 - 构造 `ChatAnthropic(model=..., api_key=..., base_url=..., streaming=..., metadata={"purpose": ...})`。
 - 将 `max_retries` 设为 `0`，避免 SDK 隐式重试与项目自己的重试策略叠加。
-- 当调用方传入工具 schema 时使用 `model.bind_tools(tools)`。
+- 当调用方传入工具时，先用 `convert_to_anthropic_tool()` 转换 schema，由 `PromptCachePolicy` 建立工具断点，再调用 `model.bind_tools()`。
+- 用 `PromptCacheRunnable` 包装 Runnable，在每次 `invoke()` 前复制并改写 system 和历史 message block。
+- 缓存 marker 不写回 Session、数据库或 checkpoint；服务商返回的 cache creation/read token 由 Trace callback 提取。
+
+请求中的缓存边界按 `tools -> system -> messages` 排列。messages 断点会随最近稳定历史向后移动；工具循环中优先落在最新 `ToolMessage/tool_result`，而不是固定在更早的用户消息。
+
+工具、system prompt、历史消息的具体断点规则和排查方法见
+[Anthropic 前缀缓存控制](/docs/architecture/prompt-cache-strategy.md)。本篇只定义 Provider 与消息模型边界，
+不重复维护缓存策略细节。
 
 当前代码中不再保留 `OpenAICompatibleProvider`。如果未来要重新接入 OpenAI、MiniMax 专用 API、本地模型或原生 Anthropic HTTP adapter，应新增 adapter，而不是让业务模块直接导入具体 SDK。
 

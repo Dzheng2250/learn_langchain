@@ -116,12 +116,29 @@ learn-agent session delete --session old-session --hard
 
 ## 工具审批
 
+交互式 `learn-agent chat` 收到 `tool_approval_required` 后会原地显示工具名、审批原因和 capability，并提供：
+
+```text
+1=allow once, 2=deny once,
+3=allow session, 4=deny session,
+5=allow workspace, 6=deny workspace
+```
+
+后四项只在请求允许持久化时出现。按 Enter、`Ctrl+C` 或输入结束会保留待审批状态，不会默认批准或拒绝。提交决定后 CLI 调用 `approval.resolve` 并继续同一个 Execution；若恢复后再次遇到审批，会继续询问。
+
+一次性 chat、自动化脚本、退出终端或 daemon 重启后，使用显式命令：
+
 ```shell
 learn-agent approval list --session default
 learn-agent approval resolve <request_id> allow_once --session default
+learn-agent approval resolve <request_id> deny_once --session default
+learn-agent approval resolve <request_id> allow_session --session default
+learn-agent approval resolve <request_id> deny_workspace --session default
 ```
 
-审批响应支持单次、Session 和 Workspace 范围的 allow/deny。复合 shell 命令只能单次审批，不能保存为持久规则。
+可用响应为 `allow_once`、`deny_once`、`allow_session`、`deny_session`、`allow_workspace` 和 `deny_workspace`。`list` 返回脱敏参数摘要、capability、原因和 `persistable`；`resolve` 会恢复原工具中断，因此不能用 `session resume` 替代。
+
+Session 规则只影响当前 Session，Workspace 规则影响同一 Workspace 的后续 Session。复合 shell 命令只能单次审批，不能保存为持久规则。批准也不能绕过 Workspace 路径、符号链接、沙箱、主机执行和网络硬限制。完整语义见 [Tool 安全、审批与 Hook 架构](/docs/architecture/tool-security-and-approval.md)。
 
 ## Hook 配置
 

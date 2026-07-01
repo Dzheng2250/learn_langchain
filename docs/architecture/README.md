@@ -60,6 +60,7 @@
 - [私有任务规划](/docs/architecture/private-task-planning.md)
 - [Provider 错误处理](/docs/architecture/provider-error-handling.md)
 - [LLM Provider 边界](/docs/architecture/llm-provider-boundary.md)
+- [Anthropic 前缀缓存控制](/docs/architecture/prompt-cache-strategy.md)
 
 边界要求：
 

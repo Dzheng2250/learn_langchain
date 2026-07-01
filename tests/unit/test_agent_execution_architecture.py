@@ -1,3 +1,4 @@
+import asyncio
 import unittest
 from pathlib import Path
 from unittest.mock import Mock, patch
@@ -5,7 +6,13 @@ from uuid import uuid4
 
 from tests.support.paths import REPOSITORY_ROOT
 
-from langchain_core.messages import AIMessage, HumanMessage
+from langchain_core.messages import (
+    AIMessage,
+    ChatMessage,
+    HumanMessage,
+    SystemMessage,
+    ToolMessage,
+)
 from langchain_core.tools import tool
 
 from src.core.agent.graph import create_parent_graph
@@ -21,6 +28,7 @@ from src.core.telemetry import (
     install_event_bus,
     reset_context,
 )
+from src.core.llm.prompt_cache import PromptCachePolicy, PromptCacheRunnable, PromptCacheSettings
 from src.core.llm.provider import AnthropicProvider, LlmPurpose
 from src.core.memory.extractor import MemoryCandidateExtractor
 from src.core.streaming.events import stream_graph_events
@@ -38,6 +46,39 @@ class FakeModel:
     def invoke(self, _messages, config=None):
         self.received_configs.append(config)
         return AIMessage(content="[]")
+
+
+class RecordingRunnable:
+    def __init__(self):
+        self.calls = []
+        self.model_name = "recording-model"
+
+    def _record(self, method, value, config, kwargs):
+        self.calls.append((method, value, config, kwargs))
+        return method
+
+    def invoke(self, value, config=None, **kwargs):
+        return self._record("invoke", value, config, kwargs)
+
+    async def ainvoke(self, value, config=None, **kwargs):
+        return self._record("ainvoke", value, config, kwargs)
+
+    def stream(self, value, config=None, **kwargs):
+        yield self._record("stream", value, config, kwargs)
+
+    async def astream(self, value, config=None, **kwargs):
+        yield self._record("astream", value, config, kwargs)
+
+    def batch(self, values, config=None, **kwargs):
+        self._record("batch", values, config, kwargs)
+        return ["batch"] * len(values)
+
+    async def abatch(self, values, config=None, **kwargs):
+        self._record("abatch", values, config, kwargs)
+        return ["abatch"] * len(values)
+
+    def future_execution_method(self, value):
+        return value
 
 
 class RecordingProvider:
@@ -90,9 +131,15 @@ class AgentExecutionArchitectureTest(unittest.TestCase):
         )
 
     def test_anthropic_provider_owns_default_vendor_model_construction(self):
-        bound = object()
+        bound = Mock()
         model = Mock()
         model.bind_tools.return_value = bound
+
+        @tool
+        def cached_tool(city: str) -> str:
+            """Get weather."""
+            return city
+
         with patch("src.core.llm.provider.ChatAnthropic", return_value=model) as constructor:
             result = AnthropicProvider(
                 model="test-model",
@@ -102,10 +149,11 @@ class AgentExecutionArchitectureTest(unittest.TestCase):
                 LlmPurpose.PARENT_AGENT,
                 streaming=True,
                 temperature=0.5,
-                tools=["tool"],
+                tools=[cached_tool],
             )
 
-        self.assertIs(bound, result)
+        self.assertIsInstance(result, PromptCacheRunnable)
+        self.assertIs(bound, result.inner)
         constructor.assert_called_once()
         self.assertEqual("test-model", constructor.call_args.kwargs["model"])
         self.assertEqual("key", constructor.call_args.kwargs["api_key"])
@@ -117,7 +165,12 @@ class AgentExecutionArchitectureTest(unittest.TestCase):
             constructor.call_args.kwargs["metadata"],
         )
         self.assertEqual(0, constructor.call_args.kwargs["max_retries"])
-        model.bind_tools.assert_called_once_with(["tool"])
+        bound_tools = model.bind_tools.call_args.args[0]
+        self.assertEqual("cached_tool", bound_tools[0]["name"])
+        self.assertEqual(
+            {"type": "ephemeral", "ttl": "5m"},
+            bound_tools[0]["cache_control"],
+        )
 
     def test_anthropic_provider_does_not_bind_tools_when_absent(self):
         model = Mock()
@@ -127,9 +180,354 @@ class AgentExecutionArchitectureTest(unittest.TestCase):
                 api_key="key",
             ).create_chat_model(LlmPurpose.MEMORY_EXTRACTION, streaming=False)
 
-        self.assertIs(model, result)
+        self.assertIsInstance(result, PromptCacheRunnable)
+        self.assertIs(model, result.inner)
         self.assertFalse(constructor.call_args.kwargs["streaming"])
         model.bind_tools.assert_not_called()
+
+    def test_prompt_cache_policy_marks_system_and_completed_history(self):
+        policy = PromptCachePolicy(PromptCacheSettings(enabled=True, ttl="5m"))
+        messages = [
+            SystemMessage(content="system prompt"),
+            HumanMessage(content="question"),
+            AIMessage(content=[{"type": "text", "text": "I will call a tool"}]),
+            ToolMessage(content="tool output", tool_call_id="tool-1"),
+            AIMessage(content="final answer"),
+            HumanMessage(content="next question"),
+        ]
+
+        rewritten = policy.apply_messages(messages)
+
+        self.assertEqual("system prompt", rewritten[0].content[0]["text"])
+        self.assertEqual({"type": "ephemeral", "ttl": "5m"}, rewritten[0].content[0]["cache_control"])
+        self.assertIsInstance(rewritten[3], ToolMessage)
+        self.assertEqual([{"type": "text", "text": "tool output"}], rewritten[3].content)
+        self.assertNotIn("cache_control", rewritten[3].content[0])
+        self.assertEqual([{"type": "text", "text": "next question"}], rewritten[-1].content)
+        self.assertNotIn("cache_control", rewritten[-1].content[0])
+        self.assertEqual({"type": "ephemeral", "ttl": "5m"}, rewritten[4].content[0]["cache_control"])
+        self.assertEqual("final answer", rewritten[4].content[0]["text"])
+        self.assertEqual("final answer", messages[4].content)
+
+    def test_prompt_cache_policy_marks_tool_use_block_without_text(self):
+        policy = PromptCachePolicy(PromptCacheSettings(enabled=True, ttl="5m"))
+        messages = [
+            SystemMessage(content="system prompt"),
+            HumanMessage(content="previous request"),
+            AIMessage(
+                content=[
+                    {
+                        "type": "tool_use",
+                        "id": "tool-1",
+                        "name": "weather",
+                        "input": {"city": "Kunming"},
+                    }
+                ]
+            ),
+            HumanMessage(content="current request"),
+        ]
+
+        rewritten = policy.apply_messages(messages)
+
+        self.assertEqual(
+            {"type": "ephemeral", "ttl": "5m"},
+            rewritten[-2].content[0]["cache_control"],
+        )
+        self.assertNotIn("cache_control", rewritten[1].content[0])
+
+    def test_prompt_cache_policy_skips_code_execution_blocks(self):
+        policy = PromptCachePolicy(PromptCacheSettings(enabled=True, ttl="5m"))
+        messages = [
+            SystemMessage(content="system prompt"),
+            HumanMessage(content="previous request"),
+            AIMessage(
+                content=[
+                    {
+                        "type": "tool_use",
+                        "id": "code-1",
+                        "name": "code_execution",
+                        "input": {},
+                        "caller": {"type": "code_execution_20250825"},
+                    }
+                ]
+            ),
+            HumanMessage(content="current request"),
+        ]
+
+        rewritten = policy.apply_messages(messages)
+
+        self.assertNotIn("cache_control", rewritten[-2].content[0])
+        self.assertEqual(
+            {"type": "ephemeral", "ttl": "5m"},
+            rewritten[1].content[0]["cache_control"],
+        )
+
+    def test_prompt_cache_policy_marks_latest_tool_result_during_tool_loop(self):
+        policy = PromptCachePolicy(PromptCacheSettings(enabled=True, ttl="5m"))
+        messages = [
+            SystemMessage(content="system prompt"),
+            HumanMessage(content="current request"),
+            AIMessage(
+                content="",
+                tool_calls=[
+                    {"name": "weather", "args": {"city": "Kunming"}, "id": "tool-1"}
+                ],
+            ),
+            ToolMessage(content="sunny", tool_call_id="tool-1"),
+        ]
+
+        rewritten = policy.apply_messages(messages)
+
+        self.assertNotIn("cache_control", rewritten[1].content[0])
+        self.assertEqual(
+            {"type": "ephemeral", "ttl": "5m"},
+            rewritten[-1].content[0]["cache_control"],
+        )
+
+    def test_prompt_cache_policy_marks_previous_tool_result_before_new_user_input(self):
+        policy = PromptCachePolicy(PromptCacheSettings(enabled=True, ttl="5m"))
+        messages = [
+            SystemMessage(content="system prompt"),
+            HumanMessage(content="previous request"),
+            AIMessage(
+                content="",
+                tool_calls=[
+                    {"name": "weather", "args": {"city": "Kunming"}, "id": "tool-1"}
+                ],
+            ),
+            ToolMessage(content="sunny", tool_call_id="tool-1"),
+            HumanMessage(content="current request"),
+        ]
+
+        rewritten = policy.apply_messages(messages)
+
+        self.assertEqual(
+            {"type": "ephemeral", "ttl": "5m"},
+            rewritten[-2].content[0]["cache_control"],
+        )
+        self.assertNotIn("cache_control", rewritten[-1].content[0])
+
+    def test_prompt_cache_policy_replaces_existing_message_breakpoints(self):
+        policy = PromptCachePolicy(PromptCacheSettings(enabled=True, ttl="5m"))
+        stale = {"type": "ephemeral", "ttl": "1h"}
+        messages = [
+            SystemMessage(
+                content=[{"type": "text", "text": "system", "cache_control": stale}]
+            ),
+            HumanMessage(
+                content=[{"type": "text", "text": "old question", "cache_control": stale}]
+            ),
+            AIMessage(
+                content=[{"type": "text", "text": "old answer", "cache_control": stale}]
+            ),
+            HumanMessage(content="current question"),
+        ]
+
+        rewritten = policy.apply_messages(messages)
+        markers = [
+            block["cache_control"]
+            for message in rewritten
+            for block in message.content
+            if isinstance(block, dict) and "cache_control" in block
+        ]
+
+        self.assertEqual(
+            [
+                {"type": "ephemeral", "ttl": "5m"},
+                {"type": "ephemeral", "ttl": "5m"},
+            ],
+            markers,
+        )
+        self.assertNotIn("cache_control", rewritten[1].content[0])
+
+    def test_prompt_cache_policy_replaces_existing_tool_breakpoints(self):
+        policy = PromptCachePolicy(PromptCacheSettings(enabled=True, ttl="5m"))
+        tools = [
+            {
+                "name": "first",
+                "description": "First tool.",
+                "input_schema": {"type": "object"},
+                "cache_control": {"type": "ephemeral", "ttl": "1h"},
+            },
+            {
+                "name": "second",
+                "description": "Second tool.",
+                "input_schema": {"type": "object"},
+            },
+        ]
+
+        rewritten = policy.apply_tools(tools)
+
+        self.assertNotIn("cache_control", rewritten[0])
+        self.assertEqual(
+            {"type": "ephemeral", "ttl": "5m"},
+            rewritten[1]["cache_control"],
+        )
+
+    def test_prompt_cache_policy_normalizes_text_blocks_without_type(self):
+        policy = PromptCachePolicy(PromptCacheSettings(enabled=True, ttl="5m"))
+        messages = [
+            SystemMessage(content=[{"text": "system prompt"}]),
+            AIMessage(content=[{"text": "final answer"}]),
+            HumanMessage(content="next question"),
+        ]
+
+        rewritten = policy.apply_messages(messages)
+
+        self.assertEqual("text", rewritten[0].content[0]["type"])
+        self.assertEqual({"type": "ephemeral", "ttl": "5m"}, rewritten[0].content[0]["cache_control"])
+        self.assertEqual("text", rewritten[1].content[0]["type"])
+        self.assertEqual({"type": "ephemeral", "ttl": "5m"}, rewritten[1].content[0]["cache_control"])
+        self.assertEqual([{"type": "text", "text": "next question"}], rewritten[2].content)
+        self.assertNotIn("cache_control", rewritten[2].content[0])
+
+    def test_prompt_cache_policy_can_be_disabled(self):
+        policy = PromptCachePolicy(PromptCacheSettings(enabled=False))
+        messages = [SystemMessage(content="system"), HumanMessage(content="current")]
+
+        self.assertIs(messages, policy.apply_messages(messages))
+
+    def test_prompt_cache_settings_rejects_unsupported_ttl(self):
+        with self.assertRaisesRegex(ValueError, "empty, '5m', or '1h'"):
+            PromptCacheSettings(ttl="30m")
+
+    def test_prompt_cache_policy_handles_empty_messages(self):
+        policy = PromptCachePolicy(PromptCacheSettings())
+
+        self.assertEqual([], policy.apply_messages([]))
+
+    def test_prompt_cache_policy_marks_last_block_in_large_content(self):
+        policy = PromptCachePolicy(
+            PromptCacheSettings(cache_system=False, cache_messages=True)
+        )
+        blocks = [
+            {"type": "text", "text": f"block-{index}"}
+            for index in range(1000)
+        ]
+        rewritten = policy.apply_messages(
+            [AIMessage(content=blocks), HumanMessage(content="current")]
+        )
+        markers = [
+            block.get("cache_control")
+            for block in rewritten[0].content
+            if "cache_control" in block
+        ]
+
+        self.assertEqual([{"type": "ephemeral", "ttl": "5m"}], markers)
+        self.assertNotIn("cache_control", rewritten[0].content[-2])
+        self.assertEqual("block-999", rewritten[0].content[-1]["text"])
+
+    def test_prompt_cache_policy_allows_unmatched_tool_result(self):
+        policy = PromptCachePolicy(PromptCacheSettings(cache_system=False))
+        rewritten = policy.apply_messages(
+            [
+                ToolMessage(content="external result", tool_call_id="unknown-tool"),
+                HumanMessage(content="current"),
+            ]
+        )
+
+        self.assertEqual(
+            {"type": "ephemeral", "ttl": "5m"},
+            rewritten[0].content[0]["cache_control"],
+        )
+
+    def test_prompt_cache_policy_does_not_cache_unknown_tail_message(self):
+        policy = PromptCachePolicy(PromptCacheSettings(cache_system=False))
+        rewritten = policy.apply_messages(
+            [
+                AIMessage(content="completed"),
+                ChatMessage(role="user", content="custom current request"),
+            ]
+        )
+
+        self.assertIn("cache_control", rewritten[0].content[0])
+        self.assertNotIn("cache_control", rewritten[1].content[0])
+
+    def test_prompt_cache_runnable_rewrites_every_execution_entry_point(self):
+        inner = RecordingRunnable()
+        runnable = PromptCacheRunnable(inner)
+        messages = [
+            SystemMessage(content="system"),
+            AIMessage(content="completed"),
+            HumanMessage(content="current"),
+        ]
+        config = {"tags": ["cache-test"]}
+
+        self.assertEqual("invoke", runnable.invoke(messages, config=config, mode="sync"))
+        self.assertEqual(
+            "ainvoke",
+            asyncio.run(runnable.ainvoke(messages, config=config, mode="async")),
+        )
+        self.assertEqual(
+            ["stream"],
+            list(runnable.stream(messages, config=config, mode="stream")),
+        )
+
+        async def collect_astream():
+            return [
+                chunk
+                async for chunk in runnable.astream(
+                    messages,
+                    config=config,
+                    mode="astream",
+                )
+            ]
+
+        self.assertEqual(["astream"], asyncio.run(collect_astream()))
+        self.assertEqual(
+            ["batch", "batch"],
+            runnable.batch([messages, messages], config=config, mode="batch"),
+        )
+        self.assertEqual(
+            ["abatch", "abatch"],
+            asyncio.run(
+                runnable.abatch(
+                    [messages, messages],
+                    config=config,
+                    mode="abatch",
+                )
+            ),
+        )
+
+        self.assertEqual(
+            ["invoke", "ainvoke", "stream", "astream", "batch", "abatch"],
+            [method for method, *_rest in inner.calls],
+        )
+        expected_modes = {
+            "invoke": "sync",
+            "ainvoke": "async",
+            "stream": "stream",
+            "astream": "astream",
+            "batch": "batch",
+            "abatch": "abatch",
+        }
+        for method, value, received_config, kwargs in inner.calls:
+            rewritten_inputs = value if method in {"batch", "abatch"} else [value]
+            self.assertIs(config, received_config)
+            self.assertEqual(expected_modes[method], kwargs["mode"])
+            for rewritten in rewritten_inputs:
+                self.assertEqual(
+                    {"type": "ephemeral", "ttl": "5m"},
+                    rewritten[0].content[0]["cache_control"],
+                )
+                self.assertEqual(
+                    {"type": "ephemeral", "ttl": "5m"},
+                    rewritten[1].content[0]["cache_control"],
+                )
+                self.assertNotIn("cache_control", rewritten[2].content[0])
+
+    def test_prompt_cache_runnable_warns_only_for_unwrapped_methods(self):
+        runnable = PromptCacheRunnable(RecordingRunnable())
+
+        with self.assertNoLogs("src.core.llm.prompt_cache", level="WARNING"):
+            self.assertEqual("recording-model", runnable.model_name)
+
+        with self.assertLogs("src.core.llm.prompt_cache", level="WARNING") as captured:
+            method = runnable.future_execution_method
+
+        self.assertEqual("value", method("value"))
+        self.assertIn("future_execution_method", captured.output[0])
+        self.assertIn("without prompt cache injection", captured.output[0])
 
     def test_provider_reports_missing_api_key_without_network_request(self):
         status = AnthropicProvider(

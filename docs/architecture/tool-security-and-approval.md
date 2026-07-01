@@ -32,9 +32,56 @@ ToolRegistry
 
 Tool 安全模块不再定义私有 Hook。它消费系统级 `PreToolUse`、`PermissionRequest` 和 `PostToolUse` 三个相位；完整模型、配置和失败策略见 [Agent 生命周期 Hook 架构](/docs/architecture/agent-lifecycle-hooks.md)。参数替换后必须重新执行 schema 与权限校验，Hook 不能绕过硬边界或创建永久授权。
 
-## 审批与恢复
+## 权限决策与审批
 
-`ALLOW / ASK / DENY` 是策略结果。用户可选择单次、Session 或 Workspace 范围的 allow/deny。`ASK` 使用 LangGraph `interrupt()` 保存 checkpoint，`approval.resolve` 使用 `Command(resume=...)` 恢复同一工具调用。恢复后再次运行硬边界检查。
+策略引擎只产生三种结果：
+
+| 结果 | 含义 |
+|---|---|
+| `ALLOW` | 当前调用可继续，但仍必须通过 capability、路径、沙箱和网络硬边界。 |
+| `ASK` | 创建持久审批请求并暂停 Execution，等待用户明确决定。 |
+| `DENY` | 当前调用立即拒绝，不执行工具。 |
+
+`ToolSpec.approval` 决定默认策略：`NONE` 不要求人工确认，`POLICY` 由全局审批开关和持久规则决定，`ALWAYS` 每次询问，`FORBIDDEN` 永远拒绝。`LEARN_AGENT_TOOL_APPROVAL_ENABLED=false` 只能让 `POLICY` 工具跳过询问，不能放开 `ALWAYS`、`FORBIDDEN` 或其他硬边界。
+
+审批响应分为六种：
+
+| 响应 | 作用 |
+|---|---|
+| `allow_once` / `deny_once` | 只处理当前 `tool_call_id`，不创建规则。 |
+| `allow_session` / `deny_session` | 为当前 Workspace 和 Session 保存规则。 |
+| `allow_workspace` / `deny_workspace` | 为当前 Workspace 保存跨 Session 规则。 |
+
+只有 `persistable=true` 的请求才能选择 Session 或 Workspace 范围。简单命令可保存解析后的 argv 前缀规则；管道、重定向、命令替换等复合 shell 调用只能单次处理。显式 deny 的优先级高于 allow。
+
+## 暂停与恢复闭环
+
+`ASK` 会依次执行：
+
+```text
+创建 tool_approval_requests 行
+  -> LangGraph interrupt()
+  -> 保存 checkpoint
+  -> 发送 tool_approval_required
+  -> Execution 以 stop_reason=tool_approval 暂停
+  -> 用户提交 approval.resolve
+  -> Command(resume=...) 回到同一工具调用
+  -> 再次校验策略和硬边界
+  -> 执行或拒绝工具
+```
+
+审批恢复不会重新开始整个 Turn，也不会重放已经成功完成的工具。`request_id` 与 `execution_id + tool_call_id` 绑定，只能成功处理一次。普通 `session.resume` 不能代替 `approval.resolve`，因为恢复工具中断必须携带具体审批响应。
+
+交互式 `learn-agent chat` 会在当前终端直接显示工具、原因和 capability，并询问审批选择。一次性 chat、脚本或 daemon 重启后的请求使用 `learn-agent approval list/resolve`；待审批状态保存在 SQLite 和 checkpoint 中，不依赖原终端存活。
+
+## 审批数据
+
+- `tool_approval_requests`：待处理或已处理的请求事实，只保存脱敏、截断参数摘要。
+- `tool_permission_rules`：Session 或 Workspace 作用域的 allow/deny 规则。
+- `tool_approval_audit`：最终响应审计；重复 resolve 不会生成第二条记录。
+- LangGraph checkpoint：保存 Agent 暂停位置，不能由审批表替代。
+
+Session 归档保留这些记录；hard delete 才会清理 Session 关联请求、规则和审计。Workspace 级规则不属于单个 Session，不应随普通 Session 删除而消失。
 
 ## 不可绕过边界
 

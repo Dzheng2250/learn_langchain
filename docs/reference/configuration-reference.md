@@ -223,3 +223,13 @@ PostgreSQL Schema。若只是需要本地结构化观测记录，应保持该选
 `LEARN_AGENT_TASK_NOTES_MAX_CHARS`, and `LEARN_AGENT_TASK_LIST_OUTPUT_LIMIT`
 control the parent Agent's private task planning tools. These tools are exposed
 only when a request uses goal mode, for example `learn-agent chat --goal ...`.
+
+## Anthropic Prompt Cache
+
+| 环境变量 | 默认值 | 含义与影响 |
+|---|---:|---|
+| `LEARN_AGENT_PROMPT_CACHE_ENABLED` | `true` | 全局前缀缓存开关。关闭后不向 tool、system prompt 或历史 message 注入 `cache_control`。 |
+| `LEARN_AGENT_PROMPT_CACHE_TTL` | `5m` | Anthropic `cache_control.ttl`；仅支持 `5m`、`1h` 或空值。`1h` 为额外计费的扩展缓存，空值使用服务商默认时长。 |
+| `LEARN_AGENT_PROMPT_CACHE_TOOLS` | `true` | 是否在最后一个稳定 tool schema 上添加 `cache_control`。 |
+| `LEARN_AGENT_PROMPT_CACHE_SYSTEM` | `true` | 是否在 system prompt 的最后一个 text block 上添加 `cache_control`。 |
+| `LEARN_AGENT_PROMPT_CACHE_MESSAGES` | `true` | 是否在本次模型调用前最深的稳定历史消息上添加 `cache_control`；工具循环中可落在最新 `tool_result`，初次请求不缓存末尾用户消息。 |

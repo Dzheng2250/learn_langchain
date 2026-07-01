@@ -210,6 +210,8 @@ class TracingTest(unittest.TestCase):
                 "usage": {
                     "input_tokens": 354,
                     "output_tokens": 70,
+                    "cache_creation_input_tokens": 12,
+                    "cache_read_input_tokens": 34,
                 },
             },
             usage_metadata={},
@@ -224,6 +226,8 @@ class TracingTest(unittest.TestCase):
         self.assertEqual(354, usage["input_tokens"])
         self.assertEqual(70, usage["output_tokens"])
         self.assertEqual(424, usage["total_tokens"])
+        self.assertEqual(12, usage["cache_creation_input_tokens"])
+        self.assertEqual(34, usage["cache_read_input_tokens"])
         self.assertEqual("end_turn", stop_reason)
 
     def test_llm_response_summary_prefers_usage_metadata(self):
@@ -238,6 +242,8 @@ class TracingTest(unittest.TestCase):
                 "input_tokens": 21,
                 "output_tokens": 13,
                 "total_tokens": 34,
+                "cache_creation_input_tokens": 2,
+                "cache_read_input_tokens": 3,
             },
         )
         response = SimpleNamespace(
@@ -250,6 +256,8 @@ class TracingTest(unittest.TestCase):
         self.assertEqual(21, usage["input_tokens"])
         self.assertEqual(13, usage["output_tokens"])
         self.assertEqual(34, usage["total_tokens"])
+        self.assertEqual(2, usage["cache_creation_input_tokens"])
+        self.assertEqual(3, usage["cache_read_input_tokens"])
 
     def test_llm_callback_records_summary_without_message_content(self):
         class Message:

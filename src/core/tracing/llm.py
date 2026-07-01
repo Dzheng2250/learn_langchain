@@ -98,7 +98,13 @@ class TracingModelProvider:
 
 
 def _response_summary(response) -> tuple[dict, str | None]:
-    usage = {"input_tokens": None, "output_tokens": None, "total_tokens": None}
+    usage = {
+        "input_tokens": None,
+        "output_tokens": None,
+        "total_tokens": None,
+        "cache_creation_input_tokens": None,
+        "cache_read_input_tokens": None,
+    }
     stop_reason = None
     generations = getattr(response, "generations", None) or []
     if generations and generations[0]:
@@ -109,12 +115,19 @@ def _response_summary(response) -> tuple[dict, str | None]:
         usage["input_tokens"] = usage_metadata.get("input_tokens")
         usage["output_tokens"] = usage_metadata.get("output_tokens")
         usage["total_tokens"] = usage_metadata.get("total_tokens")
+        usage["cache_creation_input_tokens"] = usage_metadata.get("cache_creation_input_tokens")
+        usage["cache_read_input_tokens"] = usage_metadata.get("cache_read_input_tokens")
 
-        if not any(value is not None for value in usage.values()):
+        if not any(
+            usage.get(key) is not None
+            for key in ("input_tokens", "output_tokens", "total_tokens")
+        ):
             raw_usage = metadata.get("usage") or {}
             usage["input_tokens"] = raw_usage.get("input_tokens")
             usage["output_tokens"] = raw_usage.get("output_tokens")
             usage["total_tokens"] = raw_usage.get("total_tokens")
+            usage["cache_creation_input_tokens"] = raw_usage.get("cache_creation_input_tokens")
+            usage["cache_read_input_tokens"] = raw_usage.get("cache_read_input_tokens")
             if usage["total_tokens"] is None:
                 input_tokens = usage["input_tokens"]
                 output_tokens = usage["output_tokens"]
