@@ -18,6 +18,8 @@
 
 本文是开发新前端时的首要入口。当前系统已经分离 Core 与前端进程，但公开契约仍由多份专项文档共同组成。本指南负责把这些契约组织成一个可实现的客户端流程。
 
+> 当前契约成熟度：请求参数已经使用严格 Pydantic 模型校验；RPC 成功结果和 `agent.event.data` 多数仍是内部代码构造的 `dict`，尚未形成可自动生成 TypeScript 类型的严格响应模型。本文只记录当前代码实际发送的字段，并明确标记可选字段和缺口。
+
 ## 1. 当前可接入的前端类型
 
 | 前端类型 | 是否可直接接入 | 说明 |
@@ -97,7 +99,325 @@ Core daemon
 
 事件中的 `request_id` 与 Provider request ID 含义不同。后者只用于模型故障排查。
 
-## 5. 最小客户端实现
+## 5. 完整 RPC JSON 目录
+
+所有示例都省略真实 token。发送时必须把 `auth_token` 放入 `params`。成功响应统一使用：
+
+```json
+{"jsonrpc":"2.0","id":"client-1","result":{}}
+```
+
+失败响应统一使用：
+
+```json
+{"jsonrpc":"2.0","id":"client-1","error":{"code":-32602,"message":"Invalid params","data":[]}}
+```
+
+### 5.1 `core.ping`
+
+请求：
+
+```json
+{
+  "jsonrpc": "2.0",
+  "id": "ping-1",
+  "method": "core.ping",
+  "params": {"auth_token": "<daemon-token>"}
+}
+```
+
+响应：
+
+```json
+{
+  "jsonrpc": "2.0",
+  "id": "ping-1",
+  "result": {"status": "ok", "server_version": "0.1.0", "uptime_ms": 12345}
+}
+```
+
+### 5.2 `core.shutdown`
+
+```json
+{
+  "jsonrpc": "2.0",
+  "id": "shutdown-1",
+  "method": "core.shutdown",
+  "params": {"auth_token": "<daemon-token>"}
+}
+```
+
+```json
+{"jsonrpc":"2.0","id":"shutdown-1","result":{"status":"shutting_down"}}
+```
+
+### 5.3 `agent.chat`
+
+```json
+{
+  "jsonrpc": "2.0",
+  "id": "chat-1",
+  "method": "agent.chat",
+  "params": {
+    "auth_token": "<daemon-token>",
+    "workspace_root": "D:\\project",
+    "session_name": "default",
+    "message": "规划并实现阶乘函数",
+    "goal_mode": true
+  }
+}
+```
+
+该请求先产生 0..N 条 `agent.event`，最后返回聚合结果。成功示例：
+
+```json
+{
+  "jsonrpc": "2.0",
+  "id": "chat-1",
+  "result": {
+    "status": "ok",
+    "run_id": "run-id",
+    "workspace_id": "workspace-uuid",
+    "session_id": "session-uuid",
+    "session_name": "default",
+    "execution_id": "execution-id",
+    "stop_reason": "completed",
+    "tool_call_count": 3,
+    "slices_used": 1,
+    "goal_mode": true,
+    "durability": "committed",
+    "maintenance_status": "pending",
+    "memory_status": "not_scheduled",
+    "memory_request_explicit": false,
+    "context_tokens": 11487
+  }
+}
+```
+
+`execution_id` 在未创建 Execution 的诊断路径中可能为 `null` 或缺省。`context_tokens` 是本轮最后记录的模型输入上下文量，不是本轮输入与输出 token 总和。
+
+### 5.4 `session.status`
+
+```json
+{
+  "jsonrpc": "2.0",
+  "id": "status-1",
+  "method": "session.status",
+  "params": {
+    "auth_token": "<daemon-token>",
+    "workspace_root": "D:\\project",
+    "session_name": "default"
+  }
+}
+```
+
+```json
+{
+  "jsonrpc": "2.0",
+  "id": "status-1",
+  "result": {
+    "workspace_id": "workspace-uuid",
+    "session_id": "session-uuid",
+    "session_name": "default",
+    "context_tokens": 11487,
+    "pending_execution": null,
+    "execution_recoverable": false,
+    "checkpoint_state": null,
+    "maintenance": {
+      "pending": 0,
+      "running": 0,
+      "failed": 0,
+      "recent_failures": []
+    }
+  }
+}
+```
+
+若存在暂停执行，`pending_execution` 为对象，并至少携带 Execution 身份、状态、停止原因和 goal 模式；客户端应把它视为可扩展对象并忽略未知字段。归档 Session 返回 `status="archived"`。
+
+### 5.5 `session.resume`
+
+`instruction` 是附加恢复指令，可以为空；它不是新的聊天消息。
+
+```json
+{
+  "jsonrpc": "2.0",
+  "id": "resume-1",
+  "method": "session.resume",
+  "params": {
+    "auth_token": "<daemon-token>",
+    "workspace_root": "D:\\project",
+    "session_name": "default",
+    "instruction": "继续执行，但先检查现有文件"
+  }
+}
+```
+
+`session.resume` 与 `agent.chat` 一样先发送 `agent.event`，再返回最终结果。没有待恢复执行时：
+
+```json
+{
+  "jsonrpc": "2.0",
+  "id": "resume-1",
+  "result": {
+    "status": "idle",
+    "run_id": "run-id",
+    "workspace_id": "workspace-uuid",
+    "session_id": "session-uuid",
+    "session_name": "default",
+    "message": "Session has no pending execution to resume."
+  }
+}
+```
+
+### 5.6 `session.discard`
+
+```json
+{
+  "jsonrpc": "2.0",
+  "id": "discard-1",
+  "method": "session.discard",
+  "params": {
+    "auth_token": "<daemon-token>",
+    "workspace_root": "D:\\project",
+    "session_name": "default"
+  }
+}
+```
+
+```json
+{"jsonrpc":"2.0","id":"discard-1","result":{"status":"discarded","execution_id":"execution-id"}}
+```
+
+没有待执行任务时返回 idle 语义；归档 Session 返回 archived 语义。前端必须按 `result.status` 分支，不能只判断 HTTP/TCP 成功。
+
+### 5.7 `session.delete`
+
+归档：
+
+```json
+{
+  "jsonrpc": "2.0",
+  "id": "delete-1",
+  "method": "session.delete",
+  "params": {
+    "auth_token": "<daemon-token>",
+    "workspace_root": "D:\\project",
+    "session_name": "default",
+    "hard_delete": false
+  }
+}
+```
+
+```json
+{"jsonrpc":"2.0","id":"delete-1","result":{"status":"archived","mode":"archive","session_name":"default"}}
+```
+
+永久删除只需把 `hard_delete` 设为 `true`：
+
+```json
+{"jsonrpc":"2.0","id":"delete-2","result":{"status":"deleted","mode":"hard_delete","session_name":"default"}}
+```
+
+硬删除不可恢复，前端必须二次确认。
+
+### 5.8 `session.reset`
+
+```json
+{
+  "jsonrpc": "2.0",
+  "id": "reset-1",
+  "method": "session.reset",
+  "params": {
+    "auth_token": "<daemon-token>",
+    "workspace_root": "D:\\project",
+    "session_name": "default"
+  }
+}
+```
+
+```json
+{
+  "jsonrpc": "2.0",
+  "id": "reset-1",
+  "result": {
+    "status": "ok",
+    "workspace_id": "workspace-uuid",
+    "session_id": "session-uuid",
+    "session_name": "default",
+    "recovered_messages": 24
+  }
+}
+```
+
+### 5.9 `approval.list`
+
+```json
+{
+  "jsonrpc": "2.0",
+  "id": "approval-list-1",
+  "method": "approval.list",
+  "params": {
+    "auth_token": "<daemon-token>",
+    "workspace_root": "D:\\project",
+    "session_name": "default"
+  }
+}
+```
+
+```json
+{
+  "jsonrpc": "2.0",
+  "id": "approval-list-1",
+  "result": {
+    "requests": [
+      {
+        "request_id": "approval-id",
+        "workspace_id": "workspace-uuid",
+        "session_id": "session-uuid",
+        "execution_id": "execution-id",
+        "tool_call_id": "tool-call-id",
+        "tool": "write_workspace_file",
+        "args": {"path": "src/a.py", "content": "<120 chars omitted>"},
+        "capabilities": ["file_write"],
+        "persistable": true,
+        "status": "pending"
+      }
+    ]
+  }
+}
+```
+
+审批对象目前尚未建模为严格公开响应类型，实际可能增加 `reason`、时间或规则字段；前端只应依赖上述核心字段并忽略未知字段。
+
+### 5.10 `approval.resolve`
+
+```json
+{
+  "jsonrpc": "2.0",
+  "id": "approval-resolve-1",
+  "method": "approval.resolve",
+  "params": {
+    "auth_token": "<daemon-token>",
+    "workspace_root": "D:\\project",
+    "session_name": "default",
+    "request_id": "approval-id",
+    "response": "allow_once"
+  }
+}
+```
+
+该 RPC 会恢复原 Execution，所以返回模式与 `session.resume` 相同：先发送 0..N 条 `agent.event`，最后返回完成、再次暂停或失败的聚合结果。
+
+允许值：
+
+```text
+allow_once | allow_session | allow_workspace
+deny_once  | deny_session  | deny_workspace
+```
+
+当审批请求 `persistable=false` 时，只能发送 `allow_once` 或 `deny_once`。
+## 6. 最小客户端实现
 
 ```python
 async def request(method, params, on_event):
@@ -135,7 +455,7 @@ async def request(method, params, on_event):
 
 生产客户端还必须限制 frame 大小、处理无效 UTF-8/JSON、验证对象形状、设置连接超时，并确保错误路径也关闭 socket。
 
-## 6. 前端状态模型
+## 7. 前端状态模型
 
 推荐将连接状态和 Agent 状态分开：
 
@@ -163,7 +483,7 @@ last_error
 
 `answer_draft` 只是显示状态。正式历史由 Core 提交，前端不能因为收到 token 就假定回答已经持久化。
 
-## 7. 发起普通对话
+## 8. 发起普通对话
 
 调用 `agent.chat`：
 
@@ -187,7 +507,7 @@ last_error
 
 `goal_mode=true` 只允许父 Agent 使用私有任务规划工具，不是公开任务管理 API。
 
-## 8. 流式事件处理
+## 9. 流式事件处理
 
 ```json
 {
@@ -218,7 +538,7 @@ last_error
 
 未知事件和未知 payload 字段必须忽略并记录调试日志，不能让前端崩溃。
 
-### 8.1 文本拼接
+### 9.1 文本拼接
 
 Token 是保真增量片段：
 
@@ -228,7 +548,7 @@ answer_draft += event["data"]["content"]
 
 禁止对 chunk 调用 `strip()`、使用 `splitlines()` 重组、自动追加换行，或把工具参数和 reasoning 当成回答文本。界面可以按固定帧率批量渲染，但缓冲区必须保存原始字符串。
 
-### 8.2 完整消息兜底
+### 9.2 完整消息兜底
 
 若 Provider 没有产生 token，Core 可能发送：
 
@@ -238,11 +558,283 @@ answer_draft += event["data"]["content"]
 
 只有本轮尚未收到可见 token 时才显示该内容，否则会重复输出完整回答。
 
-### 8.3 Reasoning
+### 9.3 Reasoning
 
 Reasoning 不加入回答 Markdown，也不写入用户可见历史。`metadata` 模式没有正文是正常行为；`redacted=true` 时不得尝试恢复原文。展开/折叠属于前端本地状态，不需要调用 RPC。
 
-## 9. 工具调用与审批
+## 10. 完整服务端事件 JSON 目录
+
+所有流式数据都放在 JSON-RPC notification 的 `params` 内：
+
+```json
+{
+  "jsonrpc": "2.0",
+  "method": "agent.event",
+  "params": {
+    "request_id": "原 JSON-RPC id",
+    "run_id": "Core 生成的 run id",
+    "event": "事件名称",
+    "data": {}
+  }
+}
+```
+
+### 10.1 流式文本 `token`
+
+```json
+{
+  "event": "token",
+  "data": {"content": "增量文本", "attempt_id": "model-attempt-id"}
+}
+```
+
+`attempt_id` 可选。回答文本只在 `data.content`，前端必须原样追加。
+
+### 10.2 Thinking / reasoning
+
+```json
+{
+    "event":"reasoning_started",
+    "data":{
+        "source":"parent_agent",
+        "char_count":0,
+        "redacted":false,
+        "display":"collapsed",
+        "expanded":false,
+        "attempt_id":"attempt-id"
+    }
+}
+{
+    "event":"reasoning_delta",
+    "data":{
+        "source":"parent_agent",
+        "content":"思考片段",
+        "char_count":4,
+        "redacted":false,
+        "display":"collapsed",
+        "expanded":false,
+        "attempt_id":"attempt-id"
+    }
+}
+{
+    "event":"reasoning_finished",
+    "data":{
+        "source":"parent_agent",
+        "char_count":856,
+        "redacted":false,
+        "display":"collapsed",
+        "expanded":false,
+        "attempt_id":"attempt-id"
+    }
+}
+```
+
+`content` 仅在 `collapsed/expanded` 配置且 Provider 提供原文时存在。`redacted=true` 时没有原文。
+
+### 10.3 Agent 与工具步骤 `step`
+
+```json
+{"event":"step","data":{"type":"agent_start","message":"Agent turn started."}}
+```
+
+```json
+{
+  "event": "step",
+  "data": {
+    "type": "tool_call_start",
+    "tool": "read_workspace_file_lite",
+    "args": {"path": "README.md"},
+    "id": "tool-call-id"
+  }
+}
+```
+
+```json
+{
+  "event": "step",
+  "data": {
+    "type": "tool_call_result",
+    "tool": "read_workspace_file_lite",
+    "tool_call_id": "tool-call-id",
+    "content": "截断后的结果预览"
+  }
+}
+```
+
+```json
+{"event":"step","data":{"type":"agent_message","content":"完整最终回答"}}
+```
+
+`args/content` 是显示预览，不保证包含完整工具输入输出。
+
+### 10.4 权限请求 `tool_approval_required`
+
+```json
+{
+  "event": "tool_approval_required",
+  "data": {
+    "request_id": "approval-id",
+    "tool": "write_workspace_file",
+    "args": {"path": "src/a.py", "content": "<120 chars omitted>"},
+    "capabilities": ["file_write"],
+    "persistable": true
+  }
+}
+```
+
+随后通常还有：
+
+```json
+{
+  "event": "paused",
+  "data": {
+    "type": "tool_approval",
+    "stop_reason": "tool_approval",
+    "message": "Tool execution is waiting for approval.",
+    "approval_request": {"request_id": "approval-id"},
+    "tool_call_count": 1,
+    "graph_steps_used": 2
+  }
+}
+```
+
+注意：内部 Slice 使用 `paused` 事件；RPC 聚合层最终会返回 `status="paused"`。前端应兼容两者。
+
+### 10.5 模型自动重试
+
+```json
+{
+  "event": "model_retry_scheduled",
+  "data": {
+    "purpose": "parent_agent",
+    "attempt": 1,
+    "next_attempt": 2,
+    "max_attempts": 3,
+    "delay_seconds": 1.5,
+    "error_category": "service_unavailable",
+    "request_id": "provider-request-id"
+  }
+}
+```
+
+```json
+{"event":"model_attempt_invalidated","data":{"attempt":1,"error_category":"timeout"}}
+{"event":"model_retry_exhausted","data":{"attempt":3,"max_attempts":3,"error_category":"timeout"}}
+```
+
+### 10.6 成功终止 `done`
+
+```json
+{
+  "event": "done",
+  "data": {
+    "run_id": "run-id",
+    "status": "ok",
+    "workspace_id": "workspace-uuid",
+    "session_id": "session-uuid",
+    "session_name": "default",
+    "execution_id": "execution-id",
+    "stop_reason": "completed",
+    "tool_call_count": 2,
+    "slices_used": 1,
+    "goal_mode": true,
+    "durability": "committed",
+    "maintenance_status": "pending",
+    "memory_status": "not_scheduled",
+    "memory_request_explicit": false,
+    "context_tokens": 11487
+  }
+}
+```
+
+### 10.7 暂停、空闲和归档 `done`
+
+```json
+{
+  "event": "done",
+  "data": {
+    "status": "paused",
+    "run_id": "run-id",
+    "execution_id": "execution-id",
+    "stop_reason": "graph_step_limit",
+    "tool_call_count": 4,
+    "slices_used": 1,
+    "goal_mode": true,
+    "message": "Execution paused."
+  }
+}
+```
+
+```json
+{"event":"done","data":{"status":"idle","run_id":"run-id","workspace_id":"workspace-uuid","session_id":"session-uuid","session_name":"default","message":"Session has no pending execution to resume."}}
+```
+
+```json
+{"event":"done","data":{"status":"archived","run_id":"run-id","workspace_id":"workspace-uuid","session_id":"session-uuid","session_name":"default","message":"Session is archived."}}
+```
+
+### 10.8 错误 `error`
+
+```json
+{
+  "event": "error",
+  "data": {
+    "type": "provider_error",
+    "stop_reason": "turn_error",
+    "message": "安全的用户可见错误",
+    "error_category": "rate_limited",
+    "error_action": "pause",
+    "retryable": true,
+    "provider": "anthropic",
+    "provider_code": "rate_limit_error",
+    "http_status": 429,
+    "request_id": "provider-request-id",
+    "failure_source": "agent_turn",
+    "failure_scope": "current_turn",
+    "failure_stage": "parent_model_provider",
+    "user_action": "resume_later",
+    "graph_steps_used": 1
+  }
+}
+```
+
+错误字段按故障来源可能缺省；只有 `type/message/stop_reason` 应作为最低展示基线。
+
+### 10.9 Token 用量当前到底在哪里
+
+当前前端协议只稳定发送：
+
+```json
+{"event":"done","data":{"context_tokens":11487}}
+```
+
+`context_tokens` 表示最近一次成功 Turn 记录的模型输入上下文量。以下详细字段目前只写入 Trace/Telemetry，**不会作为统一 `agent.event` 发送给前端**：
+
+```text
+input_tokens
+output_tokens
+total_tokens
+cache_creation_input_tokens
+cache_read_input_tokens
+provider request_id
+```
+
+因此前端目前不能可靠展示“本轮输入/输出/cache 命中”的详细统计。若产品需要这些指标，后端应新增严格的 `usage` 对象，例如：
+
+```json
+{
+  "usage": {
+    "input_tokens": 11487,
+    "output_tokens": 232,
+    "total_tokens": 11719,
+    "cache_creation_input_tokens": 0,
+    "cache_read_input_tokens": 10240
+  }
+}
+```
+
+这是待实现契约，当前客户端不得假定它存在。
+## 11. 工具调用与审批
 
 普通工具进度通过 `step.tool_call_start` 和 `step.tool_call_result` 展示。字段是安全预览，不是完整工具输入输出接口，建议默认折叠。
 
@@ -280,7 +872,7 @@ Reasoning 不加入回答 Markdown，也不写入用户可见历史。`metadata`
 
 `approval.resolve` 会恢复原 Execution，并可能再次发送 token、工具事件或新的审批请求，因此必须使用与 `agent.chat` 相同的事件消费循环。前端启动或断线恢复后可调用 `approval.list` 找回待审批请求。
 
-## 10. 暂停、恢复与丢弃
+## 12. 暂停、恢复与丢弃
 
 `done.status=paused` 表示 Execution 没有完成。先调用 `session.status`：
 
@@ -301,7 +893,7 @@ Reasoning 不加入回答 Markdown，也不写入用户可见历史。`metadata`
 
 `session.resume` 是非幂等请求，也会产生完整的 `agent.event` 流。不要把 resume 实现成重新发送旧用户消息。
 
-## 11. 断线恢复
+## 13. 断线恢复
 
 连接在最终响应前中断时，不能判断 Core 是否已经执行模型或工具。禁止自动重发 `agent.chat`、`session.resume` 或 `approval.resolve`。
 
@@ -317,13 +909,13 @@ connection interrupted
 
 当前协议不支持事件游标和断线续传，断线前遗漏的 token 无法重新订阅。正式消息以 Core 持久化状态为准，但当前尚无公开的 Session 历史查询 RPC。
 
-## 12. 错误处理
+## 14. 错误处理
 
-### 12.1 传输错误
+### 14.1 传输错误
 
 连接拒绝、EOF、超时、无效 UTF-8 或 JSON。前端应保留草稿并进入 `interrupted`，随后查询 `session.status`。
 
-### 12.2 JSON-RPC 错误
+### 14.2 JSON-RPC 错误
 
 ```json
 {
@@ -338,11 +930,11 @@ connection interrupted
 - `-32601`：客户端与 Core 版本不匹配。
 - `-32603`：先查 Session 状态，不自动重发非幂等请求。
 
-### 12.3 Agent `error` 事件
+### 14.3 Agent `error` 事件
 
 优先展示 Core 提供的安全 `message`。根据 `error_action`、`retryable`、`failure_stage` 和 `user_action` 生成操作。不要显示 API key、完整 Provider body、Prompt、工具完整输出或 traceback。
 
-## 13. Session 管理
+## 15. Session 管理
 
 | 操作 | RPC |
 |---|---|
@@ -356,13 +948,13 @@ connection interrupted
 
 当前没有 Session 列表和消息历史查询 RPC。因此通用 GUI 还不能只靠公开协议实现“会话侧边栏”和“加载完整历史”。不得通过直接查询 SQLite 绕过这一限制，应先扩展公开 RPC。
 
-## 14. Context 与 Token 用量
+## 16. Context 与 Token 用量
 
 前端不得自行从 token chunk 推算权威上下文占用。启动时使用 `session.status` 的当前状态；一轮完成后使用 `done` 或最终结果中公开的用量字段更新界面。字段可能缺省，必须允许显示“未知”。
 
 后台上下文摘要和长期记忆失败不等于当前对话失败。相关状态位于 `session.status.maintenance`，前端应明确标注为后台维护问题。
 
-## 15. 安全要求
+## 17. 安全要求
 
 - daemon token 只保存在受信任的本地进程内，不进入 UI、日志或 Crash report。
 - 工具参数和结果只按 Core 提供的脱敏预览显示。
@@ -372,13 +964,13 @@ connection interrupted
 - 不允许前端根据工具名自行绕过审批。
 - Workspace 路径必须由用户明确选择，不应静默切换。
 
-## 16. 兼容性规则
+## 18. 兼容性规则
 
 客户端必须忽略未知字段和未知事件，对可缺省字段使用空值处理，不依赖字典顺序或事件数量，也不能假设每轮一定有 token、工具、reasoning 或 execution ID。使用 `core.ping.server_version` 提示明显版本不匹配。
 
 新增可选字段通常是兼容变更；删除字段、改变含义、改变终止顺序或新增必填参数属于破坏性变更。完整规则见[协议兼容性](/docs/api/protocol-compatibility.md)。
 
-## 17. 推荐前端模块划分
+## 19. 推荐前端模块划分
 
 ```text
 frontend/
@@ -394,7 +986,7 @@ frontend/
 
 Transport 不决定 UI 文案，renderer 不发送 RPC，状态层不读取 Core 数据库。
 
-## 18. 开发与验证清单
+## 20. 开发与验证清单
 
 - 中文、空格和换行在 token 拼接后完全保真。
 - 只收到完整 `agent_message` 时仍能显示回复。
@@ -408,7 +1000,7 @@ Transport 不决定 UI 文案，renderer 不发送 RPC，状态层不读取 Core
 
 仓库参考实现：同步客户端 `src/cli/client.py`、异步客户端 `src/tui/client.py`、TUI 编排 `src/tui/screens/chat.py`、事件渲染 `src/tui/renderer.py`。这些文件是实现参考，不是独立于 API 文档的稳定契约。
 
-## 19. 当前缺口
+## 21. 当前缺口
 
 - Session 列表与完整消息历史查询。
 - 执行中取消。
