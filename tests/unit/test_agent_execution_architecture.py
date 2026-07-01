@@ -6,7 +6,13 @@ from uuid import uuid4
 
 from tests.support.paths import REPOSITORY_ROOT
 
-from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
+from langchain_core.messages import (
+    AIMessage,
+    ChatMessage,
+    HumanMessage,
+    SystemMessage,
+    ToolMessage,
+)
 from langchain_core.tools import tool
 
 from src.core.agent.graph import create_parent_graph
@@ -380,6 +386,62 @@ class AgentExecutionArchitectureTest(unittest.TestCase):
         messages = [SystemMessage(content="system"), HumanMessage(content="current")]
 
         self.assertIs(messages, policy.apply_messages(messages))
+
+    def test_prompt_cache_settings_rejects_unsupported_ttl(self):
+        with self.assertRaisesRegex(ValueError, "empty, '5m', or '1h'"):
+            PromptCacheSettings(ttl="30m")
+
+    def test_prompt_cache_policy_handles_empty_messages(self):
+        policy = PromptCachePolicy(PromptCacheSettings())
+
+        self.assertEqual([], policy.apply_messages([]))
+
+    def test_prompt_cache_policy_marks_last_block_in_large_content(self):
+        policy = PromptCachePolicy(
+            PromptCacheSettings(cache_system=False, cache_messages=True)
+        )
+        blocks = [
+            {"type": "text", "text": f"block-{index}"}
+            for index in range(1000)
+        ]
+        rewritten = policy.apply_messages(
+            [AIMessage(content=blocks), HumanMessage(content="current")]
+        )
+        markers = [
+            block.get("cache_control")
+            for block in rewritten[0].content
+            if "cache_control" in block
+        ]
+
+        self.assertEqual([{"type": "ephemeral", "ttl": "5m"}], markers)
+        self.assertNotIn("cache_control", rewritten[0].content[-2])
+        self.assertEqual("block-999", rewritten[0].content[-1]["text"])
+
+    def test_prompt_cache_policy_allows_unmatched_tool_result(self):
+        policy = PromptCachePolicy(PromptCacheSettings(cache_system=False))
+        rewritten = policy.apply_messages(
+            [
+                ToolMessage(content="external result", tool_call_id="unknown-tool"),
+                HumanMessage(content="current"),
+            ]
+        )
+
+        self.assertEqual(
+            {"type": "ephemeral", "ttl": "5m"},
+            rewritten[0].content[0]["cache_control"],
+        )
+
+    def test_prompt_cache_policy_does_not_cache_unknown_tail_message(self):
+        policy = PromptCachePolicy(PromptCacheSettings(cache_system=False))
+        rewritten = policy.apply_messages(
+            [
+                AIMessage(content="completed"),
+                ChatMessage(role="user", content="custom current request"),
+            ]
+        )
+
+        self.assertIn("cache_control", rewritten[0].content[0])
+        self.assertNotIn("cache_control", rewritten[1].content[0])
 
     def test_prompt_cache_runnable_rewrites_every_execution_entry_point(self):
         inner = RecordingRunnable()

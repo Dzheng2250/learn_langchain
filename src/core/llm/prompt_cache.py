@@ -2,12 +2,18 @@
 
 from __future__ import annotations
 
+from collections.abc import AsyncIterator, Iterator
 from dataclasses import dataclass
 import logging
 from typing import Any
 
-from langchain_core.messages import BaseMessage, HumanMessage, SystemMessage
-from langchain_core.runnables import Runnable
+from langchain_core.messages import (
+    AIMessage,
+    BaseMessage,
+    SystemMessage,
+    ToolMessage,
+)
+from langchain_core.runnables import Runnable, RunnableConfig
 
 
 logger = logging.getLogger(__name__)
@@ -22,6 +28,10 @@ class PromptCacheSettings:
     cache_tools: bool = True
     cache_system: bool = True
     cache_messages: bool = True
+
+    def __post_init__(self) -> None:
+        if self.ttl not in {"", "5m", "1h"}:
+            raise ValueError("Prompt cache TTL must be empty, '5m', or '1h'.")
 
     @property
     def cache_control(self) -> dict[str, Any] | None:
@@ -82,24 +92,44 @@ class PromptCacheRunnable(Runnable):
         self.inner = inner
         self.policy = policy or PromptCachePolicy()
 
-    def invoke(self, input, config=None, **kwargs):
+    def invoke(
+        self,
+        input: Any,
+        config: RunnableConfig | None = None,
+        **kwargs: Any,
+    ) -> Any:
         return self.inner.invoke(self.policy.apply_messages(input), config=config, **kwargs)
 
-    async def ainvoke(self, input, config=None, **kwargs):
+    async def ainvoke(
+        self,
+        input: Any,
+        config: RunnableConfig | None = None,
+        **kwargs: Any,
+    ) -> Any:
         return await self.inner.ainvoke(
             self.policy.apply_messages(input),
             config=config,
             **kwargs,
         )
 
-    def stream(self, input, config=None, **kwargs):
+    def stream(
+        self,
+        input: Any,
+        config: RunnableConfig | None = None,
+        **kwargs: Any,
+    ) -> Iterator[Any]:
         yield from self.inner.stream(
             self.policy.apply_messages(input),
             config=config,
             **kwargs,
         )
 
-    async def astream(self, input, config=None, **kwargs):
+    async def astream(
+        self,
+        input: Any,
+        config: RunnableConfig | None = None,
+        **kwargs: Any,
+    ) -> AsyncIterator[Any]:
         async for chunk in self.inner.astream(
             self.policy.apply_messages(input),
             config=config,
@@ -107,17 +137,33 @@ class PromptCacheRunnable(Runnable):
         ):
             yield chunk
 
-    def batch(self, inputs, config=None, **kwargs):
+    def batch(
+        self,
+        inputs: list[Any],
+        config: RunnableConfig | list[RunnableConfig] | None = None,
+        *,
+        return_exceptions: bool = False,
+        **kwargs: Any,
+    ) -> list[Any]:
         return self.inner.batch(
             [self.policy.apply_messages(item) for item in inputs],
             config=config,
+            return_exceptions=return_exceptions,
             **kwargs,
         )
 
-    async def abatch(self, inputs, config=None, **kwargs):
+    async def abatch(
+        self,
+        inputs: list[Any],
+        config: RunnableConfig | list[RunnableConfig] | None = None,
+        *,
+        return_exceptions: bool = False,
+        **kwargs: Any,
+    ) -> list[Any]:
         return await self.inner.abatch(
             [self.policy.apply_messages(item) for item in inputs],
             config=config,
+            return_exceptions=return_exceptions,
             **kwargs,
         )
 
@@ -137,11 +183,11 @@ def _last_stable_history_index(
     code_execution_tool_ids: set[str],
 ) -> int | None:
     """Find the deepest cacheable message without caching a new user request."""
-    search_end = (
-        len(messages) - 1
-        if messages and isinstance(messages[-1], HumanMessage)
-        else len(messages)
-    )
+    search_end = len(messages)
+    if messages and not isinstance(messages[-1], (AIMessage, ToolMessage)):
+        # Only assistant/tool tails are known completed history. Human, system,
+        # and custom message types may represent the current request.
+        search_end -= 1
     for index in range(search_end - 1, -1, -1):
         message = messages[index]
         if (

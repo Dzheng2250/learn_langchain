@@ -62,7 +62,7 @@ LEARN_AGENT_PROMPT_CACHE_MESSAGES=true
 ```
 
 - `PROMPT_CACHE_ENABLED` 是总开关。关闭后不注入 marker，也不为缓存改写 content block。
-- `PROMPT_CACHE_TTL` 写入 `cache_control.ttl`。
+- `PROMPT_CACHE_TTL` 只接受 `5m`、`1h` 或空值。`5m` 是标准缓存时长；`1h` 是 Anthropic 官方扩展缓存并会提高缓存写入费用；空值表示省略 `ttl`，由服务商采用默认值。其他值会在创建缓存策略时被拒绝。
 - 其余三个开关分别控制 tools、system、messages。
 - 配置在 daemon 启动时读取，修改 `.env` 后需要重启 daemon。
 
