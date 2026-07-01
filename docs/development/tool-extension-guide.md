@@ -541,3 +541,8 @@ git diff --check
 - `src/core/agent/budget.py` 中新增 risk 类目或新的预算限额。
 - 引入新工具实现模式（如异步工具、流式工具）需新增第 4 种骨架。
 - `agent-runtime-extension.md` 第 34–40 行 5 步概览被改写，本文 5.2 端到端步骤需对齐。
+## Workspace 写工具扩展要求
+
+新增写工具必须使用 Workspace 绑定工厂，并在 `ToolSpec` 中声明 `FILE_WRITE`、`WORKSPACE_WRITE` 和明确的审批策略。路径必须通过 `resolve_workspace_target()` 处理，因为写入目标可能尚不存在；工具体仍需再次调用共享敏感路径检查，不能只依赖审批前的 `CapabilityEnforcer`。
+
+写入正文不得进入审批记录、Trace 或 Telemetry。前端只显示路径、大小和操作标志。覆盖、移动、删除等破坏性调用应由策略引擎强制单次审批；不要把 `LEARN_AGENT_TOOL_APPROVAL_ENABLED=false` 当成绕过硬边界的开关。新增写工具至少测试：新目标、原子失败、大小限制、路径逃逸、符号链接、敏感目录、Parent/Subagent audience 和审批恢复。

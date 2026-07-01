@@ -98,6 +98,12 @@ telemetry/      默认 JSONL 观测事件
 | `LEARN_AGENT_HOST_EXECUTION_ENABLED` | `false` | 是否允许注册主机完全访问工具；此类工具仍必须逐次审批。 |
 | `LEARN_AGENT_TOOL_DEFAULT_TIMEOUT_SECONDS` | `60` | 未声明专用超时的工具默认执行上限。 |
 | `LEARN_AGENT_NETWORK_POLICY` | `deny` | 工具网络默认策略，与文件和命令权限分别判断。 |
+| `LEARN_AGENT_FILE_WRITE_ENABLED` | `true` | 是否向 Parent Agent 注册受控 Workspace 写入工具；写入仍需通过审批与路径硬边界。 |
+| `LEARN_AGENT_FILE_WRITE_MAX_BYTES` | `1048576` | 单个文本文件写入或替换后的 UTF-8 最大字节数。 |
+| `LEARN_AGENT_FILE_OPERATION_MAX_ENTRIES` | `100` | 移动或递归删除目录时允许涉及的最大条目数。 |
+| `LEARN_AGENT_COMMAND_WRITE_ENABLED` | `false` | 是否注册 staged command 工具；命令只修改临时副本，批准 change set 后才回写。 |
+| `LEARN_AGENT_COMMAND_CHANGESET_MAX_FILES` | `100` | 单个命令 change set 允许包含的最大文件数。 |
+| `LEARN_AGENT_COMMAND_CHANGESET_MAX_BYTES` | `10485760` | 单个命令 change set 的新增/修改文件总字节上限。 |
 | `LEARN_AGENT_HOOKS_ENABLED` | `true` | 是否启用系统级 Agent 生命周期 Hook。 |
 | `LEARN_AGENT_HOOK_CONFIG_FILES` | 空 | 额外 Hook JSON 文件；多个路径使用操作系统路径分隔符。 |
 | `LEARN_AGENT_PROJECT_HOOKS_ENABLED` | `false` | 是否信任并加载 Workspace 内 `.learn-agent/hooks.json`。 |

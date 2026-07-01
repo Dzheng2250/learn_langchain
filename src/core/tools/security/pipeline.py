@@ -1,6 +1,7 @@
 """Single execution boundary for hooks, policy, approval, and observation."""
 
 import time
+from pathlib import PurePosixPath
 
 from langchain_core.messages import ToolMessage
 from langgraph.types import interrupt
@@ -202,6 +203,18 @@ class ToolExecutionPipeline:
     def _rule_identity(context):
         if ToolCapability.COMMAND_EXECUTION in context.spec.capabilities:
             return command_rule_key(str(context.args.get("command", "")))
+        if ToolCapability.FILE_WRITE in context.spec.capabilities:
+            path = (
+                context.args.get("path")
+                or context.args.get("source")
+                or context.args.get("change_set_id")
+                or ""
+            )
+            normalized = str(path).replace("\\", "/").strip("/")
+            if not normalized:
+                return f"workspace-write:{context.tool_name}:", False
+            scope = PurePosixPath(normalized).parent.as_posix()
+            return f"workspace-write:{context.tool_name}:{scope}", True
         return f"tool:{context.tool_name}", True
 
     @staticmethod

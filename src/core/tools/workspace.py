@@ -20,6 +20,11 @@ SANDBOX_EXCLUDES = {
     ".vscode",
     "__pycache__",
     ".ipynb_checkpoints",
+    ".agent_runtime",
+    ".codegraph",
+    "state.db",
+    "checkpoints.db",
+    "events.db",
 }
 
 

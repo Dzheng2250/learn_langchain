@@ -24,7 +24,7 @@ from src.core.tools.security.approval import ApprovalService
 from src.core.tools.security.command_rules import command_rule_key
 from src.core.tools.security.enforcement import CapabilityEnforcer
 from src.core.tools.security.models import (
-    ApprovalResponse, PolicyAction, ToolCallContext,
+    ApprovalResponse, PolicyAction, PolicyDecision, ToolCallContext,
 )
 from src.core.tools.security.policy import DefaultToolPolicyEngine
 from src.core.tools.security.pipeline import ToolExecutionPipeline
@@ -250,6 +250,43 @@ class ToolSecurityTest(unittest.TestCase):
         _key, persistable = command_rule_key("echo ok | grep ok")
         self.assertFalse(persistable)
 
+
+    def test_workspace_write_rule_matches_descendant_directory(self):
+        class WriteTool:
+            name = "write_workspace_file"
+
+        spec = _spec(
+            name=WriteTool.name,
+            tool=WriteTool(),
+            capabilities=frozenset({ToolCapability.FILE_WRITE}),
+            sandbox=SandboxMode.WORKSPACE_WRITE,
+        )
+        parent = replace(
+            self.context,
+            tool_name=WriteTool.name,
+            tool_call_id="write-parent",
+            args={"path": "src/package/file.py", "content": "x"},
+            spec=spec,
+        )
+        rule_key, persistable = ToolExecutionPipeline._rule_identity(parent)
+        decision = PolicyDecision(
+            PolicyAction.ASK, "approval", rule_key, persistable, spec.capabilities
+        )
+        service = ApprovalService(self.repository)
+        pending = service.request(parent, decision)
+        self.assertTrue(service.resolve_interrupt(
+            parent,
+            decision,
+            pending["request_id"],
+            {"request_id": pending["request_id"], "response": "allow_workspace"},
+        ))
+        child = replace(
+            parent,
+            tool_call_id="write-child",
+            args={"path": "src/package/deeper/other.py", "content": "y"},
+        )
+        child_key, _ = ToolExecutionPipeline._rule_identity(child)
+        self.assertEqual("allow", self.repository.matching_rule(child, child_key))
     def test_simple_argv_rule_matches_longer_command_prefix(self):
         rule_key, persistable = command_rule_key("python -m unittest")
         self.assertTrue(persistable)

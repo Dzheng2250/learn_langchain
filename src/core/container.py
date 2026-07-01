@@ -15,6 +15,12 @@ from src.config.settings import (
     TOOL_APPROVAL_ENABLED,
     TOOL_DEFAULT_TIMEOUT_SECONDS,
     TOOL_NETWORK_POLICY,
+    FILE_WRITE_ENABLED,
+    COMMAND_WRITE_ENABLED,
+    FILE_WRITE_MAX_BYTES,
+    FILE_OPERATION_MAX_ENTRIES,
+    COMMAND_CHANGESET_MAX_FILES,
+    COMMAND_CHANGESET_MAX_BYTES,
 )
 from src.core.adapters.sqlite import (
     SQLiteConversationHistoryStore,
@@ -326,6 +332,12 @@ class CoreContainer(containers.DeclarativeContainer):
         approval_enabled=providers.Object(TOOL_APPROVAL_ENABLED),
         default_timeout_seconds=providers.Object(TOOL_DEFAULT_TIMEOUT_SECONDS),
         network_policy=providers.Object(TOOL_NETWORK_POLICY),
+        file_write_enabled=providers.Object(FILE_WRITE_ENABLED),
+        command_write_enabled=providers.Object(COMMAND_WRITE_ENABLED),
+        file_write_max_bytes=providers.Object(FILE_WRITE_MAX_BYTES),
+        file_operation_max_entries=providers.Object(FILE_OPERATION_MAX_ENTRIES),
+        command_changeset_max_files=providers.Object(COMMAND_CHANGESET_MAX_FILES),
+        command_changeset_max_bytes=providers.Object(COMMAND_CHANGESET_MAX_BYTES),
         hook_runtime=hook_runtime,
     )
     runtime_registry = providers.Singleton(

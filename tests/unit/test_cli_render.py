@@ -196,10 +196,27 @@ class AgentEventRendererTest(unittest.TestCase):
             )
 
         rendered = output.getvalue()
-        self.assertIn("[REDACTED]", rendered)
+        self.assertIn("Write: notes.txt", rendered)
+        self.assertIn("500 bytes", rendered)
         self.assertNotIn("should-not-render", rendered)
-        self.assertIn("... truncated ...", rendered)
+        self.assertNotIn("x" * 100, rendered)
 
+
+    def test_write_approval_hides_content_body(self):
+        output = io.StringIO()
+        renderer = AgentEventRenderer()
+        with redirect_stdout(output):
+            renderer.render({
+                "event": "tool_approval_required",
+                "data": {
+                    "request_id": "request",
+                    "tool": "write_workspace_file",
+                    "args": {"path": "notes.txt", "content": "private-body"},
+                },
+            })
+        rendered = output.getvalue()
+        self.assertIn("Write: notes.txt", rendered)
+        self.assertNotIn("private-body", rendered)
     def test_goal_done_event_renders_completion_marker(self):
         output = io.StringIO()
         renderer = AgentEventRenderer(goal_mode=True)

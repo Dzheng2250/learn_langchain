@@ -203,6 +203,29 @@ class TuiChatLogTest(unittest.TestCase):
         self.assert_widget_texts(log, ["answer", "[done]"])
         self.assertIsInstance(log.widgets[0].renderable, Markdown)
 
+
+
+    def test_workspace_write_approval_shows_safe_operation_details(self):
+        rendered = render_event({
+            "event": "tool_approval_required",
+            "data": {
+                "tool": "write_workspace_file",
+                "args": {"path": "notes.txt", "content": "private-body"},
+            },
+        })
+        self.assertIn("Write: notes.txt", rendered)
+        self.assertNotIn("private-body", rendered)
+    def test_workspace_write_event_hides_content_body(self):
+        rendered = render_event({
+            "event": "step",
+            "data": {
+                "type": "tool_call_start",
+                "tool": "write_workspace_file",
+                "args": {"path": "notes.txt", "content": "private-body", "overwrite": False},
+            },
+        })
+        self.assertIn("Write: notes.txt", rendered)
+        self.assertNotIn("private-body", rendered)
     def test_multiline_tool_event_preserves_markup_as_one_widget(self):
         log = self._fake_log()
         markup = (

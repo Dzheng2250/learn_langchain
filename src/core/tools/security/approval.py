@@ -71,4 +71,9 @@ class ApprovalService:
 
 
 def _safe_args_summary(args: dict) -> dict:
-    return sanitize_value(args, text_limit=500, list_limit=20)
+    safe_args = dict(args)
+    for key in ("content", "old_text", "new_text"):
+        value = safe_args.get(key)
+        if isinstance(value, str):
+            safe_args[key] = f"<{len(value)} chars omitted>"
+    return sanitize_value(safe_args, text_limit=500, list_limit=20)

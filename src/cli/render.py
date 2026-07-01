@@ -94,6 +94,29 @@ def _tool_start_detail(tool: str | None, args: Any) -> str | None:
     if tool == "delegate_to_subagent":
         objective = args.get("task") or args.get("goal") or args.get("instruction")
         return f"Delegating: {_preview(objective, 1000)}" if objective else None
+    if tool == "write_workspace_file":
+        return (
+            f"Write: {args.get('path', '<path>')} "
+            f"({len(str(args.get('content', '')).encode('utf-8'))} bytes, "
+            f"overwrite={bool(args.get('overwrite'))})"
+        )
+    if tool == "replace_workspace_text":
+        return (
+            f"Replace: {args.get('path', '<path>')} "
+            f"(old={len(str(args.get('old_text', '')))} chars, "
+            f"new={len(str(args.get('new_text', '')))} chars, "
+            f"expected={args.get('expected_count', 1)})"
+        )
+    if tool == "move_workspace_path":
+        return (
+            f"Move: {args.get('source', '<source>')} -> "
+            f"{args.get('destination', '<destination>')} "
+            f"(overwrite={bool(args.get('overwrite'))})"
+        )
+    if tool == "delete_workspace_path":
+        return f"Delete: {args.get('path', '<path>')} (recursive={bool(args.get('recursive'))})"
+    if tool == "create_workspace_directory":
+        return f"Create directory: {args.get('path', '<path>')}"
     return _generic_tool_args_detail(args)
 
 
@@ -150,7 +173,7 @@ class AgentEventRenderer:
             self.pending_approval = dict(data)
             request_id = data.get("request_id", "")
             tool = data.get("tool", "unknown")
-            detail = _generic_tool_args_detail(data.get("args"))
+            detail = _tool_start_detail(tool, data.get("args"))
             print(f"\n[tool_approval_required: {tool}]", flush=True)
             if detail:
                 print(detail, flush=True)

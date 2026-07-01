@@ -106,7 +106,15 @@ class SQLiteToolApprovalRepository:
     def matching_rule(self, context, rule_key: str) -> str | None:
         command_argv = command_rule_argv(rule_key)
         with self.database.connect() as conn:
-            if command_argv is None:
+            if rule_key.startswith("workspace-write:"):
+                rows = conn.execute(
+                    """SELECT effect, session_id, rule_key FROM tool_permission_rules
+                       WHERE workspace_id=? AND tool_name=?
+                         AND rule_key LIKE 'workspace-write:%'
+                         AND (session_id IS NULL OR session_id=?)""",
+                    (context.workspace_id, context.tool_name, context.session_id),
+                ).fetchall()
+            elif command_argv is None:
                 rows = conn.execute(
                     """SELECT effect, session_id, rule_key FROM tool_permission_rules
                        WHERE workspace_id=? AND tool_name=? AND rule_key=?
@@ -123,11 +131,20 @@ class SQLiteToolApprovalRepository:
                 ).fetchall()
         effects = []
         for row in rows:
-            stored_argv = command_rule_argv(row["rule_key"])
-            if command_argv is None or (
-                stored_argv is not None
-                and command_argv[:len(stored_argv)] == stored_argv
-            ):
+            if rule_key.startswith("workspace-write:"):
+                requested_scope = rule_key.rsplit(":", 1)[-1]
+                stored_scope = row["rule_key"].rsplit(":", 1)[-1]
+                matches = (
+                    requested_scope == stored_scope
+                    or requested_scope.startswith(stored_scope.rstrip("/") + "/")
+                )
+            else:
+                stored_argv = command_rule_argv(row["rule_key"])
+                matches = command_argv is None or (
+                    stored_argv is not None
+                    and command_argv[:len(stored_argv)] == stored_argv
+                )
+            if matches:
                 effects.append(row["effect"])
         if "deny" in effects:
             return "deny"

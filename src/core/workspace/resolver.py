@@ -41,3 +41,30 @@ def resolve_workspace_path(root: Path, relative_path: str | Path) -> Path:
     except ValueError as exc:
         raise ValueError("path escapes the workspace") from exc
     return candidate
+
+
+def resolve_workspace_target(root: Path, relative_path: str | Path) -> Path:
+    """Resolve an existing or new target without allowing Workspace escape."""
+    root = canonicalize_workspace(root)
+    value = Path(relative_path)
+    if value.is_absolute():
+        raise ValueError("workspace paths must be relative")
+    candidate = root / value
+    existing = candidate
+    missing_parts = []
+    while not existing.exists():
+        if existing == root:
+            break
+        missing_parts.append(existing.name)
+        existing = existing.parent
+    resolved_parent = existing.resolve(strict=True)
+    try:
+        resolved_parent.relative_to(root)
+    except ValueError as exc:
+        raise ValueError("path escapes the workspace") from exc
+    target = resolved_parent.joinpath(*reversed(missing_parts))
+    try:
+        target.relative_to(root)
+    except ValueError as exc:
+        raise ValueError("path escapes the workspace") from exc
+    return target

@@ -116,10 +116,15 @@ def render_event(params: dict[str, Any]) -> str | None:
         return _render_paused(data)
 
     if event == "tool_approval_required":
-        return (
+        tool = data.get("tool", "unknown")
+        detail = _tool_detail(tool, data.get("args"))
+        line = (
             "[yellow bold]Tool approval required[/yellow bold]\n"
-            f"[yellow]{data.get('tool', 'unknown')}[/yellow]"
+            f"[yellow]{tool}[/yellow]"
         )
+        if detail:
+            line += f"\n{dim(detail)}"
+        return line
 
     if event == "model_retry_scheduled":
         return (
@@ -201,6 +206,29 @@ def _tool_detail(tool: str, args: Any) -> str | None:
     if tool == "delegate_to_subagent":
         objective = args.get("task") or args.get("goal") or args.get("instruction")
         return f"Delegating: {_preview(objective, 1000)}" if objective else None
+    if tool == "write_workspace_file":
+        return (
+            f"Write: {args.get('path', '<path>')} "
+            f"({len(str(args.get('content', '')).encode('utf-8'))} bytes, "
+            f"overwrite={bool(args.get('overwrite'))})"
+        )
+    if tool == "replace_workspace_text":
+        return (
+            f"Replace: {args.get('path', '<path>')} "
+            f"(old={len(str(args.get('old_text', '')))} chars, "
+            f"new={len(str(args.get('new_text', '')))} chars, "
+            f"expected={args.get('expected_count', 1)})"
+        )
+    if tool == "move_workspace_path":
+        return (
+            f"Move: {args.get('source', '<source>')} -> "
+            f"{args.get('destination', '<destination>')} "
+            f"(overwrite={bool(args.get('overwrite'))})"
+        )
+    if tool == "delete_workspace_path":
+        return f"Delete: {args.get('path', '<path>')} (recursive={bool(args.get('recursive'))})"
+    if tool == "create_workspace_directory":
+        return f"Create directory: {args.get('path', '<path>')}"
     return _generic_args_detail(args)
 
 

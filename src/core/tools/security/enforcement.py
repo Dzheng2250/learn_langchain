@@ -3,11 +3,11 @@
 from pathlib import Path
 
 from src.core.tools.catalog import NetworkMode, SandboxMode, ToolCapability
-from src.core.workspace.resolver import resolve_workspace_path
+from src.core.workspace.resolver import resolve_workspace_path, resolve_workspace_target
 
 
 class CapabilityEnforcer:
-    PATH_KEYS = ("path", "file", "directory")
+    PATH_KEYS = ("path", "file", "directory", "source", "destination")
 
     def __init__(self, *, network_policy: str = "deny") -> None:
         allowed = {item.value for item in NetworkMode}
@@ -31,4 +31,7 @@ class CapabilityEnforcer:
         for key in self.PATH_KEYS:
             value = context.args.get(key)
             if isinstance(value, str) and value:
-                resolve_workspace_path(root, value)
+                if ToolCapability.FILE_WRITE in spec.capabilities:
+                    resolve_workspace_target(root, value)
+                else:
+                    resolve_workspace_path(root, value)

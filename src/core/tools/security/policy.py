@@ -25,25 +25,47 @@ class DefaultToolPolicyEngine:
             return self._make(PolicyAction.DENY, context, "Tool is forbidden.")
         if spec.sandbox == SandboxMode.HOST_FULL_ACCESS and not self.host_execution_enabled:
             return self._make(PolicyAction.DENY, context, "Host execution is disabled.")
+        fresh_approval = self._requires_fresh_approval(context)
         stored = self.rules.matching_rule(context, rule_key) if rule_key else None
         if stored == "deny":
             return self._make(PolicyAction.DENY, context, "Stored rule denied this call.")
-        if stored == "allow" and spec.approval != ApprovalRequirement.ALWAYS:
+        if (
+            stored == "allow"
+            and spec.approval != ApprovalRequirement.ALWAYS
+            and not fresh_approval
+        ):
             return self._make(PolicyAction.ALLOW, context, "Stored rule allowed this call.")
         action = (
             PolicyAction.ALLOW
-            if spec.approval == ApprovalRequirement.NONE
-            or (spec.approval == ApprovalRequirement.POLICY and not self.approval_enabled)
+            if not fresh_approval and (
+                spec.approval == ApprovalRequirement.NONE
+                or (spec.approval == ApprovalRequirement.POLICY and not self.approval_enabled)
+            )
             else PolicyAction.ASK
         )
         decision = self._make(
-            action, context, "Tool requires user approval.", rule_key, persistable
+            action,
+            context,
+            "Destructive Workspace write requires one-time approval."
+            if fresh_approval else "Tool requires user approval.",
+            rule_key,
+            persistable and not fresh_approval,
         )
         if self.guardian is None:
             return decision
         guardian = self.guardian.evaluate(context)
         rank = {PolicyAction.ALLOW: 0, PolicyAction.ASK: 1, PolicyAction.DENY: 2}
         return guardian if guardian and rank[guardian.action] > rank[action] else decision
+
+    @staticmethod
+    def _requires_fresh_approval(context) -> bool:
+        if context.tool_name in {
+            "move_workspace_path", "delete_workspace_path", "apply_staged_changes",
+        }:
+            return True
+        return context.tool_name == "write_workspace_file" and bool(
+            context.args.get("overwrite")
+        )
 
     @staticmethod
     def _make(action, context, reason, rule_key="", persistable=False):
