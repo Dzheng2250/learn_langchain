@@ -290,19 +290,21 @@ class GoalModeRoutingTest(unittest.TestCase):
             max_auto_slices=1,
         )
 
-    def test_goal_mode_selects_goal_graph_only_when_requested(self):
+    def test_goal_mode_uses_the_same_stable_graph(self):
         class RecordingGraph:
             def __init__(self, name):
                 self.name = name
                 self.calls = 0
+                self.inputs = []
 
             def stream(self, inputs, **_kwargs):
                 self.calls += 1
+                self.inputs.append(inputs)
                 yield "values", {"messages": [*inputs["messages"], AIMessage(content=self.name)]}
 
         normal = RecordingGraph("normal")
         goal = RecordingGraph("goal")
-        service = self._service(Mock(graph=normal, goal_graph=goal))
+        service = self._service(Mock(graph=normal))
         try:
             list(
                 service.stream_turn(
@@ -324,10 +326,12 @@ class GoalModeRoutingTest(unittest.TestCase):
         finally:
             service.close()
 
-        self.assertEqual(1, normal.calls)
-        self.assertEqual(1, goal.calls)
+        self.assertEqual(2, normal.calls)
+        self.assertEqual(0, goal.calls)
+        self.assertNotIn("<goal-mode>", normal.inputs[0]["messages"][-1].content)
+        self.assertIn("<goal-mode>", normal.inputs[1]["messages"][-1].content)
 
-    def test_run_turn_accepts_goal_mode_and_uses_goal_graph(self):
+    def test_run_turn_accepts_goal_mode_and_uses_stable_graph(self):
         class RecordingGraph:
             def __init__(self, name):
                 self.name = name
@@ -339,7 +343,7 @@ class GoalModeRoutingTest(unittest.TestCase):
 
         normal = RecordingGraph("normal")
         goal = RecordingGraph("goal")
-        service = self._service(Mock(graph=normal, goal_graph=goal))
+        service = self._service(Mock(graph=normal))
         try:
             result = asyncio.run(
                 service.run_turn(
@@ -354,8 +358,8 @@ class GoalModeRoutingTest(unittest.TestCase):
             service.close()
 
         self.assertEqual("ok", result["status"])
-        self.assertEqual(0, normal.calls)
-        self.assertEqual(1, goal.calls)
+        self.assertEqual(1, normal.calls)
+        self.assertEqual(0, goal.calls)
 
     def test_new_chat_with_pending_execution_returns_recoverable_pause(self):
         class PausingGraph:
@@ -369,7 +373,7 @@ class GoalModeRoutingTest(unittest.TestCase):
                 return Mock(values={"messages": []})
 
         graph = PausingGraph()
-        service = self._service(Mock(graph=graph, goal_graph=graph))
+        service = self._service(Mock(graph=graph))
         workspace_root = str(Path("tests/fixtures/workspace_a").resolve())
         try:
             first = list(
@@ -399,7 +403,7 @@ class GoalModeRoutingTest(unittest.TestCase):
         self.assertTrue(second[-1]["data"]["goal_mode"])
 
     def test_resume_without_pending_execution_returns_idle(self):
-        service = self._service(Mock(graph=Mock(), goal_graph=Mock()))
+        service = self._service(Mock(graph=Mock()))
         workspace_root = str(Path("tests/fixtures/workspace_a").resolve())
         try:
             events = list(
@@ -428,7 +432,7 @@ class GoalModeRoutingTest(unittest.TestCase):
         self.assertEqual("idle", result["status"])
         self.assertIn("no pending execution", result["message"])
 
-    def test_resume_uses_goal_graph_for_goal_execution(self):
+    def test_resume_uses_stable_graph_for_goal_execution(self):
         class RecordingGraph:
             def __init__(self, name):
                 self.name = name
@@ -448,7 +452,7 @@ class GoalModeRoutingTest(unittest.TestCase):
 
         normal = RecordingGraph("normal")
         goal = RecordingGraph("goal")
-        service = self._service(Mock(graph=normal, goal_graph=goal))
+        service = self._service(Mock(graph=normal))
         workspace_root = str(Path("tests/fixtures/workspace_a").resolve())
         try:
             list(
@@ -471,9 +475,9 @@ class GoalModeRoutingTest(unittest.TestCase):
         finally:
             service.close()
 
-        self.assertEqual(0, normal.calls)
-        self.assertEqual(2, goal.calls)
-        self.assertTrue(goal.updated)
+        self.assertEqual(2, normal.calls)
+        self.assertEqual(0, goal.calls)
+        self.assertTrue(normal.updated)
 
 
 class ProviderErrorResolutionIntegrationTest(unittest.TestCase):

@@ -19,6 +19,7 @@ from src.core.agent.responses import (
 )
 from src.core.ports.session import AgentSessionStore
 from src.core.llm.contracts import ModelConfiguration
+from src.core.prompts.goal_mode import inject_goal_mode_prompt
 
 
 class SessionLockProvider(Protocol):
@@ -69,8 +70,8 @@ class AgentRequestStreamService:
         goal_mode: bool = False,
     ) -> Iterator[dict]:
         """Resolve request identity, serialize the Session, and stream one turn."""
-        normalized = user_input.strip()
-        if not normalized:
+        original_input = user_input.strip()
+        if not original_input:
             raise ValueError("message must not be empty")
         workspace = self.session_store.resolve_workspace(workspace_root)
         existing = self.session_store.find_session(workspace, session_name)
@@ -98,11 +99,15 @@ class AgentRequestStreamService:
             session_id=str(session.session_id),
             run_id=run_id,
             workspace_root=str(workspace.root),
-            payload={"prompt": normalized, "goal_mode": goal_mode},
+            payload={"prompt": original_input, "goal_mode": goal_mode},
         ))
-        normalized = str(prompt_context.payload.get("prompt", normalized)).strip()
-        if not normalized:
+        model_input = str(
+            prompt_context.payload.get("prompt", original_input)
+        ).strip()
+        if not model_input:
             raise ValueError("UserPromptSubmit hook produced an empty message")
+        if goal_mode:
+            model_input = inject_goal_mode_prompt(model_input)
         # The UUID lock is the consistency boundary for loading and saving one
         # Session. Different Session UUIDs may execute concurrently.
         with self.lock_registry.get(session.session_id):
@@ -116,7 +121,7 @@ class AgentRequestStreamService:
                 return
             start = self.execution_lifecycle.begin_turn(
                 session,
-                normalized,
+                original_input,
                 goal_mode=goal_mode,
             )
             if start.blocked_by_pending:
@@ -134,8 +139,9 @@ class AgentRequestStreamService:
             yield from self.turn_execution_loop.stream_locked_turn(
                 session,
                 graph,
-                normalized,
+                original_input,
                 run_id,
+                model_user_input=model_input,
                 execution=execution,
                 control=control,
             )

@@ -174,6 +174,24 @@ class SliceExecutionService:
             )
             raise
 
+    def finish_for_goal_continuation(
+        self,
+        *,
+        slice_id: str | None,
+        execution,
+        graph_steps_used: int,
+        usage: dict,
+    ) -> None:
+        """Close a successful intermediate Slice before a Goal review Slice."""
+        self._finish_slice(
+            slice_id,
+            execution,
+            status=ExecutionStatus.COMPLETED,
+            stop_reason="goal_continuation",
+            graph_steps_used=graph_steps_used,
+            usage=usage,
+        )
+
     def _start_slice(self, execution, slice_number: int) -> str | None:
         if execution is None or self.execution_store is None:
             return None

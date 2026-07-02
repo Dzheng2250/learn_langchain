@@ -1,6 +1,6 @@
 import asyncio
 import unittest
-from types import MethodType
+from types import MethodType, SimpleNamespace
 from unittest.mock import patch
 
 from rich.markdown import Markdown
@@ -31,6 +31,10 @@ def _rendered_text(value):
         return value.markup
     return value
 
+
+
+async def _completed_coroutine():
+    return None
 
 class TuiChatLogTest(unittest.TestCase):
     def test_resource_activity_summary_uses_shared_core_shape(self):
@@ -756,6 +760,55 @@ class TuiChatLogTest(unittest.TestCase):
         self.assertGreater(log.scrolled, 0)
         self.assertEqual("first second", _rendered_text(log.widgets[-1]))
 
+    def test_normal_chat_starts_a_new_task_progress_block(self):
+        screen = ChatScreen.__new__(ChatScreen)
+        screen._auth_token = "token"
+        screen._busy = False
+        screen._config = SimpleNamespace(
+            core_host="127.0.0.1",
+            core_port=1,
+            request_timeout=1,
+        )
+        screen._workspace_root = "."
+        screen._session_name = "default"
+        screen._inflight_task = None
+        screen._inflight_client = None
+        log = SimpleNamespace(
+            resets=0,
+            force_scroll_to_bottom=lambda: None,
+            write_event=lambda _markup: None,
+        )
+        log.reset_task_progress = lambda: setattr(log, "resets", log.resets + 1)
+        status = SimpleNamespace(set_disconnected=lambda _reason: None)
+        screen.query_one = MethodType(
+            lambda _self, widget_type: log if widget_type is ChatLog else status,
+            screen,
+        )
+        screen._on_event = lambda _event: None
+        screen._wait_for_event_queue = MethodType(
+            lambda _self: _completed_coroutine(),
+            screen,
+        )
+        screen._handle_result = lambda _result: None
+        screen._clear_inflight = lambda _task, _client: None
+
+        class FakeClient:
+            async def connect(self):
+                return None
+
+            async def request(self, *_args, **_kwargs):
+                return {"status": "ok"}
+
+            async def close(self):
+                return None
+
+        async def run():
+            with patch("src.tui.screens.chat.AsyncCoreClient", return_value=FakeClient()):
+                await ChatScreen._send_chat(screen, "hello", goal_mode=False)
+
+        asyncio.run(run())
+        self.assertEqual(1, log.resets)
+
     def test_tool_events_are_hidden_by_default_but_task_progress_updates(self):
         screen = ChatScreen.__new__(ChatScreen)
         screen._streamed_response_active = False
@@ -1045,5 +1098,38 @@ class TuiChatLogTest(unittest.TestCase):
         self.assertTrue(any("Cancelled current request" in line for line in rendered))
 
 
+    def test_error_event_escapes_rich_markup_from_exception_text(self):
+        from rich.markup import render
+
+        rendered = render_event({
+            "event": "error",
+            "data": {"message": "bad {'messages': [HumanMessage()]}"},
+        })
+
+        self.assertIn("bad {'messages': [HumanMessage()]}", render(rendered).plain)
+    def test_tool_validation_error_escapes_rich_markup(self):
+        rendered = render_event({
+            "event": "step",
+            "data": {
+                "type": "tool_call_result",
+                "tool": "task_update",
+                "content": (
+                    "ValidationError: status\n"
+                    "Input should be valid [type=literal_error, "
+                    "input_value=None, input_type=NoneType]"
+                ),
+            },
+        })
+
+        parsed = render_markup(rendered)
+        self.assertIn("input_value=None", parsed.plain)
+
+    def test_goal_continuation_event_is_visible(self):
+        rendered = render_event({
+            "event": "goal_continuation_started",
+            "data": {"slice_number": 1},
+        })
+
+        self.assertIn("checking unfinished tasks", rendered)
 if __name__ == "__main__":
     unittest.main()

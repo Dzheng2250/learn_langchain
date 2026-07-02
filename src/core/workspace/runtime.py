@@ -20,8 +20,6 @@ class WorkspaceRuntime:
     workspace: WorkspaceContext
     toolset: WorkspaceToolset
     graph: object
-    goal_toolset: WorkspaceToolset
-    goal_graph: object
 
 
 class WorkspaceRuntimeFactory:
@@ -79,24 +77,6 @@ class WorkspaceRuntimeFactory:
             workspace,
             self.model_provider,
             subagent_max_steps=self.run_limits.max_subagent_steps,
-            approval_repository=self.approval_repository,
-            host_execution_enabled=self.host_execution_enabled,
-            approval_enabled=self.approval_enabled,
-            default_timeout_seconds=self.default_timeout_seconds,
-            network_policy=self.network_policy,
-            file_write_enabled=self.file_write_enabled,
-            command_write_enabled=self.command_write_enabled,
-            file_write_max_bytes=self.file_write_max_bytes,
-            file_operation_max_entries=self.file_operation_max_entries,
-            command_changeset_max_files=self.command_changeset_max_files,
-            command_changeset_max_bytes=self.command_changeset_max_bytes,
-            hook_dispatcher=hook_dispatcher,
-            resource_activity_recorder=self.resource_activity_recorder,
-        )
-        goal_toolset = create_workspace_toolset(
-            workspace,
-            self.model_provider,
-            subagent_max_steps=self.run_limits.max_subagent_steps,
             task_service=self.task_service,
             approval_repository=self.approval_repository,
             host_execution_enabled=self.host_execution_enabled,
@@ -123,19 +103,9 @@ class WorkspaceRuntimeFactory:
             self.model_provider,
             checkpointer=checkpointer,
             risk_by_name={spec.name: spec.risk for spec in toolset.registry.specs()},
-            task_planning_enabled=False,
             tool_pipeline=toolset.pipeline,
         )
-        goal_graph = create_parent_graph(
-            goal_toolset.parent_tools,
-            goal_toolset.skill_manifest,
-            self.model_provider,
-            checkpointer=checkpointer,
-            risk_by_name={spec.name: spec.risk for spec in goal_toolset.registry.specs()},
-            task_planning_enabled=self.task_service is not None,
-            tool_pipeline=goal_toolset.pipeline,
-        )
-        return WorkspaceRuntime(workspace, toolset, graph, goal_toolset, goal_graph)
+        return WorkspaceRuntime(workspace, toolset, graph)
 
 
 class WorkspaceRuntimeRegistry:

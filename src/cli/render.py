@@ -196,6 +196,8 @@ class AgentEventRenderer:
                 f"\n[model_retry_exhausted: {data.get('error_category', 'unknown')}]",
                 flush=True,
             )
+        elif event == "goal_continuation_started":
+            print("\n[goal_continuation: checking unfinished tasks]", flush=True)
         elif event == "step":
             step_type = data.get("type", "step")
             if step_type == "agent_message" and not self.received_token:

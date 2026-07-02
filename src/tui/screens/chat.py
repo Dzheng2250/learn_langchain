@@ -336,8 +336,7 @@ class ChatScreen(Screen):
         current_task = asyncio.current_task()
         log = self.query_one(ChatLog)
         log.force_scroll_to_bottom()
-        if goal_mode:
-            log.reset_task_progress()
+        log.reset_task_progress()
         status_bar = self.query_one(StatusBar)
         mode_tag = " [bold cyan]goal[/bold cyan]" if goal_mode else ""
         log.write_event(f"[bold]▶ sending{ mode_tag }[/bold]")

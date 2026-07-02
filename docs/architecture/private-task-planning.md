@@ -129,37 +129,23 @@ goal 模式下父 Agent 可见四个普通 LangChain 工具：
 
 `task_plan` 和 `task_update` 的返回内容都应包含当前 Execution 的紧凑任务清单。这不是公开任务 API，而是为了让 CLI/TUI 在 goal 模式下能及时显示父 Agent 的计划变化。TUI 会把这些结果折叠成一个“最新任务进度”状态块并原地更新，避免每次 `task_update` 都追加一份完整清单造成刷屏。
 
-## 5. goal 模式如何切换工具
+## 5. Goal 模式如何注入行为
 
-`WorkspaceRuntime` 按 Workspace 缓存两套父 Agent graph：
-
-```text
-runtime.graph       普通 chat graph，不含 task_* 工具
-runtime.goal_graph  goal graph，含 task_* 工具
-```
-
-调用链：
+普通模式与 Goal 模式共享同一个 `WorkspaceRuntime`、父 Agent Graph、工具集合和 System Prompt。`task_*` 工具始终对父 Agent 可见，但仍受统一权限、Hook、预算和沙箱约束。
 
 ```text
 CLI --goal
   -> ChatParams.goal_mode = true
-  -> AgentHandlers.chat()
-  -> AgentTurnService.stream_turn(goal_mode=True)
-  -> ExecutionRepository.begin(..., goal_mode=True)
-  -> runtime.goal_graph
+  -> UserPromptSubmit 外部 Hook
+  -> GoalPromptPolicy 向当前 HumanMessage 追加 <goal-mode> 指令
+  -> runtime.graph
 ```
 
-resume 时不依赖 CLI 再次传 `--goal`。Core 从 `executions.goal_mode` 读取原 Execution 的模式：
+原始用户输入与模型输入分离：Execution、正式消息历史、记忆检索和摘要保存用户原文；只有当前 LLM 输入包含 Goal 指令。这样切换 Goal 模式不会改变 Anthropic 前缀中的 tools 或 system，只改变不参与历史缓存点的当前用户消息。
 
-```text
-session.resume
-  -> ExecutionRepository.resume()
-  -> pending.goal_mode
-  -> runtime.goal_graph 或 runtime.graph
-```
+Goal Agent 准备结束时，若当前 Execution 仍有 pending/in_progress 任务，STOP 生命周期最多注入一次内部完成度复核并继续同一 checkpoint。该 synthetic 消息不会写入正式历史；Core 会发送 `goal_continuation_started` 事件。
 
-这样 goal 执行被预算暂停后，恢复时仍能继续访问原任务计划。
-
+resume 仍从 `executions.goal_mode` 恢复语义，但始终返回同一个 `runtime.graph`，checkpoint 中保留当前执行进度。
 ## 6. ToolRuntime 上下文
 
 Graph 是按 Workspace 缓存的，不能把某个 Execution ID 写进全局变量或工具闭包。当前实现使用 LangGraph `ToolRuntime` 注入：

@@ -5,6 +5,7 @@ from pathlib import PurePosixPath
 
 from langchain_core.messages import ToolMessage
 from langgraph.types import interrupt
+from pydantic import ValidationError
 
 from src.core.agent.budget import ToolBudgetExceeded, current_execution_budget
 from src.core.common.content import message_content_text
@@ -49,7 +50,22 @@ class ToolExecutionPipeline:
             if not isinstance(replacement, dict):
                 return self._denied(context, "PreToolUse hook must replace args with an object.")
             context = context.with_args(replacement)
-        request = self._validated_request(request, context)
+        try:
+            request = self._validated_request(request, context)
+        except ValidationError as exc:
+            self._dispatch_post_tool(
+                context,
+                "error",
+                error_type=type(exc).__name__,
+                resource_activity_ids=[],
+            )
+            record_tool_failed(
+                self.event_source,
+                tool=context.tool_name,
+                tool_call_id=context.tool_call_id,
+                error=exc,
+            )
+            return self._error(context, exc)
         rule_key, persistable = self._rule_identity(context)
         decision = self.policy.evaluate(
             context, rule_key=rule_key, persistable=persistable

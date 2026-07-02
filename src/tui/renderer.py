@@ -137,6 +137,9 @@ def render_event(params: dict[str, Any]) -> str | None:
             line += f"\n{dim(detail)}"
         return line
 
+    if event == "goal_continuation_started":
+        return "[yellow]Goal continues: checking unfinished tasks.[/yellow]"
+
     if event == "model_retry_scheduled":
         return (
             "[yellow]Model request will retry: "
@@ -281,17 +284,17 @@ def _render_done(data: dict[str, Any]) -> str | None:
 
 def _render_error(data: dict[str, Any]) -> str:
     msg = data.get("message", "Agent turn failed.")
-    return f"[red]✗ error: {msg}[/red]"
+    return f"[red]✗ error: {escape(str(msg))}[/red]"
 
 
 def _render_paused(data: dict[str, Any]) -> str:
     reason = data.get("stop_reason", "paused")
-    return f"[yellow]■ paused: {reason}[/yellow]"
+    return f"[yellow]■ paused: {escape(str(reason))}[/yellow]"
 
 
 # ── helpers ─────────────────────────────────────────────────────────
 
 
 def dim(text: str) -> str:
-    """Wrap text in Rich dim markup."""
-    return f"[dim]{text}[/dim]"
+    """Escape untrusted event text before wrapping it in Rich dim markup."""
+    return f"[dim]{escape(str(text))}[/dim]"

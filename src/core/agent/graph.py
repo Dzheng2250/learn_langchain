@@ -22,7 +22,6 @@ def create_parent_graph(
     checkpointer=None,
     risk_by_name=None,
     tool_pipeline=None,
-    task_planning_enabled: bool = False,
 ):
     """Create one compiled graph permanently bound to a WorkspaceRuntime."""
     llm_with_tools = model_provider.create_chat_model(
@@ -39,7 +38,6 @@ def create_parent_graph(
                 content=build_parent_system_prompt(
                     skill_manifest,
                     FILE_READ_CHUNK_LINES,
-                    task_planning_enabled=task_planning_enabled,
                 )
             ),
             *state["messages"],

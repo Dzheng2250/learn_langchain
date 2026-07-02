@@ -6,6 +6,15 @@ from src.cli.render import AgentEventRenderer
 
 
 class AgentEventRendererTest(unittest.TestCase):
+    def test_goal_continuation_is_visible(self):
+        output = io.StringIO()
+        with redirect_stdout(output):
+            AgentEventRenderer().render({
+                "event": "goal_continuation_started",
+                "data": {"slice_number": 1},
+            })
+
+        self.assertIn("checking unfinished tasks", output.getvalue())
     def test_resource_activity_summary_uses_shared_core_shape(self):
         output = io.StringIO()
         with redirect_stdout(output):

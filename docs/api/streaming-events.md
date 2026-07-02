@@ -65,6 +65,15 @@
 
 并非所有 Provider 都保证产生 token。前端必须支持只收到完整 `step.agent_message` 的情况。
 
+## `goal_continuation_started`
+
+Goal 模式的父 Agent 已产生一次阶段性回答，但当前 Execution 的私有任务清单仍有 pending 或 in_progress 项时，Core 会最多触发一次完成度复核：
+
+```json
+{"event":"goal_continuation_started","data":{"slice_number":1}}
+```
+
+前端可以显示轻量的“正在继续未完成任务”状态。该事件不是终止事件，也不要求用户执行 `session resume`；后续 token、工具事件和最终 `done` 仍属于同一个 Turn。内部复核 Prompt 不会进入正式消息历史。
 ## 模型重试事件
 
 Core 会在当前 LLM 调用内部处理短期限流、网络中断和临时服务不可用。重试事件只描述当前模型调用，不代表整个 Agent Turn 已经失败。

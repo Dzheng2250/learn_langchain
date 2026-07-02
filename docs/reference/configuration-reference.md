@@ -227,8 +227,10 @@ PostgreSQL Schema。若只是需要本地结构化观测记录，应保持该选
 `LEARN_AGENT_TASK_MAX_PER_EXECUTION`, `LEARN_AGENT_TASK_KEY_MAX_CHARS`,
 `LEARN_AGENT_TASK_SUBJECT_MAX_CHARS`, `LEARN_AGENT_TASK_DESCRIPTION_MAX_CHARS`,
 `LEARN_AGENT_TASK_NOTES_MAX_CHARS`, and `LEARN_AGENT_TASK_LIST_OUTPUT_LIMIT`
-control the parent Agent's private task planning tools. These tools are exposed
-only when a request uses goal mode, for example `learn-agent chat --goal ...`.
+control the parent Agent's private task planning tools. These tools are always
+exposed to the parent Agent so ordinary and Goal requests share a stable tool
+schema. Goal mode changes only the current user-turn prompt; tool execution
+continues to obey the same Hook, approval, budget, and sandbox policies.
 
 ## Anthropic Prompt Cache
 

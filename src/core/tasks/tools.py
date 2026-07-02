@@ -1,6 +1,6 @@
 """LangChain tool factories for private task planning."""
 
-from typing import Any
+from typing import Any, Literal
 
 from langchain_core.tools import tool
 from langgraph.prebuilt import ToolRuntime
@@ -37,7 +37,9 @@ def create_task_tools(task_service: TaskPlanningService) -> list:
 
         Each task dictionary must include task_key and subject. Optional fields:
         description, notes, depends_on. Dependencies must reference task_key
-        values from the same Execution.
+        values from the same Execution. After creating a plan, keep every task's
+        status current with task_update as work starts, completes, or becomes
+        blocked.
         """
         try:
             return task_service.plan(_context_from_runtime(runtime), tasks)
@@ -47,14 +49,18 @@ def create_task_tools(task_service: TaskPlanningService) -> list:
     @tool
     def task_update(
         task_key: str,
+        status: Literal["pending", "in_progress", "completed", "cancelled"],
         runtime: ToolRuntime,
-        status: str | None = None,
         subject: str | None = None,
         description: str | None = None,
         notes: str | None = None,
         depends_on: list[str] | None = None,
     ) -> str:
-        """Update one private task by semantic task_key."""
+        """Update one task and return the complete latest plan for progress display.
+
+        Mark work in_progress when starting it and completed immediately after its
+        work and validation succeed. Use notes to record a genuine blocker.
+        """
         try:
             return task_service.update(
                 _context_from_runtime(runtime),

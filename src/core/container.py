@@ -324,6 +324,7 @@ class CoreContainer(containers.DeclarativeContainer):
         pause_handler=turn_loop_pause_handler,
         config=loop_config,
         hook_runtime=hook_runtime,
+        task_service=task_service,
     )
     recovery_coordinator = providers.Factory(
         ExecutionRecoveryCoordinator,

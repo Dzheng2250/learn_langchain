@@ -294,7 +294,7 @@ class ChatLog(VerticalScroll):
         self._scroll_to_bottom()
 
     def reset_task_progress(self) -> None:
-        """Start a new task-progress block for the next goal Execution."""
+        """Start a new task-progress block for the next Execution."""
         self._task_progress_widget = None
         self._task_progress_index = None
 
