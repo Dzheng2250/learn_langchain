@@ -121,6 +121,7 @@ class TurnExecutionLoop:
                 execution_id=execution.execution_id if execution else None,
                 run_id=run_id,
                 workspace_root=str(session.workspace.root),
+                turn_index=current_turn,
             )
             total_tool_calls = 0
             budget = ExecutionBudget()

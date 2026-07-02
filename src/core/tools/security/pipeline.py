@@ -15,24 +15,32 @@ from src.core.telemetry import record_tool_failed, record_tool_finished, record_
 from src.core.tools.catalog import ToolCapability
 from src.core.tools.security.command_rules import command_rule_key
 from src.core.tools.security.enforcement import CapabilityEnforcer
+from src.core.resource_activity import bind_resource_activity, lookup_resource_evidence
 from src.core.tools.security.models import PolicyAction, ToolCallContext
 
 
 class ToolExecutionPipeline:
     """Authorize and execute every LangGraph tool request consistently."""
 
-    def __init__(self, specs, *, policy, approvals, hook_dispatcher=None, enforcer=None, event_source="agent_tool_node"):
+    def __init__(self, specs, *, policy, approvals, hook_dispatcher=None, enforcer=None, event_source="agent_tool_node", resource_activity_recorder=None):
         self.specs = dict(specs)
         self.policy = policy
         self.approvals = approvals
         self.hook_dispatcher = hook_dispatcher or NOOP_HOOK_DISPATCHER
         self.enforcer = enforcer or CapabilityEnforcer()
         self.event_source = event_source
+        self.resource_activity_recorder = resource_activity_recorder
 
     def invoke(self, request, execute):
         context = self._context_from_request(request)
+        pre_payload = {
+            "args": context.args,
+            "resource_evidence": lookup_resource_evidence(
+                self.resource_activity_recorder, context, source="tool_pipeline"
+            ),
+        }
         hook_context, hook_decision = self.hook_dispatcher.dispatch(
-            self._hook_context(context, HookPoint.PRE_TOOL_USE, {"args": context.args})
+            self._hook_context(context, HookPoint.PRE_TOOL_USE, pre_payload)
         )
         if hook_decision.action in {HookAction.REJECT, HookAction.DENY}:
             return self._denied(context, hook_decision.reason)
@@ -97,12 +105,14 @@ class ToolExecutionPipeline:
             tool_call_id=context.tool_call_id,
             args=context.args,
         )
+        activity_ids = []
         try:
-            if budget is None:
-                value = execute(request)
-            else:
-                with budget.tool_slot():
+            with bind_resource_activity(self.resource_activity_recorder, context) as activity_ids:
+                if budget is None:
                     value = execute(request)
+                else:
+                    with budget.tool_slot():
+                        value = execute(request)
         except ToolBudgetExceeded as exc:
             record_tool_failed(
                 self.event_source,
@@ -113,7 +123,7 @@ class ToolExecutionPipeline:
             )
             raise
         except Exception as exc:
-            self._dispatch_post_tool(context, "error", error_type=type(exc).__name__)
+            self._dispatch_post_tool(context, "error", error_type=type(exc).__name__, resource_activity_ids=activity_ids)
             record_tool_failed(
                 self.event_source,
                 tool=context.tool_name,
@@ -123,7 +133,7 @@ class ToolExecutionPipeline:
             )
             return self._error(context, exc)
         preview = message_content_text(value) or repr(value)
-        self._dispatch_post_tool(context, "success", content=preview)
+        self._dispatch_post_tool(context, "success", content=preview, resource_activity_ids=activity_ids)
         record_tool_finished(
             self.event_source,
             tool=context.tool_name,
@@ -173,6 +183,8 @@ class ToolExecutionPipeline:
             getattr(runtime, "actor", "parent"),
             spec,
             getattr(runtime, "workspace_root", ""),
+            getattr(runtime, "turn_index", None),
+            getattr(runtime, "slice_id", None),
         )
 
     @staticmethod

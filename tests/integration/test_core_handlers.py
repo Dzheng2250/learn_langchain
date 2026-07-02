@@ -4,7 +4,11 @@ from unittest.mock import patch
 
 from src.core.handlers.agent import AgentHandlers
 from src.core.handlers.core import CoreHandlers
-from src.ipc.models import ChatParams, PingParams, SessionDeleteParams, ShutdownParams
+from src.core.bus.router import INVALID_PARAMS, RpcRouter
+from src.ipc.models import (
+    ChatParams, PingParams, ResourceActivityListParams, ResourceActivityScopeParams,
+    SessionDeleteParams, ShutdownParams,
+)
 
 
 class FakeRequestContext:
@@ -145,6 +149,68 @@ class AgentHandlersTest(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(service.control.pause_after_slice.is_set())
         record_error.assert_called_once()
 
+    async def test_resource_activity_api_and_terminal_event_share_core_contract(self):
+        class TerminalService(FakeAgentService):
+            async def run_turn(self, workspace_root, session_name, message, on_event, **kwargs):
+                await asyncio.to_thread(on_event, {"event": "done", "data": {"status": "ok"}})
+                return {"status": "ok", "run_id": kwargs.get("run_id")}
+        class Activities:
+            def summary_for_run(self, run_id):
+                return {"schema_version": 1, "scope": {"run_id": run_id}, "reads": {}, "changes": {}, "evidence": {}, "truncated": False}
+            def summary(self, **params): return {"schema_version": 1, "scope": params}
+            def list(self, **params): return {"schema_version": 1, "items": [], "next_cursor": None, "has_more": False, "filters": params}
+        activities=Activities(); handlers=AgentHandlers(TerminalService(), resource_activity_service=activities)
+        context=FakeRequestContext()
+        await handlers.chat(ChatParams(auth_token="token",workspace_root=".",message="hello"),context)
+        for _ in range(20):
+            if len(context.notifications) >= 2:
+                break
+            await asyncio.sleep(0.01)
+        self.assertEqual(["done", "resource_activity_summary"], [item.params["event"] for item in context.notifications])
+        summary=await handlers.resource_activity_summary(ResourceActivityScopeParams(auth_token="token",execution_id="exec-1"),context)
+        listing=await handlers.resource_activity_list(ResourceActivityListParams(auth_token="token",execution_id="exec-1",limit=10),context)
+        self.assertEqual("exec-1",summary["scope"]["execution_id"])
+        self.assertEqual([],listing["items"])
+    async def test_resource_summary_failure_does_not_hide_terminal_event(self):
+        class TerminalService(FakeAgentService):
+            async def run_turn(self, workspace_root, session_name, message, on_event, **kwargs):
+                await asyncio.to_thread(on_event, {"event": "done", "data": {"status": "ok"}})
+                return {"status": "ok"}
+
+        class BrokenActivities:
+            def summary_for_run(self, _run_id):
+                raise RuntimeError("ledger unavailable")
+
+        context = FakeRequestContext()
+        with patch("src.core.handlers.agent.record_error") as record_error:
+            await AgentHandlers(
+                TerminalService(), resource_activity_service=BrokenActivities()
+            ).chat(
+                ChatParams(auth_token="token", workspace_root=".", message="hello"),
+                context,
+            )
+        self.assertEqual(["done"], [item.params["event"] for item in context.notifications])
+        record_error.assert_called_once()
+    async def test_resource_activity_unknown_session_is_invalid_params(self):
+        class Activities:
+            def summary(self, **_params):
+                raise ValueError("Session not found")
+            def list(self, **_params):
+                raise ValueError("Session not found")
+
+        router = RpcRouter("token")
+        AgentHandlers(FakeAgentService(), resource_activity_service=Activities()).register(router)
+        response = await router.dispatch({
+            "jsonrpc": "2.0",
+            "id": "resource-invalid",
+            "method": "resource_activity.summary",
+            "params": {
+                "auth_token": "token", "workspace_root": ".",
+                "session_name": "missing", "turn_index": 1,
+            },
+        }, FakeRequestContext())
+        self.assertEqual(INVALID_PARAMS, response.error.code)
+        self.assertIn("Session not found", str(response.error.data))
     async def test_session_delete_passes_hard_delete_flag(self):
         handlers = AgentHandlers(FakeAgentService())
         result = await handlers.session_delete(

@@ -19,7 +19,7 @@ def _registered_rpc_methods(root: Path) -> set[str]:
 def _documented_rpc_methods(reference: str) -> set[str]:
     return set(
         re.findall(
-            r"^\| `((?:agent|approval|core|session)\.[^`]+)` \|",
+            r"^\| `((?:agent|approval|core|session|resource_activity)\.[^`]+)` \|",
             reference,
             flags=re.MULTILINE,
         )
@@ -119,6 +119,7 @@ class DocumentationStructureTest(unittest.TestCase):
             "docs/api/cli-reference.md",
             "docs/api/protocol-compatibility.md",
             "docs/development/platform-extension.md",
+            "docs/development/built-in-tools-maintenance.md",
             "docs/architecture/core-architecture.md",
             "docs/architecture/cli-architecture.md",
             "docs/architecture/tui-architecture.md",
@@ -129,7 +130,7 @@ class DocumentationStructureTest(unittest.TestCase):
             "docs/reference/configuration-reference.md",
             "docs/reference/local-state-schema.md",
             "docs/development/README.md",
-            "docs/development/development-guide.md",
+           "docs/development/development-guide.md",
             "docs/development/internal-adapter-extension.md",
             "docs/development/change-management.md",
             "docs/development/release-process.md",
@@ -183,6 +184,7 @@ class DocumentationStructureTest(unittest.TestCase):
             "docs/api/streaming-events.md",
             "docs/decisions/README.md",
             "docs/development/README.md",
+            "docs/development/built-in-tools-maintenance.md",
             "docs/operations/README.md",
             "docs/operations/runbook.md",
             "docs/operations/backup-and-restore.md",

@@ -6,6 +6,7 @@ from typing import Any
 
 from src.cli.errors import CliError
 from src.core.common.redaction import sanitize_value
+from src.ipc.resource_activity import resource_activity_display_stats
 
 DETAIL_PREVIEW_LIMIT = 2000
 ARG_PREVIEW_LIMIT = 1000
@@ -212,6 +213,14 @@ class AgentEventRenderer:
                     content = _preview(data.get("content"))
                     if content:
                         print(content, flush=True)
+        elif event == "resource_activity_summary":
+            stats = resource_activity_display_stats(data.get("summary"))
+            print(
+                f"\n[resources: read {stats['resource_count']} resource(s), "
+                f"{stats['returned_bytes']} bytes; "
+                f"changed {stats['changed_resource_count']}; warnings {stats['warnings']}]",
+                flush=True,
+            )
         elif event == "done":
             status = data.get("status")
             if status == "paused":

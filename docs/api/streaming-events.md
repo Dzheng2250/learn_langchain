@@ -270,3 +270,18 @@ Frontend rules:
 - `metadata` mode sends start/finish and character counts, but not raw reasoning text.
 - `redacted_thinking` never exposes raw content; clients should show only redacted metadata.
 - Reasoning events must not be appended to the final assistant message or saved as user-visible answer text.
+
+## Resource Activity Summary
+
+Core 先发送 `done`、`paused` 或终止 `error`，再查询并发送一次
+`resource_activity_summary`。终止事件投递成功后才执行账本查询，因此查询或补充事件失败不会吞掉终止事件。若连接已经断开，前端重连后应通过 RPC 查询：
+
+```json
+{
+  "event": "resource_activity_summary",
+  "data": {"schema_version": 1, "run_id": "...", "summary": {}}
+}
+```
+
+该事件只提供聚合快照；断线恢复和历史详情统一调用 `resource_activity.summary` 与
+`resource_activity.list`。所有前端共享此协议，不存在 CLI/TUI 专用资源活动字段。

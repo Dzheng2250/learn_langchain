@@ -6,6 +6,16 @@ from src.cli.render import AgentEventRenderer
 
 
 class AgentEventRendererTest(unittest.TestCase):
+    def test_resource_activity_summary_uses_shared_core_shape(self):
+        output = io.StringIO()
+        with redirect_stdout(output):
+            AgentEventRenderer().render({"event": "resource_activity_summary", "data": {"summary": {
+                "reads": {"resource_count": 2, "returned_bytes": 120},
+                "changes": {"changed_resource_count": 1},
+                "evidence": {"missing": 1},
+            }}})
+        self.assertIn("read 2 resource(s), 120 bytes", output.getvalue())
+        self.assertIn("changed 1; warnings 1", output.getvalue())
     def test_completed_agent_message_is_rendered_when_provider_emits_no_tokens(self):
         output = io.StringIO()
         renderer = AgentEventRenderer()

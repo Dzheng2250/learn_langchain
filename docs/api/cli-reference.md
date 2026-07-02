@@ -44,6 +44,7 @@
 | `learn-agent-core init-user-config` | 将指定 `.env` 复制到用户级配置目录 | 否；配置生效需要重启 |
 | `learn-agent-core migrate-workspace` | 迁移旧 PostgreSQL Workspace Schema | 是 |
 | `learn-agent-core migrate-local-state` | 将保留 Session 导入本地权威状态 | 是 |
+| `learn-agent-core rollback-local-state` | 回滚明确支持的本地 Schema 版本 | 是 |
 | `learn-agent-core gc-artifacts` | 删除未被引用的本地 Artifact | 建议停止 |
 
 ## Workspace 与 Session 参数
@@ -266,6 +267,16 @@ learn-agent-core migrate-local-state \
 
 详细流程见[PostgreSQL 到本地状态迁移](/docs/operations/local-state-migration.md)。
 
+### `rollback-local-state`
+
+```shell
+learn-agent-core rollback-local-state \
+  --from-version 11 \
+  --to-version 10 \
+  [--apply]
+```
+
+默认仅验证当前版本并输出 dry-run。`--apply` 会先在 `state.db` 同目录创建带时间戳的完整备份，再于单个事务中删除 v11 的资源活动派生表及迁移标记。当前只支持 `v11 -> v10`；daemon 运行时拒绝执行。
 ### `gc-artifacts`
 
 ```shell

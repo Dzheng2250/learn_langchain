@@ -13,6 +13,8 @@ from typing import Any
 # Reuse constants and helpers from the CLI renderer
 from rich.markup import escape
 
+from src.ipc.resource_activity import resource_activity_display_stats
+
 from src.cli.render import (
     ARG_FIELD_PREVIEW_LIMIT,
     ARG_PREVIEW_LIMIT,
@@ -106,6 +108,15 @@ def render_event(params: dict[str, Any]) -> str | None:
     if event == "step":
         return _render_step(data)
 
+    if event == "resource_activity_summary":
+        stats = resource_activity_display_stats(data.get("summary"))
+        return (
+            "[dim]Resources: "
+            f"read {stats['resource_count']} · "
+            f"{stats['returned_bytes']} bytes · "
+            f"changed {stats['changed_resource_count']} · "
+            f"warnings {stats['warnings']}[/dim]"
+        )
     if event == "done":
         return _render_done(data)
 

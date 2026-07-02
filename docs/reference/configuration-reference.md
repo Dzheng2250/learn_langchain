@@ -239,3 +239,9 @@ only when a request uses goal mode, for example `learn-agent chat --goal ...`.
 | `LEARN_AGENT_PROMPT_CACHE_TOOLS` | `true` | 是否在最后一个稳定 tool schema 上添加 `cache_control`。 |
 | `LEARN_AGENT_PROMPT_CACHE_SYSTEM` | `true` | 是否在 system prompt 的最后一个 text block 上添加 `cache_control`。 |
 | `LEARN_AGENT_PROMPT_CACHE_MESSAGES` | `true` | 是否在本次模型调用前最深的稳定历史消息上添加 `cache_control`；工具循环中可落在最新 `tool_result`，初次请求不缓存末尾用户消息。 |
+
+## Resource Activity
+
+- `LEARN_AGENT_RESOURCE_ACTIVITY_ENABLED`：启用持久资源活动账本和通用前端 API，默认 `true`。
+- `LEARN_AGENT_RESOURCE_ACTIVITY_HASH_ENABLED`：为可精确观测的文件计算版本 SHA-256，默认 `true`。
+- `LEARN_AGENT_RESOURCE_ACTIVITY_MAX_ITEMS_PER_EXECUTION`：单 Execution 最多保存的明细数，默认 `1000`；超限后摘要返回 `truncated=true`。

@@ -29,6 +29,7 @@ from src.core.tools.security.models import (
 from src.core.tools.security.policy import DefaultToolPolicyEngine
 from src.core.tools.security.pipeline import ToolExecutionPipeline
 from src.core.tools.observed import ObservedToolNode
+from src.core.subagent.graph import create_delegate_tool
 from src.core.streaming.events import stream_graph_events
 from src.core.tasks.context import ToolExecutionContext
 
@@ -373,6 +374,89 @@ class ToolSecurityTest(unittest.TestCase):
         self.assertEqual(1, len(post_hook.calls))
         self.assertEqual("success", post_hook.calls[0].payload["status"])
 
+    def test_delegate_subagent_tools_use_the_configured_hook_dispatcher(self):
+        calls = []
+
+        @tool
+        def inspect(path: str) -> str:
+            """Inspect one test path."""
+            calls.append(path)
+            return "ok"
+
+        class Model:
+            def __init__(self): self.count = 0
+            def invoke(self, _messages):
+                self.count += 1
+                if self.count == 1:
+                    return AIMessage(content="", tool_calls=[{
+                        "name": "inspect", "args": {"path": "safe.txt"},
+                        "id": "subagent-inspect", "type": "tool_call",
+                    }])
+                return AIMessage(content="done")
+
+        class Provider:
+            def create_chat_model(self, *_args, **_kwargs): return Model()
+
+        class CaptureHook:
+            def handle(self, context):
+                calls.append(f"hook:{context.subject}")
+                return HookDecision()
+
+        hooks = HookRegistry()
+        hooks.register(HookSpec("subagent-pre", HookPoint.PRE_TOOL_USE, CaptureHook(), matcher="^inspect$"))
+        hooks.freeze()
+        delegate = create_delegate_tool(
+            [inspect], Provider(), hook_dispatcher=HookDispatcher(hooks), max_steps=5,
+        )
+        result = delegate.func("inspect", "", {"messages": []})
+        self.assertEqual("done", result)
+        self.assertIn("hook:inspect", calls)
+        self.assertIn("safe.txt", calls)
+    def test_observed_node_fallback_exposes_resource_evidence_to_hook(self):
+        @tool
+        def inspect(path: str) -> str:
+            """Inspect one test path."""
+            return path
+
+        class EvidenceRecorder:
+            def evidence_for(self, context):
+                return {"status": "current", "activity_id": "read-1", "path": context.args["path"]}
+            def record(self, _context, _observation):
+                return None
+
+        class CaptureHook:
+            def __init__(self): self.payload = None
+            def handle(self, context):
+                self.payload = context.payload
+                return HookDecision()
+
+        capture = CaptureHook()
+        hooks = HookRegistry()
+        hooks.register(HookSpec("capture", HookPoint.PRE_TOOL_USE, capture, matcher="^inspect$"))
+        hooks.freeze()
+        builder = StateGraph(MessagesState, context_schema=ToolExecutionContext)
+        builder.add_node("tools", ObservedToolNode(
+            [inspect], hook_dispatcher=HookDispatcher(hooks),
+            resource_activity_recorder=EvidenceRecorder(),
+        ))
+        builder.add_edge(START, "tools")
+        builder.add_edge("tools", END)
+        graph = builder.compile(checkpointer=MemorySaver())
+        list(stream_graph_events(
+            graph,
+            [AIMessage(content="", tool_calls=[{
+                "name": "inspect", "args": {"path": "./a.py"},
+                "id": "fallback-evidence", "type": "tool_call",
+            }])],
+            checkpoint_thread_id="fallback-evidence-thread",
+            tool_context=ToolExecutionContext(
+                self.context.workspace_id, self.context.session_id,
+                self.context.execution_id, self.context.run_id,
+                "subagent", self.context.workspace_root,
+            ),
+        ))
+        self.assertEqual("current", capture.payload["resource_evidence"]["status"])
+        self.assertEqual("./a.py", capture.payload["resource_evidence"]["path"])
     def test_langgraph_interrupt_resumes_the_same_tool_call(self):
         calls = []
 

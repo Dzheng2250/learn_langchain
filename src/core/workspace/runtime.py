@@ -46,6 +46,7 @@ class WorkspaceRuntimeFactory:
         command_changeset_max_files: int = 100,
         command_changeset_max_bytes: int = 10_485_760,
         hook_runtime=None,
+        resource_activity_recorder=None,
     ) -> None:
         self.model_provider = model_provider
         self.run_limits = run_limits or RunLimits()
@@ -64,6 +65,7 @@ class WorkspaceRuntimeFactory:
         self.command_changeset_max_files = command_changeset_max_files
         self.command_changeset_max_bytes = command_changeset_max_bytes
         self.hook_runtime = hook_runtime
+        self.resource_activity_recorder = resource_activity_recorder
 
     def create(self, workspace: WorkspaceContext) -> WorkspaceRuntime:
         """Build Workspace-bound tools and compile the parent Agent graph."""
@@ -89,6 +91,7 @@ class WorkspaceRuntimeFactory:
             command_changeset_max_files=self.command_changeset_max_files,
             command_changeset_max_bytes=self.command_changeset_max_bytes,
             hook_dispatcher=hook_dispatcher,
+            resource_activity_recorder=self.resource_activity_recorder,
         )
         goal_toolset = create_workspace_toolset(
             workspace,
@@ -107,6 +110,7 @@ class WorkspaceRuntimeFactory:
             command_changeset_max_files=self.command_changeset_max_files,
             command_changeset_max_bytes=self.command_changeset_max_bytes,
             hook_dispatcher=hook_dispatcher,
+            resource_activity_recorder=self.resource_activity_recorder,
         )
         checkpointer = (
             self.checkpointer_provider()

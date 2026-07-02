@@ -102,3 +102,9 @@ Session 归档保留这些记录；hard delete 才会清理 Session 关联请求
 同一 `execution_id + tool_call_id` 的请求会在 checkpoint 重放时复用，不能删除 `create_request()` 的幂等查询。审批响应只能成功提交一次；并发或重复响应不会追加第二条审计记录。
 
 网络策略仅接受 `deny`、`allowlist`、`allow`。未知配置启动即失败，不能按“非 deny 即允许”处理。
+
+## 资源活动与权限的边界
+
+权限管线决定 Tool 是否可以执行；资源活动账本记录执行后实际观察到的读取和变更。
+`PreToolUse` 收到只读 `resource_evidence`，`PostToolUse` 收到 `resource_activity_ids`。
+账本失败不会改变已经完成的 Tool 结果，但会产生资源活动记录失败遥测用于诊断。

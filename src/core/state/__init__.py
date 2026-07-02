@@ -11,6 +11,7 @@ from .execution_slices import ExecutionSliceStore
 from .executions import ExecutionRepository
 from .migration import LocalStateMigration
 from .migration_models import LocalStateMigrationReport
+from .migrations import downgrade_local_schema
 from .store import LocalStateStore
 from .workspace import LocalWorkspaceRepository
 from .types import CheckpointState, ExecutionStatus
@@ -27,6 +28,7 @@ __all__ = [
     "LocalStateMigration",
     "LocalStateMigrationReport",
     "LocalStateStore",
+    "downgrade_local_schema",
     "LocalWorkspaceRepository",
     "PendingExecution",
     "CheckpointState",

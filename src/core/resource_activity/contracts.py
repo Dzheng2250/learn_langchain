@@ -1,0 +1,9 @@
+"""Ports for durable resource activity recording and queries."""
+from typing import Protocol
+from .models import ResourceActivitySummary, ResourceObservation
+
+class ResourceActivityRecorder(Protocol):
+    def record(self, context, observation: ResourceObservation) -> str | None: ...
+class ResourceActivityQuery(Protocol):
+    def summary(self, **scope) -> ResourceActivitySummary: ...
+    def list(self, **filters) -> dict: ...

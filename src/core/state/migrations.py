@@ -1,7 +1,7 @@
 """Idempotent transactional migrations for the authoritative local state database."""
 
 
-LATEST_SCHEMA_VERSION = 10
+LATEST_SCHEMA_VERSION = 11
 
 
 def apply_local_migrations(conn) -> None:
@@ -76,7 +76,71 @@ def apply_local_migrations(conn) -> None:
     if current_version < 10 or 10 not in applied_versions:
         _ensure_tool_approval_audit_request_index(conn)
         _record_migration(conn, 10, "tool_approval_audit_request_index")
+    if current_version < 11 or 11 not in applied_versions:
+        _ensure_resource_activity_tables(conn)
+        _record_migration(conn, 11, "resource_activity_ledger")
+    else:
+        _ensure_resource_activity_tables(conn)
 
+
+def _ensure_resource_activity_tables(conn) -> None:
+    """Add the append-only frontend-neutral resource activity ledger."""
+    statements = (
+        """
+        CREATE TABLE IF NOT EXISTS resource_activity_counters (
+            execution_id TEXT PRIMARY KEY REFERENCES executions(execution_id) ON DELETE CASCADE,
+            recorded_count INTEGER NOT NULL DEFAULT 0,
+            dropped_count INTEGER NOT NULL DEFAULT 0
+        )
+        """,
+        """
+        CREATE TABLE IF NOT EXISTS resource_activities (
+            activity_id TEXT PRIMARY KEY, sequence INTEGER NOT NULL,
+            workspace_id TEXT NOT NULL, session_id TEXT NOT NULL, turn_index INTEGER,
+            execution_id TEXT NOT NULL REFERENCES executions(execution_id) ON DELETE CASCADE,
+            slice_id TEXT, run_id TEXT NOT NULL DEFAULT '', tool_call_id TEXT NOT NULL DEFAULT '',
+            tool_name TEXT NOT NULL DEFAULT '', actor TEXT NOT NULL DEFAULT 'parent',
+            resource_uri TEXT NOT NULL, operation TEXT NOT NULL, observation_mode TEXT NOT NULL,
+            change_state TEXT NOT NULL, requested_range TEXT, observed_range TEXT,
+            returned_bytes INTEGER NOT NULL DEFAULT 0, resource_bytes INTEGER NOT NULL DEFAULT 0,
+            before_digest TEXT NOT NULL DEFAULT '', after_digest TEXT NOT NULL DEFAULT '',
+            before_lines INTEGER, after_lines INTEGER,
+            evidence_status TEXT NOT NULL DEFAULT 'not_applicable',
+            related_activity_ids TEXT NOT NULL DEFAULT '[]', metadata TEXT NOT NULL DEFAULT '{}',
+            event_key TEXT NOT NULL DEFAULT '',
+            occurred_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            UNIQUE(execution_id, sequence),
+            FOREIGN KEY(workspace_id, session_id)
+                REFERENCES sessions(workspace_id, session_id) ON DELETE CASCADE
+        )
+        """,
+        "CREATE INDEX IF NOT EXISTS idx_resource_activities_execution ON resource_activities(execution_id, sequence)",
+        "CREATE INDEX IF NOT EXISTS idx_resource_activities_session_turn ON resource_activities(workspace_id, session_id, turn_index, sequence)",
+        "CREATE INDEX IF NOT EXISTS idx_resource_activities_run ON resource_activities(run_id, sequence)",
+        "CREATE INDEX IF NOT EXISTS idx_resource_activities_tool_call ON resource_activities(tool_call_id, sequence)",
+        "CREATE INDEX IF NOT EXISTS idx_resource_activities_uri ON resource_activities(execution_id, resource_uri, sequence)",
+    )
+    for statement in statements:
+        conn.execute(statement)
+    _ensure_column(conn, "resource_activities", "event_key", "TEXT NOT NULL DEFAULT ''")
+    conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_resource_activities_event_key ON resource_activities(execution_id, event_key) WHERE event_key <> ''")
+
+def downgrade_local_schema(conn, *, from_version: int, to_version: int) -> None:
+    """Run one explicitly supported offline downgrade transition."""
+    current = int(
+        conn.execute("SELECT COALESCE(MAX(version), 0) FROM local_schema_migrations").fetchone()[0]
+    )
+    if current != int(from_version):
+        raise ValueError(f"Expected local schema v{from_version}, found v{current}.")
+    if (int(from_version), int(to_version)) != (11, 10):
+        raise ValueError(f"Unsupported local schema downgrade: v{from_version} -> v{to_version}.")
+    downgrade_v11_to_v10(conn)
+
+def downgrade_v11_to_v10(conn) -> None:
+    """Remove v11 observations; rollback intentionally discards only derived metadata."""
+    conn.execute("DROP TABLE IF EXISTS resource_activities")
+    conn.execute("DROP TABLE IF EXISTS resource_activity_counters")
+    conn.execute("DELETE FROM local_schema_migrations WHERE version=11")
 
 def _ensure_tool_approval_tables(conn) -> None:
     """Add durable approval requests, scoped rules, and audit records."""

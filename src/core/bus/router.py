@@ -28,6 +28,10 @@ logger = logging.getLogger(__name__)
 RpcHandler = Callable[[BaseModel, RequestContext], Awaitable[object]]
 
 
+class RpcInvalidParams(ValueError):
+    """Signal a validated request whose referenced domain scope is invalid."""
+
+
 class RpcRouter:
     """Register validated RPC handlers and dispatch requests."""
 
@@ -97,6 +101,8 @@ class RpcRouter:
         )
         try:
             result = await handler(params, context)
+        except RpcInvalidParams as exc:
+            return error_response(request.id, INVALID_PARAMS, "Invalid params", str(exc))
         except Exception as exc:
             logger.exception("RPC handler failed method=%s: %s", request.method, exc)
             record_trace(

@@ -13,6 +13,8 @@ class ToolExecutionContext:
     run_id: str | None = None
     actor: str = "parent"
     workspace_root: str = ""
+    turn_index: int | None = None
+    slice_id: str | None = None
 
     def require_execution_id(self) -> str:
         """Return the active Execution ID or reject task access."""

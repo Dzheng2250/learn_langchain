@@ -1012,3 +1012,9 @@ Transport 不决定 UI 文案，renderer 不发送 RPC，状态层不读取 Core
 - 协议能力协商和正式版本握手。
 
 前端设计必须对这些限制显式降级。若要支持完整 Web/桌面产品，应优先补齐公开查询接口、严格响应模型、事件联合类型和可生成的协议 Schema，而不是让前端依赖数据库结构。
+
+## 资源活动接入
+
+前端在收到 `resource_activity_summary` 时可显示本 Turn 的读取量、文件变更和证据警告。
+需要展开文件列表或恢复历史视图时调用 `resource_activity.list`，不要解析 Tool 文本结果，也不要读取本地数据库。
+`resource_uri` 是稳定展示标识；`proposed` 不是实际 Workspace 变更，只有 `applied` 才应进入已变更文件区域。

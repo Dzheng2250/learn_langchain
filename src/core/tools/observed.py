@@ -2,7 +2,9 @@
 
 import time
 from collections.abc import Callable, Sequence
+from dataclasses import replace
 from typing import Any
+from types import SimpleNamespace
 
 from langchain_core.messages import ToolMessage
 from langchain_core.tools import BaseTool
@@ -13,6 +15,9 @@ from src.core.common.content import message_content_text
 from src.core.hooks import HookAction, HookContext, HookPoint, NOOP_HOOK_DISPATCHER
 from src.core.telemetry import record_tool_failed, record_tool_finished, record_tool_started
 from src.core.agent.budget import ToolBudgetExceeded, current_execution_budget
+from src.core.resource_activity import (
+    bind_resource_activity, current_resource_context, lookup_resource_evidence,
+)
 from src.core.tools.catalog import ToolRisk
 
 
@@ -171,6 +176,8 @@ class ObservedToolNode(ToolNode):
         risk_by_name: dict[str, ToolRisk] | None = None,
         pipeline=None,
         hook_dispatcher=None,
+        resource_activity_recorder=None,
+        actor: str | None = None,
         **kwargs,
     ) -> None:
         existing_wrapper = kwargs.pop("wrap_tool_call", None)
@@ -180,10 +187,23 @@ class ObservedToolNode(ToolNode):
             """Compose centralized observation with an optional existing wrapper."""
             if pipeline is not None:
                 return pipeline.invoke(request, execute)
+            runtime = getattr(request.runtime, "context", None)
+            outer_context = current_resource_context()
+            evidence_context = SimpleNamespace(
+                args=_tool_call_args(request) or {},
+                execution_id=getattr(runtime, "execution_id", None) or getattr(outer_context, "execution_id", None),
+                workspace_root=getattr(runtime, "workspace_root", "") or getattr(outer_context, "workspace_root", ""),
+                tool_name=_tool_call_name(request) or "unknown",
+            )
             hook_context, hook_decision = hooks.dispatch(_hook_context_from_request(
                 request,
                 HookPoint.PRE_TOOL_USE,
-                {"args": _tool_call_args(request) or {}},
+                {
+                    "args": _tool_call_args(request) or {},
+                    "resource_evidence": lookup_resource_evidence(
+                        resource_activity_recorder, evidence_context, source="observed_tool_node"
+                    ),
+                },
             ))
             if hook_decision.action in {HookAction.REJECT, HookAction.DENY}:
                 return _tool_denied_message(request, hook_decision.reason or "PreToolUse hook rejected the call.")
@@ -193,8 +213,20 @@ class ObservedToolNode(ToolNode):
                     return _tool_denied_message(request, "PreToolUse hook must replace args with an object.")
                 request = request.override(tool_call={**request.tool_call, "args": replacement})
             if existing_wrapper is None:
-                result = _observe_tool_call(event_source, request, execute, risk_by_name)
+                if resource_activity_recorder is not None and outer_context is not None:
+                    nested_context = replace(
+                        outer_context,
+                        tool_name=_tool_call_name(request) or "unknown",
+                        tool_call_id=_tool_call_id(request) or "",
+                        actor=actor or getattr(outer_context, "actor", "parent") or "parent",
+                    )
+                    with bind_resource_activity(resource_activity_recorder, nested_context) as activity_ids:
+                        result = _observe_tool_call(event_source, request, execute, risk_by_name)
+                else:
+                    activity_ids = []
+                    result = _observe_tool_call(event_source, request, execute, risk_by_name)
             else:
+                activity_ids = []
                 def wrapped_execute(observed_request):
                     """Preserve a caller-provided wrapper inside observation hooks."""
                     return existing_wrapper(observed_request, execute)
@@ -203,7 +235,7 @@ class ObservedToolNode(ToolNode):
             hooks.dispatch(_hook_context_from_request(
                 request,
                 HookPoint.POST_TOOL_USE,
-                {"status": "error" if _result_is_error(result) else "success", "content": _result_preview(result)},
+                {"status": "error" if _result_is_error(result) else "success", "content": _result_preview(result), "resource_activity_ids": activity_ids},
             ))
             return result
 

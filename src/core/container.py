@@ -21,6 +21,9 @@ from src.config.settings import (
     FILE_OPERATION_MAX_ENTRIES,
     COMMAND_CHANGESET_MAX_FILES,
     COMMAND_CHANGESET_MAX_BYTES,
+    RESOURCE_ACTIVITY_ENABLED,
+    RESOURCE_ACTIVITY_HASH_ENABLED,
+    RESOURCE_ACTIVITY_MAX_ITEMS_PER_EXECUTION,
 )
 from src.core.adapters.sqlite import (
     SQLiteConversationHistoryStore,
@@ -78,6 +81,8 @@ from src.core.maintenance.handlers import (
     MemoryExtractionHandler,
 )
 from src.core.memory.extractor import MemoryCandidateExtractor
+from src.core.resource_activity import ResourceActivityQueryService
+from src.core.adapters.sqlite.resource_activity import SQLiteResourceActivityRepository
 from src.core.session import SessionLifecycleService
 from src.core.session.checkpoint_cleanup import SessionCheckpointCleanupQueue
 from src.core.session.status import SessionStatusReader
@@ -108,6 +113,12 @@ class CoreContainer(containers.DeclarativeContainer):
     transport_factory = providers.Object(create_socket_transport)
 
     state_database = providers.Singleton(LocalStateDatabase)
+    resource_activity_repository = providers.Singleton(
+        SQLiteResourceActivityRepository, database=state_database,
+        enabled=providers.Object(RESOURCE_ACTIVITY_ENABLED),
+        hash_enabled=providers.Object(RESOURCE_ACTIVITY_HASH_ENABLED),
+        max_items=providers.Object(RESOURCE_ACTIVITY_MAX_ITEMS_PER_EXECUTION),
+    )
     checkpoint_manager = providers.Singleton(CheckpointManager)
     postgres_pool = providers.Singleton(create_optional_postgres_pool)
     event_bus = providers.Singleton(
@@ -339,6 +350,7 @@ class CoreContainer(containers.DeclarativeContainer):
         command_changeset_max_files=providers.Object(COMMAND_CHANGESET_MAX_FILES),
         command_changeset_max_bytes=providers.Object(COMMAND_CHANGESET_MAX_BYTES),
         hook_runtime=hook_runtime,
+        resource_activity_recorder=resource_activity_repository,
     )
     runtime_registry = providers.Singleton(
         WorkspaceRuntimeRegistry,
@@ -412,11 +424,16 @@ class CoreContainer(containers.DeclarativeContainer):
         CoreHandlers,
         shutdown_event=shutdown_event,
     )
+    resource_activity_service = providers.Factory(
+        ResourceActivityQueryService, repository=resource_activity_repository,
+        workspace_repository=workspace_repository,
+    )
     agent_handlers = providers.Factory(
         AgentHandlers,
         agent_service=agent_service,
         session_service=session_lifecycle_service,
         approval_service=tool_approval_service,
+        resource_activity_service=resource_activity_service,
     )
     transport = providers.Factory(
         create_transport,

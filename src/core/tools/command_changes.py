@@ -20,6 +20,8 @@ from src.core.telemetry import emit_event
 from src.core.tools.commands import _copy_workspace
 from src.core.tools.workspace import is_workspace_path_blocked
 from src.core.tools.workspace_write import _safe_target
+from src.core.resource_activity import ChangeState, ObservationMode, ResourceObservation, ResourceOperation, record_resource_activity
+from src.core.resource_activity.observation import workspace_uri
 from src.core.workspace.resolver import canonicalize_workspace
 
 _CHANGESET_TTL_HOURS = 24
@@ -181,6 +183,13 @@ def create_staged_command_tools(
             "command_changes_staged", "workspace_tools", "Command changes staged.",
             {"change_set_id": change_set_id, "file_count": len(changes), "bytes": changed_bytes},
         )
+        for change in changes:
+            operation = {"create": ResourceOperation.CREATE, "modify": ResourceOperation.WRITE, "delete": ResourceOperation.DELETE}[change["operation"]]
+            record_resource_activity(ResourceObservation(
+                workspace_uri(root, change["path"]), operation, ObservationMode.EXACT,
+                change_state=ChangeState.PROPOSED, resource_bytes=change["size"],
+                metadata={"change_set_id": change_set_id},
+            ))
         output = "\n".join(part for part in (result.stdout.strip(), result.stderr.strip()) if part)
         summary = json.dumps(changes, ensure_ascii=False)
         return (
@@ -250,6 +259,16 @@ def create_staged_command_tools(
                 if saved.is_file():
                     _atomic_copy(saved, root / saved.relative_to(backup))
             raise
+        for change, target, _source in targets:
+            operation = {"create": ResourceOperation.CREATE, "modify": ResourceOperation.WRITE, "delete": ResourceOperation.DELETE}[change["operation"]]
+            before = metadata["before"].get(change["path"], {})
+            after_item = metadata["after"].get(change["path"], {})
+            record_resource_activity(ResourceObservation(
+                workspace_uri(root, change["path"]), operation, ObservationMode.EXACT,
+                change_state=ChangeState.APPLIED, resource_bytes=int(after_item.get("size", 0)),
+                before_digest=str(before.get("sha256", "")), after_digest=str(after_item.get("sha256", "")),
+                metadata={"change_set_id": change_set_id},
+            ))
         shutil.rmtree(directory, ignore_errors=True)
         emit_event(
             "command_changes_applied", "workspace_tools", "Command changes applied.",
@@ -261,7 +280,15 @@ def create_staged_command_tools(
     def discard_staged_changes(change_set_id: str) -> str:
         """Discard a staged command change set without changing the Workspace."""
         directory, metadata = _load_changeset(root, change_set_id)
-        count = len(metadata.get("changes", []))
+        changes = metadata.get("changes", [])
+        count = len(changes)
+        for change in changes:
+            operation = {"create": ResourceOperation.CREATE, "modify": ResourceOperation.WRITE, "delete": ResourceOperation.DELETE}[change["operation"]]
+            record_resource_activity(ResourceObservation(
+                workspace_uri(root, change["path"]), operation, ObservationMode.EXACT,
+                change_state=ChangeState.DISCARDED, resource_bytes=int(change.get("size", 0)),
+                metadata={"change_set_id": change_set_id},
+            ))
         shutil.rmtree(directory, ignore_errors=True)
         emit_event(
             "command_changes_discarded", "workspace_tools", "Command changes discarded.",

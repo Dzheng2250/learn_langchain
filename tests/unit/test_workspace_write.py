@@ -3,6 +3,7 @@ import shutil
 import subprocess
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 from uuid import uuid4
 
@@ -17,6 +18,8 @@ from src.core.tools.security.pipeline import ToolExecutionPipeline
 from src.core.tools.command_changes import create_staged_command_tools
 from src.core.tools.registry import create_workspace_toolset
 from src.core.tools.workspace_write import create_workspace_write_tools
+from src.core.tools.workspace import create_workspace_file_tools
+from src.core.resource_activity import bind_resource_activity
 from src.core.workspace.models import WorkspaceContext
 from tests.support.model_providers import UnusedModelProvider
 from tests.support.paths import REPOSITORY_ROOT
@@ -46,6 +49,29 @@ class WorkspaceWriteToolsTest(unittest.TestCase):
         self.delete.invoke({"path": "archive/demo.txt"})
         self.assertFalse((self.root / "archive/demo.txt").exists())
 
+    def test_resource_observation_uses_exact_ranges_and_both_move_uris(self):
+        class Recorder:
+            def __init__(self): self.items = []
+            def record(self, _context, observation):
+                self.items.append(observation)
+                return f"activity-{len(self.items)}"
+
+        recorder = Recorder()
+        context = SimpleNamespace(tool_call_id="call", tool_name="test")
+        target = self.root / "source.txt"
+        target.write_text("one\ntwo\n", encoding="utf-8")
+        read, _entire, _lite = create_workspace_file_tools(self.root)
+        with bind_resource_activity(recorder, context):
+            read.invoke({"path": "./source.txt", "start_line": 1, "max_lines": 20})
+        self.assertEqual("exact", recorder.items[-1].observation_mode.value)
+        with bind_resource_activity(recorder, context):
+            self.move.invoke({"source": "source.txt", "destination": "moved.txt"})
+        moves = [item for item in recorder.items if item.operation.value == "move"]
+        self.assertEqual(
+            ["workspace://source.txt", "workspace://moved.txt"],
+            [item.resource_uri for item in moves],
+        )
+        self.assertEqual(["source", "destination"], [item.metadata["move_role"] for item in moves])
     def test_replacement_count_mismatch_is_non_mutating(self):
         target = self.root / "sample.txt"
         target.write_text("same same", encoding="utf-8")

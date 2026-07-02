@@ -16,6 +16,8 @@ from src.config.settings import (
     DOCKER_TIMEOUT_SECONDS,
 )
 from src.core.tools.workspace import is_sandbox_name_excluded
+from src.core.resource_activity import ObservationMode, ResourceObservation, ResourceOperation, record_resource_activity
+from src.core.resource_activity.observation import command_uri
 
 
 def _copy_workspace(root: Path, target: Path) -> None:
@@ -76,6 +78,10 @@ def create_run_command_in_container(root: Path):
                 return "Docker is not installed or is not available on PATH."
             except subprocess.TimeoutExpired:
                 return f"Container command exceeded the {DOCKER_TIMEOUT_SECONDS}-second timeout."
+        record_resource_activity(ResourceObservation(
+            command_uri("docker", command), ResourceOperation.READ, ObservationMode.SCOPE_ONLY,
+            metadata={"executor": "docker", "network": "deny", "exit_code": result.returncode},
+        ))
         output = "\n".join(part for part in (result.stdout.strip(), result.stderr.strip()) if part)
         output = output or f"Command completed with exit code {result.returncode} and no output."
         return output[:DOCKER_OUTPUT_LIMIT]

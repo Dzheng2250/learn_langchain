@@ -43,7 +43,8 @@
 | `session.reset` | 从归档消息重建 recent_messages | 是 | 是 |
 | `approval.list` | 查询当前 Session 待审批工具调用 | 是 | 是 |
 | `approval.resolve` | 审批并恢复原工具调用 | 否 | 否 |
-
+| `resource_activity.summary` | 查询 Execution 或历史 Turn 的资源活动聚合 | 是 | 是 |
+| `resource_activity.list` | 游标分页查询资源活动明细 | 是 | 是 |
 “不可自动重试”表示连接中断时请求可能已经在 Core 内执行。直接重发可能造成重复模型调用、工具调用或消息写入。
 
 ## `core.ping`
@@ -263,3 +264,18 @@ checkpoint 删除通过后台维护任务完成，因此返回成功不表示 ch
 - 忽略未知字段。
 - 对标记为“可能缺省”的字段使用空值处理。
 - 不依赖字典字段顺序。
+
+## Resource Activity
+
+### `resource_activity.summary`
+
+返回版本化的 Agent Turn 资源活动聚合。参数必须提供 `execution_id`，或者同时提供
+`workspace_root`、`session_name` 和 `turn_index`。结果包含读取资源数、返回字节、
+实际及暂存变更数量、读取证据状态和 `truncated` 标志。该接口是 Web、桌面端、IDE、CLI
+与 TUI 的统一查询边界，客户端不得直接读取 `state.db`。
+
+### `resource_activity.list`
+
+按相同 scope 返回安全元数据明细。可用 `operation`、`change_state`、`resource_uri` 过滤，
+并通过 `cursor`、`limit` 进行基于 Execution 内 `sequence` 的稳定分页。返回
+`schema_version`、`items`、`next_cursor` 和 `has_more`；不包含文件正文、完整命令输出或宿主机绝对路径。

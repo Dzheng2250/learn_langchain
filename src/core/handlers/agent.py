@@ -9,7 +9,7 @@ from src.core.agent.contracts import (
     SessionLifecycleController,
 )
 from src.core.bus.context import RequestContext
-from src.core.bus.router import RpcRouter
+from src.core.bus.router import RpcInvalidParams, RpcRouter
 from src.core.telemetry import record_error
 from src.core.tracing import bind_trace_context, reset_trace_context
 from src.ipc.models import (
@@ -19,6 +19,8 @@ from src.ipc.models import (
     SessionDeleteParams,
     SessionParams,
     SessionResumeParams,
+    ResourceActivityScopeParams,
+    ResourceActivityListParams,
 )
 
 
@@ -30,10 +32,12 @@ class AgentHandlers:
         agent_service: AgentTurnRunner,
         session_service: SessionLifecycleController | None = None,
         approval_service=None,
+        resource_activity_service=None,
     ) -> None:
         self.agent_service = agent_service
         self.session_service = session_service or agent_service
         self.approval_service = approval_service
+        self.resource_activity_service = resource_activity_service
 
     def register(self, router: RpcRouter) -> None:
         """Expose chat and explicit Session recovery methods."""
@@ -43,10 +47,30 @@ class AgentHandlers:
         router.register("session.discard", SessionParams, self.session_discard)
         router.register("session.delete", SessionDeleteParams, self.session_delete)
         router.register("session.reset", SessionParams, self.session_reset)
+        if self.resource_activity_service is not None:
+            router.register("resource_activity.summary", ResourceActivityScopeParams, self.resource_activity_summary)
+            router.register("resource_activity.list", ResourceActivityListParams, self.resource_activity_list)
         if self.approval_service is not None:
             router.register("approval.list", SessionParams, self.approval_list)
             router.register("approval.resolve", ApprovalResolveParams, self.approval_resolve)
 
+    async def resource_activity_summary(self, params: ResourceActivityScopeParams, _context: RequestContext) -> dict:
+        try:
+            return await asyncio.to_thread(
+                self.resource_activity_service.summary,
+                **params.model_dump(exclude={"auth_token"}),
+            )
+        except ValueError as exc:
+            raise RpcInvalidParams(str(exc)) from exc
+
+    async def resource_activity_list(self, params: ResourceActivityListParams, _context: RequestContext) -> dict:
+        try:
+            return await asyncio.to_thread(
+                self.resource_activity_service.list,
+                **params.model_dump(exclude={"auth_token"}),
+            )
+        except ValueError as exc:
+            raise RpcInvalidParams(str(exc)) from exc
     async def approval_list(self, params: SessionParams, _context: RequestContext) -> dict:
         return await asyncio.to_thread(
             self.approval_service.list_pending,
@@ -151,37 +175,59 @@ class AgentHandlers:
         run_id: str,
         control: ExecutionControl,
     ):
-        """Create a worker-safe callback that pauses after a disconnected Slice."""
+        """Deliver terminal state before querying its non-critical activity summary."""
         loop = asyncio.get_running_loop()
         notification_failed = False
+        activity_announced = False
+
+        def send(notification) -> None:
+            future = asyncio.run_coroutine_threadsafe(
+                context.send_notification(notification), loop
+            )
+            future.result()
 
         def on_event(item: dict) -> None:
-            nonlocal notification_failed
+            nonlocal notification_failed, activity_announced
             if notification_failed:
                 return
-            notification = AgentEventNotification(
-                params={
-                    "request_id": context.request_id,
-                    "run_id": run_id,
-                    "event": item["event"],
-                    "data": item["data"],
-                }
-            )
-            future = asyncio.run_coroutine_threadsafe(context.send_notification(notification), loop)
+            notification = AgentEventNotification(params={
+                "request_id": context.request_id,
+                "run_id": run_id,
+                "event": item["event"],
+                "data": item["data"],
+            })
             try:
-                future.result()
+                send(notification)
             except Exception as exc:
-                # The current bounded Slice may finish, but Core must not start
-                # another Slice after its client can no longer observe output.
                 notification_failed = True
                 control.pause_after_slice.set()
                 record_error(
-                    "agent_handler",
-                    "stream_notification",
-                    exc,
+                    "agent_handler", "stream_notification", exc,
                     "Stopped streaming notifications after client delivery failed.",
                     {"request_id": context.request_id, "run_id": run_id},
                     event_type="stream_notification_failed",
+                )
+                return
+
+            if (
+                activity_announced
+                or item["event"] not in {"done", "paused", "error"}
+                or self.resource_activity_service is None
+            ):
+                return
+            activity_announced = True
+            try:
+                summary = self.resource_activity_service.summary_for_run(run_id)
+                send(AgentEventNotification(params={
+                    "request_id": context.request_id,
+                    "run_id": run_id,
+                    "event": "resource_activity_summary",
+                    "data": {"schema_version": 1, "run_id": run_id, "summary": summary},
+                }))
+            except Exception as exc:
+                record_error(
+                    "agent_handler", "resource_activity_summary", exc,
+                    "Resource activity summary delivery failed.", {"run_id": run_id},
                 )
 
         return on_event

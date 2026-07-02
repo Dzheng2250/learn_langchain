@@ -51,6 +51,7 @@ def create_workspace_toolset(
     command_changeset_max_files: int = 100,
     command_changeset_max_bytes: int = 10_485_760,
     hook_dispatcher=None,
+    resource_activity_recorder=None,
 ) -> WorkspaceToolset:
     """Create, classify, and freeze all tools available in one Workspace."""
     provider = model_provider
@@ -159,6 +160,7 @@ def create_workspace_toolset(
         risk_by_name=base_risks,
         hook_dispatcher=hook_dispatcher,
         workspace=workspace,
+        resource_activity_recorder=resource_activity_recorder,
     )
     register(
         delegate, {ToolAudience.PARENT}, ToolRisk.DELEGATION,
@@ -177,6 +179,7 @@ def create_workspace_toolset(
             approvals=ApprovalService(approval_repository),
             hook_dispatcher=hook_dispatcher,
             enforcer=CapabilityEnforcer(network_policy=network_policy),
+            resource_activity_recorder=resource_activity_recorder,
         )
     return WorkspaceToolset(
         registry=registry,

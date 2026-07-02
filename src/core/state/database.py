@@ -89,6 +89,18 @@ class LocalStateDatabase:
             conn.close()
 
     @contextmanager
+    def read_transaction(self):
+        """Yield one consistent read snapshot without reserving the writer lock."""
+        with self.connect() as conn:
+            conn.execute("BEGIN")
+            try:
+                yield conn
+            except Exception:
+                conn.rollback()
+                raise
+            else:
+                conn.commit()
+    @contextmanager
     def transaction(self):
         """Yield one immediate write transaction and roll back on failure."""
         with self.connect() as conn:

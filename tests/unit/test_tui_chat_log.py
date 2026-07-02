@@ -33,6 +33,15 @@ def _rendered_text(value):
 
 
 class TuiChatLogTest(unittest.TestCase):
+    def test_resource_activity_summary_uses_shared_core_shape(self):
+        rendered = render_event({"event": "resource_activity_summary", "data": {"summary": {
+            "reads": {"resource_count": 3, "returned_bytes": 64},
+            "changes": {"changed_resource_count": 2},
+            "evidence": {"partial": 1, "stale": 1},
+        }}})
+        self.assertIn("read 3", rendered)
+        self.assertIn("changed 2", rendered)
+        self.assertIn("warnings 2", rendered)
     def _fake_log(self):
         log = ChatLog.__new__(ChatLog)
         log._entries = []
