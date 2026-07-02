@@ -7,7 +7,7 @@ from src.core.handlers.core import CoreHandlers
 from src.core.bus.router import INVALID_PARAMS, RpcRouter
 from src.ipc.models import (
     ChatParams, PingParams, ResourceActivityListParams, ResourceActivityScopeParams,
-    SessionDeleteParams, ShutdownParams,
+    SessionDeleteParams, SessionParams, ShutdownParams,
 )
 
 
@@ -104,7 +104,7 @@ class AgentHandlersTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual("request-1", params["request_id"])
         self.assertEqual("token", params["event"])
 
-    async def test_notification_failure_is_recorded_once_without_cancelling_turn(self):
+    async def test_notification_and_terminal_retry_failures_are_both_recorded(self):
         completed = False
 
         class FailingContext(FakeRequestContext):
@@ -145,9 +145,17 @@ class AgentHandlersTest(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual("ok", result["status"])
         self.assertTrue(completed)
-        self.assertEqual(1, context.attempts)
+        self.assertEqual(2, context.attempts)
         self.assertTrue(service.control.pause_after_slice.is_set())
-        record_error.assert_called_once()
+        self.assertEqual(2, record_error.call_count)
+        self.assertEqual(
+            "stream_notification_failed",
+            record_error.call_args_list[0].kwargs["event_type"],
+        )
+        self.assertEqual(
+            "stream_notification_terminal_retry_failed",
+            record_error.call_args_list[1].kwargs["event_type"],
+        )
 
     async def test_resource_activity_api_and_terminal_event_share_core_contract(self):
         class TerminalService(FakeAgentService):
@@ -191,6 +199,44 @@ class AgentHandlersTest(unittest.IsolatedAsyncioTestCase):
             )
         self.assertEqual(["done"], [item.params["event"] for item in context.notifications])
         record_error.assert_called_once()
+    async def test_resource_summary_is_retried_until_delivery_succeeds(self):
+        class RepeatedTerminalService(FakeAgentService):
+            async def run_turn(self, workspace_root, session_name, message, on_event, **kwargs):
+                await asyncio.to_thread(on_event, {"event": "done", "data": {"status": "ok"}})
+                await asyncio.to_thread(on_event, {"event": "done", "data": {"status": "ok"}})
+                return {"status": "ok", "run_id": kwargs.get("run_id")}
+
+        class FlakyActivities:
+            def __init__(self):
+                self.calls = 0
+
+            def summary_for_run(self, run_id):
+                self.calls += 1
+                if self.calls == 1:
+                    raise RuntimeError("temporary ledger failure")
+                return {
+                    "schema_version": 1,
+                    "scope": {"run_id": run_id},
+                    "reads": {}, "changes": {}, "evidence": {}, "truncated": False,
+                }
+
+        activities = FlakyActivities()
+        context = FakeRequestContext()
+        with patch("src.core.handlers.agent.record_error") as record_error:
+            await AgentHandlers(
+                RepeatedTerminalService(), resource_activity_service=activities
+            ).chat(
+                ChatParams(auth_token="token", workspace_root=".", message="hello"),
+                context,
+            )
+
+        self.assertEqual(2, activities.calls)
+        self.assertEqual(
+            ["done", "done", "resource_activity_summary"],
+            [item.params["event"] for item in context.notifications],
+        )
+        record_error.assert_called_once()
+
     async def test_resource_activity_unknown_session_is_invalid_params(self):
         class Activities:
             def summary(self, **_params):
@@ -211,6 +257,85 @@ class AgentHandlersTest(unittest.IsolatedAsyncioTestCase):
         }, FakeRequestContext())
         self.assertEqual(INVALID_PARAMS, response.error.code)
         self.assertIn("Session not found", str(response.error.data))
+    async def test_session_domain_value_error_is_invalid_params(self):
+        class InvalidSessionService:
+            def session_status(self, _workspace_root, _session_name):
+                raise ValueError("Session not found")
+
+        router = RpcRouter("token")
+        AgentHandlers(FakeAgentService(), InvalidSessionService()).register(router)
+        response = await router.dispatch({
+            "jsonrpc": "2.0", "id": "session-invalid", "method": "session.status",
+            "params": {
+                "auth_token": "token", "workspace_root": ".", "session_name": "missing",
+            },
+        }, FakeRequestContext())
+
+        self.assertEqual(INVALID_PARAMS, response.error.code)
+        self.assertIn("Session not found", str(response.error.data))
+
+    async def test_session_resume_domain_value_error_is_invalid_params(self):
+        class InvalidResumeService(FakeAgentService):
+            async def resume_execution(self, *_args, **_kwargs):
+                raise ValueError("Workspace not found")
+
+        router = RpcRouter("token")
+        AgentHandlers(InvalidResumeService()).register(router)
+        response = await router.dispatch({
+            "jsonrpc": "2.0", "id": "resume-invalid", "method": "session.resume",
+            "params": {
+                "auth_token": "token", "workspace_root": ".", "session_name": "missing",
+            },
+        }, FakeRequestContext())
+
+        self.assertEqual(INVALID_PARAMS, response.error.code)
+        self.assertIn("Workspace not found", str(response.error.data))
+
+    async def test_approval_prepare_value_error_is_invalid_params(self):
+        class InvalidApprovalService:
+            def prepare_response(self, *_args, **_kwargs):
+                raise ValueError("Approval request not found")
+
+        router = RpcRouter("token")
+        AgentHandlers(
+            FakeAgentService(), approval_service=InvalidApprovalService()
+        ).register(router)
+        response = await router.dispatch({
+            "jsonrpc": "2.0", "id": "approval-invalid", "method": "approval.resolve",
+            "params": {
+                "auth_token": "token", "workspace_root": ".", "session_name": "default",
+                "request_id": "missing", "response": "deny_once",
+            },
+        }, FakeRequestContext())
+
+        self.assertEqual(INVALID_PARAMS, response.error.code)
+        self.assertIn("Approval request not found", str(response.error.data))
+
+    async def test_approval_resume_value_error_is_invalid_params(self):
+        class ApprovalService:
+            def prepare_response(self, *_args, **_kwargs):
+                return {"request_id": "approval-1", "allowed": True}
+
+        class InvalidResumeService(FakeAgentService):
+            async def resume_execution(self, *_args, **_kwargs):
+                raise ValueError("Pending execution not found")
+
+        router = RpcRouter("token")
+        AgentHandlers(
+            InvalidResumeService(), approval_service=ApprovalService()
+        ).register(router)
+        response = await router.dispatch({
+            "jsonrpc": "2.0", "id": "approval-resume-invalid",
+            "method": "approval.resolve",
+            "params": {
+                "auth_token": "token", "workspace_root": ".", "session_name": "default",
+                "request_id": "approval-1", "response": "allow_once",
+            },
+        }, FakeRequestContext())
+
+        self.assertEqual(INVALID_PARAMS, response.error.code)
+        self.assertIn("Pending execution not found", str(response.error.data))
+
     async def test_session_delete_passes_hard_delete_flag(self):
         handlers = AgentHandlers(FakeAgentService())
         result = await handlers.session_delete(

@@ -1,7 +1,7 @@
 """Execution helper for one bounded LangGraph Slice."""
 
 from collections.abc import Iterator
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any
 
 from src.core.agent.budget import ExecutionBudget
@@ -83,7 +83,7 @@ class SliceExecutionService:
                     run_context,
                     checkpoint_thread_id=checkpoint_thread_id,
                     provider_error_handler=self.provider_error_handler,
-                    tool_context=tool_context,
+                    tool_context=replace(tool_context, slice_id=slice_id),
                 ),
                 slice_id,
             ):

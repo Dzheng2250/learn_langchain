@@ -76,6 +76,26 @@ class SliceExecutionServiceTest(unittest.TestCase):
                 )
             )
 
+    def test_tool_context_receives_the_started_slice_id(self):
+        repository = FakeExecutionRepository()
+        service = SliceExecutionService(
+            execution_store=repository,
+            provider_error_handler=ProviderErrorHandler(),
+        )
+        with patch("src.core.agent.slices.stream_graph_events", return_value=iter([])) as stream:
+            _consume(service.stream_slice(
+                graph=object(),
+                slice_input=["input"],
+                run_context=self._run_context(),
+                execution=FakeExecution(),
+                slice_number=1,
+                checkpoint_thread_id="thread-1",
+                budget=ExecutionBudget(),
+                tool_context=self._tool_context(),
+            ))
+
+        self.assertEqual("slice-1", stream.call_args.kwargs["tool_context"].slice_id)
+
     def test_paused_slice_finishes_as_budget_pause(self):
         repository = FakeExecutionRepository()
         events = [

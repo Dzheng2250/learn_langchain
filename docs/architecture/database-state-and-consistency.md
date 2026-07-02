@@ -366,4 +366,4 @@ flowchart LR
 读取范围、字节、版本摘要、变更状态和读取证据关联。暂停和失败 Execution 的记录也保留；Session hard-delete
 依靠外键级联清理，归档不会清理。`resource_activity_counters` 保存记录及超限丢弃计数。
 
-账本不保存文件正文或 unified diff。Telemetry 仅镜像脱敏指标，不是资源活动 RPC 的数据源。 URI 由公共规范化器生成；命令使用不含命令正文的 `command://<executor>/<sha256>` 标识。staged change 的汇总按 `change_set_id + resource_uri` 的最新状态计算，历史行仍保持 append-only。
+账本不保存文件正文或 unified diff。Telemetry 仅镜像脱敏指标，不是资源活动 RPC 的数据源。daemon 与会修改本地 Schema/Artifact 的离线命令共享 `state.db.operation.lock`，防止迁移、回滚和 GC 并发改写状态。URI 由公共规范化器生成；命令使用不含命令正文的 `command://<executor>/<sha256>` 标识。每条 Tool 活动绑定实际执行它的 `slice_id`。staged change 的汇总按 `change_set_id + resource_uri` 的最新状态计算；MOVE 的源和目标行通过 `change_group_id` 合并为一个逻辑变更，但受影响资源数保留两个 URI。历史行仍保持 append-only。

@@ -72,14 +72,14 @@ class AgentHandlers:
         except ValueError as exc:
             raise RpcInvalidParams(str(exc)) from exc
     async def approval_list(self, params: SessionParams, _context: RequestContext) -> dict:
-        return await asyncio.to_thread(
+        return await self._session_call(
             self.approval_service.list_pending,
             params.workspace_root,
             params.session_name,
         )
 
     async def approval_resolve(self, params: ApprovalResolveParams, context: RequestContext) -> dict:
-        resume_value = await asyncio.to_thread(
+        resume_value = await self._session_call(
             self.approval_service.prepare_response,
             params.workspace_root,
             params.session_name,
@@ -89,7 +89,8 @@ class AgentHandlers:
         run_id = uuid4().hex
         control = ExecutionControl()
         on_event = self._notification_callback(context, run_id, control)
-        return await self.agent_service.resume_execution(
+        return await self._async_session_call(
+            self.agent_service.resume_execution,
             params.workspace_root,
             params.session_name,
             "",
@@ -120,7 +121,7 @@ class AgentHandlers:
 
     async def session_status(self, params: SessionParams, _context: RequestContext) -> dict:
         """Return the recoverable execution state for one Session."""
-        return await asyncio.to_thread(
+        return await self._session_call(
             self.session_service.session_status,
             params.workspace_root,
             params.session_name,
@@ -128,7 +129,7 @@ class AgentHandlers:
 
     async def session_discard(self, params: SessionParams, _context: RequestContext) -> dict:
         """Discard one pending execution without deleting its audit history."""
-        return await asyncio.to_thread(
+        return await self._session_call(
             self.session_service.discard_pending,
             params.workspace_root,
             params.session_name,
@@ -136,7 +137,7 @@ class AgentHandlers:
 
     async def session_delete(self, params: SessionDeleteParams, _context: RequestContext) -> dict:
         """Archive or permanently delete one Session."""
-        return await asyncio.to_thread(
+        return await self._session_call(
             self.session_service.delete_session,
             params.workspace_root,
             params.session_name,
@@ -145,11 +146,27 @@ class AgentHandlers:
 
     async def session_reset(self, params: SessionParams, _context: RequestContext) -> dict:
         """Rebuild recent_messages from archived message history."""
-        return await asyncio.to_thread(
+        return await self._session_call(
             self.session_service.reset_session,
             params.workspace_root,
             params.session_name,
         )
+
+    @staticmethod
+    async def _session_call(operation, *args, **kwargs) -> dict:
+        """Map domain input errors to the JSON-RPC invalid-params contract."""
+        try:
+            return await asyncio.to_thread(operation, *args, **kwargs)
+        except ValueError as exc:
+            raise RpcInvalidParams(str(exc)) from exc
+
+    @staticmethod
+    async def _async_session_call(operation, *args, **kwargs) -> dict:
+        """Map asynchronous Session input errors to invalid params."""
+        try:
+            return await operation(*args, **kwargs)
+        except ValueError as exc:
+            raise RpcInvalidParams(str(exc)) from exc
 
     async def session_resume(self, params: SessionResumeParams, context: RequestContext) -> dict:
         """Resume one pending execution and stream its new Slice events."""
@@ -158,7 +175,8 @@ class AgentHandlers:
         on_event = self._notification_callback(context, run_id, control)
         token = bind_trace_context(run_id=run_id)
         try:
-            return await self.agent_service.resume_execution(
+            return await self._async_session_call(
+                self.agent_service.resume_execution,
                 params.workspace_root,
                 params.session_name,
                 params.instruction,
@@ -177,6 +195,8 @@ class AgentHandlers:
     ):
         """Deliver terminal state before querying its non-critical activity summary."""
         loop = asyncio.get_running_loop()
+        # This callback is created per RPC request. A delivery failure suppresses
+        # routine events only for this stream; the terminal event still gets one attempt.
         notification_failed = False
         activity_announced = False
 
@@ -188,7 +208,8 @@ class AgentHandlers:
 
         def on_event(item: dict) -> None:
             nonlocal notification_failed, activity_announced
-            if notification_failed:
+            terminal = item["event"] in {"done", "paused", "error"}
+            if notification_failed and not terminal:
                 return
             notification = AgentEventNotification(params={
                 "request_id": context.request_id,
@@ -199,13 +220,21 @@ class AgentHandlers:
             try:
                 send(notification)
             except Exception as exc:
+                retrying_terminal = notification_failed and terminal
                 notification_failed = True
                 control.pause_after_slice.set()
                 record_error(
                     "agent_handler", "stream_notification", exc,
-                    "Stopped streaming notifications after client delivery failed.",
+                    (
+                        "Terminal notification retry failed."
+                        if retrying_terminal
+                        else "Notification delivery failed; later non-terminal events are suppressed."
+                    ),
                     {"request_id": context.request_id, "run_id": run_id},
-                    event_type="stream_notification_failed",
+                    event_type=(
+                        "stream_notification_terminal_retry_failed"
+                        if retrying_terminal else "stream_notification_failed"
+                    ),
                 )
                 return
 
@@ -215,7 +244,6 @@ class AgentHandlers:
                 or self.resource_activity_service is None
             ):
                 return
-            activity_announced = True
             try:
                 summary = self.resource_activity_service.summary_for_run(run_id)
                 send(AgentEventNotification(params={
@@ -224,6 +252,7 @@ class AgentHandlers:
                     "event": "resource_activity_summary",
                     "data": {"schema_version": 1, "run_id": run_id, "summary": summary},
                 }))
+                activity_announced = True
             except Exception as exc:
                 record_error(
                     "agent_handler", "resource_activity_summary", exc,

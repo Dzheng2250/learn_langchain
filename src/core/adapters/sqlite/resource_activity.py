@@ -149,7 +149,7 @@ class SQLiteResourceActivityRepository:
             return self._summary_with_connection(
                 conn,
                 execution_id=row["execution_id"] if row else None,
-                run_id=None if row else run_id,
+                run_id=run_id,
             )
 
     def _summary_with_connection(
@@ -180,6 +180,7 @@ class SQLiteResourceActivityRepository:
 
         read_rows = [row for row in rows if row["operation"] in ("read", "summarize")]
         terminal_changes = {}
+        change_resources = {}
         for row in rows:
             state = row["change_state"]
             if state not in {"proposed", "applied", "discarded"}:
@@ -194,8 +195,15 @@ class SQLiteResourceActivityRepository:
             else:
                 key = ("activity", row["activity_id"])
             terminal_changes[key] = row
+            change_resources.setdefault(key, set()).add(row["resource_uri"])
         current_change_rows = list(terminal_changes.values())
-        actual = [row for row in current_change_rows if row["change_state"] == "applied"]
+        applied_keys = {
+            key for key, row in terminal_changes.items()
+            if row["change_state"] == "applied"
+        }
+        changed_resources = {
+            uri for key in applied_keys for uri in change_resources[key]
+        }
         states = Counter(row["change_state"] for row in current_change_rows)
         evidence = Counter(
             row["evidence_status"] for row in rows if row["evidence_status"] != "not_applicable"
@@ -212,7 +220,7 @@ class SQLiteResourceActivityRepository:
                 **{key: modes[key] for key in ("exact", "range", "summary", "scope_only", "unknown")},
             },
             changes={
-                "changed_resource_count": len({row["resource_uri"] for row in actual}),
+                "changed_resource_count": len(changed_resources),
                 "applied": states["applied"], "proposed": states["proposed"],
                 "discarded": states["discarded"],
             },
@@ -230,9 +238,27 @@ class SQLiteResourceActivityRepository:
             )
             return {}
         return value if isinstance(value, dict) else {}
+
+    @staticmethod
+    def _json_value(raw, activity_id: str, field: str, default, expected_type):
+        valid = True
+        try:
+            value = json.loads(raw if raw is not None else "null")
+        except (json.JSONDecodeError, TypeError):
+            valid = False
+            value = default
+        if not isinstance(value, expected_type):
+            valid = False
+            value = default
+        if not valid:
+            logging.getLogger(__name__).warning(
+                "Ignoring malformed resource activity %s activity_id=%s", field, activity_id
+            )
+        return value
+
     def list(self, *, execution_id=None, workspace_id=None, session_id=None, turn_index=None,
-             operation=None, change_state=None, resource_uri=None, cursor=0, limit=100):
-        where, params = self._scope(execution_id, workspace_id, session_id, turn_index, None)
+             run_id=None, operation=None, change_state=None, resource_uri=None, cursor=0, limit=100):
+        where, params = self._scope(execution_id, workspace_id, session_id, turn_index, run_id)
         clauses = [where, "sequence>?"]
         values = [*params, int(cursor or 0)]
         for column, value in (("operation", operation), ("change_state", change_state), ("resource_uri", resource_uri)):
@@ -240,7 +266,7 @@ class SQLiteResourceActivityRepository:
                 clauses.append(f"{column}=?")
                 values.append(str(value))
         size = max(1, min(int(limit), 500))
-        with self.database.connect() as conn:
+        with self.database.read_transaction() as conn:
             rows = conn.execute(
                 f"SELECT * FROM resource_activities WHERE {' AND '.join(clauses)} ORDER BY sequence LIMIT ?",
                 (*values, size + 1),
@@ -272,9 +298,15 @@ class SQLiteResourceActivityRepository:
             "after_digest", "before_lines", "after_lines", "evidence_status", "occurred_at",
         )
         item = {key: row[key] for key in keys}
-        item["requested_range"] = json.loads(row["requested_range"] or "null")
-        item["observed_range"] = json.loads(row["observed_range"] or "null")
-        item["related_activity_ids"] = json.loads(row["related_activity_ids"] or "[]")
+        item["requested_range"] = SQLiteResourceActivityRepository._json_value(
+            row["requested_range"], row["activity_id"], "requested_range", None, (dict, type(None))
+        )
+        item["observed_range"] = SQLiteResourceActivityRepository._json_value(
+            row["observed_range"], row["activity_id"], "observed_range", None, (dict, type(None))
+        )
+        item["related_activity_ids"] = SQLiteResourceActivityRepository._json_value(
+            row["related_activity_ids"], row["activity_id"], "related_activity_ids", [], list
+        )
         item["metadata"] = SQLiteResourceActivityRepository._json_object(
             row["metadata"], row["activity_id"]
         )

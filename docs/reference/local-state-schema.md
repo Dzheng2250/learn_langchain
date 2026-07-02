@@ -273,8 +273,8 @@ DELETE FROM local_schema_migrations WHERE version IN (8, 9, 10);
 保存 Agent Execution 的资源读取和变更元数据。主键为应用生成的 `activity_id`，
 `(execution_id, sequence)` 唯一。`event_key` 为一次 Tool Call 内单项资源事实提供幂等键，
 并由 `(execution_id, event_key)` 部分唯一索引防止重试重复记账；一次 Tool Call 仍可合法产生多条活动。
-主要字段包括 `resource_uri`、`operation`、`observation_mode`、`change_state`、字节/范围/哈希、
-`evidence_status` 与关联 activity IDs。
+主要字段包括 `resource_uri`、`operation`、`observation_mode`、`change_state`、`slice_id`、字节/范围/哈希、
+`evidence_status` 与关联 activity IDs。MOVE 使用共享 `change_group_id` 保留源、目标两条资源事实，汇总为一个逻辑变更。
 
 ## `resource_activity_counters`
 
@@ -287,7 +287,7 @@ v11 只新增派生的资源活动账本，不修改会话、消息或 Execution
 learn-agent-core rollback-local-state --from-version 11 --to-version 10 --apply
 ```
 
-命令会先创建带时间戳的完整数据库备份，再执行与下列 SQL 等价的事务：
+命令会先获取 `state.db.operation.lock`，验证只执行受支持的 `v11 -> v10` 转换，再通过原子排他创建生成唯一命名的完整数据库备份，并让备份复制与 SQLite `quick_check` 分别受 30 秒截止约束。备份失败时会删除不完整文件，且不会执行降级。验证成功后再执行与下列 SQL 等价的事务：
 
 ```sql
 PRAGMA foreign_keys = ON;

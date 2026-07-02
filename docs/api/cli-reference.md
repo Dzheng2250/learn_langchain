@@ -276,7 +276,7 @@ learn-agent-core rollback-local-state \
   [--apply]
 ```
 
-默认仅验证当前版本并输出 dry-run。`--apply` 会先在 `state.db` 同目录创建带时间戳的完整备份，再于单个事务中删除 v11 的资源活动派生表及迁移标记。当前只支持 `v11 -> v10`；daemon 运行时拒绝执行。
+默认先验证当前版本和转换是否受支持，再输出 dry-run。`--apply` 会先获取 `state.db.operation.lock` 跨进程排他锁，并使用原子排他创建在 `state.db` 同目录生成带微秒时间戳和随机后缀的完整备份；备份复制与 SQLite `quick_check` 各自受 30 秒截止约束，随后才在单个事务中删除 v11 的资源活动派生表及迁移标记。备份失败会清理不完整文件且不会执行降级。当前只支持 `v11 -> v10`；daemon 运行或其他本地状态维护命令持锁时拒绝执行。
 ### `gc-artifacts`
 
 ```shell

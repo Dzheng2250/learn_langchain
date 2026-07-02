@@ -283,7 +283,9 @@ Frontend rules:
 ## Resource Activity Summary
 
 Core 先发送 `done`、`paused` 或终止 `error`，再查询并发送一次
-`resource_activity_summary`。终止事件投递成功后才执行账本查询，因此查询或补充事件失败不会吞掉终止事件。若连接已经断开，前端重连后应通过 RPC 查询：
+`resource_activity_summary`。即使此前某个非终止 token/工具通知发送失败，Core 仍会独立尝试发送终止事件；
+终止事件投递成功后才执行账本查询，因此查询或补充事件失败不会吞掉终止事件。若连接已经断开，
+前端重连后应通过 RPC 查询：
 
 ```json
 {

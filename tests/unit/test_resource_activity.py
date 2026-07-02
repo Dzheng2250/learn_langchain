@@ -11,8 +11,10 @@ from src.core.resource_activity import (
 )
 from src.core.adapters.sqlite.resource_activity import SQLiteResourceActivityRepository
 from src.core.resource_activity.observation import command_uri, file_snapshot, workspace_uri
+from src.core.resource_activity.service import ResourceActivityQueryService
 from src.core.state.migrations import apply_local_migrations, downgrade_v11_to_v10
 from src.core.state import ExecutionRepository, LocalStateDatabase, LocalWorkspaceRepository
+from src.core.state.locking import local_state_operation_lock
 
 class ResourceActivityRepositoryTest(unittest.TestCase):
     def setUp(self):
@@ -48,6 +50,12 @@ class ResourceActivityRepositoryTest(unittest.TestCase):
         self.assertEqual(1,summary["reads"]["resource_count"])
         self.assertEqual(20,summary["reads"]["returned_bytes"])
         self.assertEqual(1,summary["changes"]["applied"])
+        run_summary = self.repo.summary_for_run("run-1").to_dict()
+        self.assertEqual("run-1", run_summary["scope"]["run_id"])
+        self.assertEqual(self.execution.execution_id, run_summary["scope"]["execution_id"])
+        service = ResourceActivityQueryService(self.repo, self.workspaces)
+        run_items = service.list(run_id="run-1")["items"]
+        self.assertEqual([read_id, write_id], [item["activity_id"] for item in run_items])
 
     def test_partial_stale_missing_and_pagination_are_stable(self):
         self.repo.record(self.context,ResourceObservation("workspace://partial.py",ResourceOperation.READ,ObservationMode.RANGE,after_digest="a"))
@@ -135,7 +143,7 @@ class ResourceActivityRepositoryTest(unittest.TestCase):
             resource_uri="workspace://destination.py",
         )
         self.assertEqual(1, summary["changes"]["applied"])
-        self.assertEqual(1, summary["changes"]["changed_resource_count"])
+        self.assertEqual(2, summary["changes"]["changed_resource_count"])
         self.assertEqual(1, len(destination["items"]))
 
     def test_summary_ignores_malformed_metadata_without_losing_other_rows(self):
@@ -150,6 +158,41 @@ class ResourceActivityRepositoryTest(unittest.TestCase):
             )
         summary = self.repo.summary(execution_id=self.execution.execution_id).to_dict()
         self.assertEqual(1, summary["changes"]["applied"])
+
+    def test_list_tolerates_malformed_json_columns(self):
+        activity_id = self.repo.record(self.context, ResourceObservation(
+            "workspace://bad-json.py", ResourceOperation.READ, ObservationMode.RANGE,
+            requested_range={"start_line": 1}, observed_range={"end_line": 2},
+            related_activity_ids=("prior",),
+        ))
+        with self.database.transaction() as conn:
+            conn.execute(
+                """UPDATE resource_activities
+                   SET requested_range=?, observed_range=?, related_activity_ids=?
+                   WHERE activity_id=?""",
+                ("{broken", "[wrong-shape]", "{broken", activity_id),
+            )
+
+        item = self.repo.list(execution_id=self.execution.execution_id)["items"][0]
+
+        self.assertIsNone(item["requested_range"])
+        self.assertIsNone(item["observed_range"])
+        self.assertEqual([], item["related_activity_ids"])
+
+    def test_historical_query_does_not_register_unknown_workspace(self):
+        directory = self.root / ".test_tmp" / f"unknown-workspace-{uuid4().hex}"
+        directory.mkdir(parents=True)
+        self.addCleanup(lambda: __import__("shutil").rmtree(directory, ignore_errors=True))
+        service = ResourceActivityQueryService(self.repo, self.workspaces)
+        with self.database.connect() as conn:
+            before = conn.execute("SELECT count(*) FROM workspaces").fetchone()[0]
+
+        with self.assertRaisesRegex(ValueError, "Workspace not found"):
+            service.summary(workspace_root=str(directory), session_name="default", turn_index=1)
+
+        with self.database.connect() as conn:
+            after = conn.execute("SELECT count(*) FROM workspaces").fetchone()[0]
+        self.assertEqual(before, after)
 
     def test_workspace_uri_rejects_absolute_paths_outside_workspace(self):
         outside = self.root.parent / "outside-resource.txt"
@@ -180,7 +223,55 @@ class ResourceActivityRepositoryTest(unittest.TestCase):
                 "SELECT MAX(version) FROM local_schema_migrations"
             ).fetchone()[0]
         self.assertEqual(10, version)
-        self.assertEqual(1, len(list(directory.glob("state.db.v11-backup-*"))))
+        backups = [
+            path for path in directory.glob("state.db.v11-backup-*")
+            if not path.name.endswith(("-wal", "-shm"))
+        ]
+        self.assertEqual(1, len(backups))
+    def test_rollback_rejects_concurrent_local_state_operation(self):
+        from src.core.main import main
+
+        directory = self.root / ".test_tmp" / f"locked-rollback-{uuid4().hex}"
+        directory.mkdir(parents=True)
+        self.addCleanup(lambda: __import__("shutil").rmtree(directory, ignore_errors=True))
+        database = LocalStateDatabase(directory / "state.db")
+        database.initialize()
+        self.addCleanup(database.close)
+        config = SimpleNamespace(runtime_dir=directory)
+        with (
+            local_state_operation_lock(database.path),
+            patch("src.core.main.LocalStateDatabase", return_value=database),
+            patch("src.core.main.CoreConfig.load", return_value=config),
+            patch("src.core.main.daemon_pid_is_running", return_value=False),
+            self.assertRaisesRegex(RuntimeError, "Local state is busy"),
+        ):
+            main([
+                "rollback-local-state", "--from-version", "11",
+                "--to-version", "10", "--apply",
+            ])
+
+    def test_invalid_rollback_transition_does_not_create_backup(self):
+        from src.core.main import main
+
+        directory = self.root / ".test_tmp" / f"invalid-rollback-{uuid4().hex}"
+        directory.mkdir(parents=True)
+        self.addCleanup(lambda: __import__("shutil").rmtree(directory, ignore_errors=True))
+        database = LocalStateDatabase(directory / "state.db")
+        database.initialize()
+        self.addCleanup(database.close)
+        config = SimpleNamespace(runtime_dir=directory)
+        with (
+            patch("src.core.main.LocalStateDatabase", return_value=database),
+            patch("src.core.main.CoreConfig.load", return_value=config),
+            patch("src.core.main.daemon_pid_is_running", return_value=False),
+            self.assertRaisesRegex(ValueError, "Unsupported local schema downgrade"),
+        ):
+            main([
+                "rollback-local-state", "--from-version", "11",
+                "--to-version", "9", "--apply",
+            ])
+        self.assertEqual([], list(directory.glob("state.db.v11-backup-*")))
+
     def test_v11_repair_adds_event_key_to_an_early_v11_database(self):
         with self.database.transaction() as conn:
             conn.execute("DROP INDEX IF EXISTS idx_resource_activities_event_key")

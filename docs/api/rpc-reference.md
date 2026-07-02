@@ -164,6 +164,11 @@ Core 先写回最终响应，再开始优雅关闭。客户端不应假设收到
 
 如果 Session 已被归档，`session.status` 返回 `status=archived`，不会自动创建同名新 Session。
 
+所有 `session.*` 方法会把无效 Workspace 路径、空名称或操作所需 Session 不存在等领域输入错误返回为
+JSON-RPC `-32602 Invalid params`，不会伪装成服务端内部错误。`approval.list/resolve` 对无效 Session、
+审批请求不存在或无法恢复对应 Execution 使用相同错误契约。数据库锁、I/O 和程序缺陷仍返回内部错误，
+客户端不应把它们当成参数问题自动改写请求。
+
 ## `session.resume`
 
 参数与 `session.status` 相同，并可增加：
@@ -270,12 +275,15 @@ checkpoint 删除通过后台维护任务完成，因此返回成功不表示 ch
 ### `resource_activity.summary`
 
 返回版本化的 Agent Turn 资源活动聚合。参数必须提供 `execution_id`，或者同时提供
-`workspace_root`、`session_name` 和 `turn_index`。结果包含读取资源数、返回字节、
-实际及暂存变更数量、读取证据状态和 `truncated` 标志。该接口是 Web、桌面端、IDE、CLI
-与 TUI 的统一查询边界，客户端不得直接读取 `state.db`。
+`workspace_root`、`session_name` 和 `turn_index`。历史 Turn 查询只查找已登记的 Workspace 和 Session，
+不会注册 Workspace、刷新 `updated_at` 或产生其他状态写入。结果包含读取资源数、返回字节、
+实际及暂存变更数量、读取证据状态和 `truncated` 标志。`changes.applied` 统计逻辑变更数；
+一次 MOVE 是一个逻辑变更，但 `changed_resource_count` 会把源 URI 和目标 URI 都计为受影响资源。
+该接口是 Web、桌面端、IDE、CLI 与 TUI 的统一查询边界，客户端不得直接读取 `state.db`。
 
 ### `resource_activity.list`
 
 按相同 scope 返回安全元数据明细。可用 `operation`、`change_state`、`resource_uri` 过滤，
-并通过 `cursor`、`limit` 进行基于 Execution 内 `sequence` 的稳定分页。返回
-`schema_version`、`items`、`next_cursor` 和 `has_more`；不包含文件正文、完整命令输出或宿主机绝对路径。
+并通过 `cursor`、`limit` 进行基于 Execution 内 `sequence` 的稳定分页。查询在一个 SQLite
+只读快照内完成。返回 `schema_version`、`items`、`next_cursor` 和 `has_more`；不包含文件正文、
+完整命令输出或宿主机绝对路径。损坏的可选 JSON 元数据按 `null` 或空列表降级，不会使整页查询失败。

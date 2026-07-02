@@ -125,15 +125,26 @@ def _ensure_resource_activity_tables(conn) -> None:
     _ensure_column(conn, "resource_activities", "event_key", "TEXT NOT NULL DEFAULT ''")
     conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_resource_activities_event_key ON resource_activities(execution_id, event_key) WHERE event_key <> ''")
 
+SUPPORTED_LOCAL_SCHEMA_DOWNGRADES = frozenset({(11, 10)})
+
+
+def validate_local_schema_downgrade(*, from_version: int, to_version: int) -> None:
+    """Reject unsupported downgrade transitions before creating a backup."""
+    transition = (int(from_version), int(to_version))
+    if transition not in SUPPORTED_LOCAL_SCHEMA_DOWNGRADES:
+        raise ValueError(
+            f"Unsupported local schema downgrade: v{from_version} -> v{to_version}."
+        )
+
+
 def downgrade_local_schema(conn, *, from_version: int, to_version: int) -> None:
     """Run one explicitly supported offline downgrade transition."""
+    validate_local_schema_downgrade(from_version=from_version, to_version=to_version)
     current = int(
         conn.execute("SELECT COALESCE(MAX(version), 0) FROM local_schema_migrations").fetchone()[0]
     )
     if current != int(from_version):
         raise ValueError(f"Expected local schema v{from_version}, found v{current}.")
-    if (int(from_version), int(to_version)) != (11, 10):
-        raise ValueError(f"Unsupported local schema downgrade: v{from_version} -> v{to_version}.")
     downgrade_v11_to_v10(conn)
 
 def downgrade_v11_to_v10(conn) -> None:

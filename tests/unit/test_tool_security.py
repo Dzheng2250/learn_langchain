@@ -10,6 +10,7 @@ from langgraph.checkpoint.memory import MemorySaver
 from langgraph.graph import END, START, MessagesState, StateGraph
 from langgraph.types import Command
 
+from src.core.adapters.sqlite.resource_activity import SQLiteResourceActivityRepository
 from src.core.adapters.sqlite.tool_approvals import SQLiteToolApprovalRepository
 from src.core.state import ExecutionRepository, LocalStateDatabase, LocalWorkspaceRepository
 from src.core.hooks import (
@@ -29,6 +30,10 @@ from src.core.tools.security.models import (
 from src.core.tools.security.policy import DefaultToolPolicyEngine
 from src.core.tools.security.pipeline import ToolExecutionPipeline
 from src.core.tools.observed import ObservedToolNode
+from src.core.resource_activity import (
+    ObservationMode, ResourceObservation, ResourceOperation,
+    bind_resource_activity, record_resource_activity,
+)
 from src.core.subagent.graph import create_delegate_tool
 from src.core.streaming.events import stream_graph_events
 from src.core.tasks.context import ToolExecutionContext
@@ -381,6 +386,9 @@ class ToolSecurityTest(unittest.TestCase):
         def inspect(path: str) -> str:
             """Inspect one test path."""
             calls.append(path)
+            record_resource_activity(ResourceObservation(
+                f"workspace://{path}", ResourceOperation.READ, ObservationMode.EXACT,
+            ))
             return "ok"
 
         class Model:
@@ -405,13 +413,20 @@ class ToolSecurityTest(unittest.TestCase):
         hooks = HookRegistry()
         hooks.register(HookSpec("subagent-pre", HookPoint.PRE_TOOL_USE, CaptureHook(), matcher="^inspect$"))
         hooks.freeze()
+        activity_repo = SQLiteResourceActivityRepository(self.database)
         delegate = create_delegate_tool(
             [inspect], Provider(), hook_dispatcher=HookDispatcher(hooks), max_steps=5,
+            resource_activity_recorder=activity_repo,
         )
-        result = delegate.func("inspect", "", {"messages": []})
+        with bind_resource_activity(activity_repo, self.context):
+            result = delegate.func("inspect", "", {"messages": []})
+        activities = activity_repo.list(execution_id=self.context.execution_id)["items"]
+
         self.assertEqual("done", result)
         self.assertIn("hook:inspect", calls)
         self.assertIn("safe.txt", calls)
+        self.assertEqual("subagent", activities[0]["actor"])
+        self.assertEqual("workspace://safe.txt", activities[0]["resource_uri"])
     def test_observed_node_fallback_exposes_resource_evidence_to_hook(self):
         @tool
         def inspect(path: str) -> str:
