@@ -77,3 +77,34 @@ def resolve_workspace_target(root: Path, relative_path: str | Path) -> Path:
     except ValueError as exc:
         raise ValueError("path escapes the workspace") from exc
     return target
+
+
+def resolve_workspace_mutation_target(
+    root: Path,
+    relative_path: str | Path,
+) -> Path:
+    """Resolve a mutation target while rejecting traversal and symlink aliases."""
+    root = canonicalize_workspace(root)
+    value = Path(relative_path)
+    if value.is_absolute():
+        raise ValueError("workspace paths must be relative")
+    if any(part == ".." for part in value.parts):
+        raise ValueError("path escapes the workspace")
+
+    candidate = root
+    for part in value.parts:
+        if part in ("", "."):
+            continue
+        candidate = candidate / part
+        is_junction = getattr(candidate, "is_junction", None)
+        if candidate.is_symlink() or (
+            callable(is_junction) and is_junction()
+        ):
+            raise ValueError("workspace mutation paths cannot contain symbolic links or junctions")
+
+    try:
+        resolved = candidate.resolve(strict=False)
+        resolved.relative_to(root)
+    except (OSError, ValueError) as exc:
+        raise ValueError("path escapes the workspace") from exc
+    return resolved

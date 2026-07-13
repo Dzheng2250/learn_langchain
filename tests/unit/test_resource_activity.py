@@ -57,6 +57,14 @@ class ResourceActivityRepositoryTest(unittest.TestCase):
         run_items = service.list(run_id="run-1")["items"]
         self.assertEqual([read_id, write_id], [item["activity_id"] for item in run_items])
 
+    def test_summary_for_unknown_run_returns_an_empty_summary(self):
+        summary = self.repo.summary_for_run("missing-run").to_dict()
+
+        self.assertEqual("missing-run", summary["scope"]["run_id"])
+        self.assertIsNone(summary["scope"]["execution_id"])
+        self.assertEqual(0, summary["reads"]["resource_count"])
+        self.assertEqual(0, summary["changes"]["applied"])
+
     def test_partial_stale_missing_and_pagination_are_stable(self):
         self.repo.record(self.context,ResourceObservation("workspace://partial.py",ResourceOperation.READ,ObservationMode.RANGE,after_digest="a"))
         self.repo.record(self.context,ResourceObservation("workspace://partial.py",ResourceOperation.WRITE,ObservationMode.EXACT,change_state=ChangeState.APPLIED,before_digest="a"))

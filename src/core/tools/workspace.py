@@ -11,7 +11,10 @@ from src.config.settings import (
     PARENT_FILE_READ_LINES,
     PARENT_FILE_READ_OUTPUT_LIMIT,
 )
-from src.core.workspace.resolver import resolve_workspace_path
+from src.core.workspace.resolver import (
+    canonicalize_workspace, resolve_workspace_mutation_target,
+    resolve_workspace_path,
+)
 from src.core.resource_activity import ObservationMode, ResourceObservation, ResourceOperation, record_resource_activity
 from src.core.resource_activity.observation import file_snapshot, workspace_uri
 
@@ -38,6 +41,17 @@ def is_sandbox_name_excluded(name: str) -> bool:
 def is_workspace_path_blocked(root: Path, target: Path) -> bool:
     """Apply the shared sensitive-path policy to a resolved workspace path."""
     return any(is_sandbox_name_excluded(part) for part in target.relative_to(root).parts)
+
+
+def resolve_workspace_mutation_path(root: Path, path: str) -> Path:
+    """Resolve one writable path and apply all shared Workspace hard boundaries."""
+    root = canonicalize_workspace(root)
+    target = resolve_workspace_mutation_target(root, path)
+    if target == root:
+        raise ValueError("workspace root cannot be mutated")
+    if is_workspace_path_blocked(root, target):
+        raise ValueError("path is blocked by workspace policy")
+    return target
 
 
 def read_workspace_lines(root: Path, path: str) -> tuple[Path, list[str], bytes]:

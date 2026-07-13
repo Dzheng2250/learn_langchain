@@ -109,6 +109,8 @@ class SQLiteResourceActivityRepository:
 
     @staticmethod
     def _evidence(conn, execution_id, observation):
+        # A create has no prior resource, so read-before-write evidence does not
+        # apply. Reads and summaries establish evidence for later mutations.
         if observation.operation in {ResourceOperation.READ, ResourceOperation.SUMMARIZE, ResourceOperation.CREATE}:
             return EvidenceStatus.NOT_APPLICABLE, ()
         row = conn.execute(

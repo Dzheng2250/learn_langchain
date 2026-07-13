@@ -18,6 +18,7 @@ from src.core.tools.security.pipeline import ToolExecutionPipeline
 from src.core.tools.command_changes import create_staged_command_tools
 from src.core.tools.registry import create_workspace_toolset
 from src.core.tools.workspace_write import create_workspace_write_tools
+from src.core.tools.workspace import resolve_workspace_mutation_path
 from src.core.tools.workspace import create_workspace_file_tools
 from src.core.resource_activity import bind_resource_activity
 from src.core.workspace.models import WorkspaceContext
@@ -88,6 +89,38 @@ class WorkspaceWriteToolsTest(unittest.TestCase):
                 self.write.invoke({"path": path, "content": "secret"})
         with self.assertRaises(ValueError):
             self.write.invoke({"path": "large.txt", "content": "x" * 65})
+
+    def test_mutations_reject_symbolic_links_without_touching_their_targets(self):
+        target = self.root / "target.txt"
+        target.write_text("preserved", encoding="utf-8")
+        link = self.root / "link.txt"
+        try:
+            link.symlink_to(target)
+        except OSError as exc:
+            self.skipTest(f"symbolic links are unavailable: {exc}")
+
+        with self.assertRaisesRegex(ValueError, "symbolic links"):
+            self.write.invoke({
+                "path": "link.txt", "content": "changed", "overwrite": True,
+            })
+        with self.assertRaisesRegex(ValueError, "symbolic links"):
+            self.move.invoke({
+                "source": "link.txt", "destination": "moved.txt",
+            })
+        with self.assertRaisesRegex(ValueError, "symbolic links"):
+            self.delete.invoke({"path": "link.txt"})
+
+        self.assertTrue(link.is_symlink())
+        self.assertEqual("preserved", target.read_text(encoding="utf-8"))
+
+    def test_mutation_path_rejects_a_symbolic_parent_component(self):
+        original = Path.is_symlink
+        with patch.object(
+            Path, "is_symlink",
+            lambda path: path.name == "alias" or original(path),
+        ):
+            with self.assertRaisesRegex(ValueError, "symbolic links"):
+                resolve_workspace_mutation_path(self.root, "alias/nested.txt")
 
 
     def test_recursive_operations_enforce_entry_limit(self):

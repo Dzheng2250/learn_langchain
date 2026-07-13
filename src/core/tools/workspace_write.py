@@ -12,17 +12,8 @@ from langchain_core.tools import tool
 from src.core.telemetry import emit_event
 from src.core.resource_activity import ChangeState, ObservationMode, ResourceObservation, ResourceOperation, record_resource_activity
 from src.core.resource_activity.observation import file_snapshot, workspace_uri
-from src.core.tools.workspace import is_workspace_path_blocked
-from src.core.workspace.resolver import canonicalize_workspace, resolve_workspace_target
-
-
-def _safe_target(root: Path, path: str) -> Path:
-    target = resolve_workspace_target(root, path)
-    if target == root:
-        raise ValueError("workspace root cannot be mutated")
-    if is_workspace_path_blocked(root, target):
-        raise ValueError("path is blocked by workspace policy")
-    return target
+from src.core.tools.workspace import resolve_workspace_mutation_path
+from src.core.workspace.resolver import canonicalize_workspace
 
 
 def _check_size(content: str, max_bytes: int) -> int:
@@ -101,7 +92,7 @@ def create_workspace_write_tools(root: Path, *, max_bytes: int, max_entries: int
     def write_workspace_file(path: str, content: str, overwrite: bool = False) -> str:
         """Create a UTF-8 text file, or atomically overwrite it when explicitly allowed."""
         def action() -> str:
-            target = _safe_target(root, path)
+            target = resolve_workspace_mutation_path(root, path)
             if target.exists() and not target.is_file():
                 raise ValueError("target exists and is not a regular file")
             if target.exists() and not overwrite:
@@ -125,7 +116,7 @@ def create_workspace_write_tools(root: Path, *, max_bytes: int, max_entries: int
         def action() -> str:
             if expected_count <= 0:
                 raise ValueError("expected_count must be greater than zero")
-            target = _safe_target(root, path)
+            target = resolve_workspace_mutation_path(root, path)
             if not target.is_file():
                 raise ValueError("target is not a regular file")
             before = file_snapshot(target)
@@ -146,7 +137,7 @@ def create_workspace_write_tools(root: Path, *, max_bytes: int, max_entries: int
     def create_workspace_directory(path: str, parents: bool = True) -> str:
         """Create a directory inside the Workspace without replacing an existing file."""
         def action() -> str:
-            target = _safe_target(root, path)
+            target = resolve_workspace_mutation_path(root, path)
             if target.exists():
                 if target.is_dir():
                     return f"Directory already exists: {path}."
@@ -160,8 +151,8 @@ def create_workspace_write_tools(root: Path, *, max_bytes: int, max_entries: int
     def move_workspace_path(source: str, destination: str, overwrite: bool = False) -> str:
         """Move one Workspace file or directory; replacement must be explicit."""
         def action() -> str:
-            source_target = _safe_target(root, source)
-            destination_target = _safe_target(root, destination)
+            source_target = resolve_workspace_mutation_path(root, source)
+            destination_target = resolve_workspace_mutation_path(root, destination)
             if not source_target.exists():
                 raise FileNotFoundError("source does not exist")
             source_before = file_snapshot(source_target)
@@ -199,7 +190,7 @@ def create_workspace_write_tools(root: Path, *, max_bytes: int, max_entries: int
     def delete_workspace_path(path: str, recursive: bool = False) -> str:
         """Delete a file or an explicitly recursive directory inside the Workspace."""
         def action() -> str:
-            target = _safe_target(root, path)
+            target = resolve_workspace_mutation_path(root, path)
             if not target.exists():
                 raise FileNotFoundError("target does not exist")
             before = file_snapshot(target)

@@ -18,8 +18,9 @@ from src.config.settings import (
 )
 from src.core.telemetry import emit_event
 from src.core.tools.commands import _copy_workspace
-from src.core.tools.workspace import is_workspace_path_blocked
-from src.core.tools.workspace_write import _safe_target
+from src.core.tools.workspace import (
+    is_workspace_path_blocked, resolve_workspace_mutation_path,
+)
 from src.core.resource_activity import ChangeState, ObservationMode, ResourceObservation, ResourceOperation, record_resource_activity
 from src.core.resource_activity.observation import workspace_uri
 from src.core.workspace.resolver import canonicalize_workspace
@@ -214,7 +215,7 @@ def create_staged_command_tools(
         targets = []
         for change in changes:
             path = change["path"]
-            target = _safe_target(root, path)
+            target = resolve_workspace_mutation_path(root, path)
             prior = before.get(path)
             if prior is None:
                 if target.exists():
