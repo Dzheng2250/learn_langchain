@@ -98,6 +98,12 @@ telemetry/      默认 JSONL 观测事件
 | `LEARN_AGENT_HOST_EXECUTION_ENABLED` | `false` | 是否允许注册主机完全访问工具；此类工具仍必须逐次审批。 |
 | `LEARN_AGENT_TOOL_DEFAULT_TIMEOUT_SECONDS` | `60` | 未声明专用超时的工具默认执行上限。 |
 | `LEARN_AGENT_NETWORK_POLICY` | `deny` | 工具网络默认策略，与文件和命令权限分别判断。 |
+| `LEARN_AGENT_FILE_WRITE_ENABLED` | `true` | 是否向 Parent Agent 注册受控 Workspace 写入工具；写入仍需通过审批与路径硬边界。 |
+| `LEARN_AGENT_FILE_WRITE_MAX_BYTES` | `1048576` | 单个文本文件写入或替换后的 UTF-8 最大字节数。 |
+| `LEARN_AGENT_FILE_OPERATION_MAX_ENTRIES` | `100` | 移动或递归删除目录时允许涉及的最大条目数。 |
+| `LEARN_AGENT_COMMAND_WRITE_ENABLED` | `false` | 是否注册 staged command 工具；命令只修改临时副本，批准 change set 后才回写。 |
+| `LEARN_AGENT_COMMAND_CHANGESET_MAX_FILES` | `100` | 单个命令 change set 允许包含的最大文件数。 |
+| `LEARN_AGENT_COMMAND_CHANGESET_MAX_BYTES` | `10485760` | 单个命令 change set 的新增/修改文件总字节上限。 |
 | `LEARN_AGENT_HOOKS_ENABLED` | `true` | 是否启用系统级 Agent 生命周期 Hook。 |
 | `LEARN_AGENT_HOOK_CONFIG_FILES` | 空 | 额外 Hook JSON 文件；多个路径使用操作系统路径分隔符。 |
 | `LEARN_AGENT_PROJECT_HOOKS_ENABLED` | `false` | 是否信任并加载 Workspace 内 `.learn-agent/hooks.json`。 |
@@ -221,8 +227,10 @@ PostgreSQL Schema。若只是需要本地结构化观测记录，应保持该选
 `LEARN_AGENT_TASK_MAX_PER_EXECUTION`, `LEARN_AGENT_TASK_KEY_MAX_CHARS`,
 `LEARN_AGENT_TASK_SUBJECT_MAX_CHARS`, `LEARN_AGENT_TASK_DESCRIPTION_MAX_CHARS`,
 `LEARN_AGENT_TASK_NOTES_MAX_CHARS`, and `LEARN_AGENT_TASK_LIST_OUTPUT_LIMIT`
-control the parent Agent's private task planning tools. These tools are exposed
-only when a request uses goal mode, for example `learn-agent chat --goal ...`.
+control the parent Agent's private task planning tools. These tools are always
+exposed to the parent Agent so ordinary and Goal requests share a stable tool
+schema. Goal mode changes only the current user-turn prompt; tool execution
+continues to obey the same Hook, approval, budget, and sandbox policies.
 
 ## Anthropic Prompt Cache
 
@@ -233,3 +241,9 @@ only when a request uses goal mode, for example `learn-agent chat --goal ...`.
 | `LEARN_AGENT_PROMPT_CACHE_TOOLS` | `true` | 是否在最后一个稳定 tool schema 上添加 `cache_control`。 |
 | `LEARN_AGENT_PROMPT_CACHE_SYSTEM` | `true` | 是否在 system prompt 的最后一个 text block 上添加 `cache_control`。 |
 | `LEARN_AGENT_PROMPT_CACHE_MESSAGES` | `true` | 是否在本次模型调用前最深的稳定历史消息上添加 `cache_control`；工具循环中可落在最新 `tool_result`，初次请求不缓存末尾用户消息。 |
+
+## Resource Activity
+
+- `LEARN_AGENT_RESOURCE_ACTIVITY_ENABLED`：启用持久资源活动账本和通用前端 API，默认 `true`。
+- `LEARN_AGENT_RESOURCE_ACTIVITY_HASH_ENABLED`：为可精确观测的文件计算版本 SHA-256，默认 `true`。
+- `LEARN_AGENT_RESOURCE_ACTIVITY_MAX_ITEMS_PER_EXECUTION`：单 Execution 最多保存的明细数，默认 `1000`；超限后摘要返回 `truncated=true`。

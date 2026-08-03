@@ -100,7 +100,7 @@ Schema；只切换 Git 分支可能无法完成回滚。
 5. 恢复相匹配的用户级配置。
 6. 启动并执行健康检查。
 
-不要尝试手工删除新列、降低 Schema version 或只恢复一个 SQLite 文件。
+不要自行猜测 SQL 删除新列或降低 Schema version。Schema v11 的资源活动表属于可丢弃派生数据，确需从 v11 回到 v10 时，应使用 `learn-agent-core rollback-local-state --from-version 11 --to-version 10 --apply`。命令会拒绝运行中的 daemon，并与 daemon、`migrate-local-state --apply`、`gc-artifacts` 共享 `state.db.operation.lock` 跨进程排他锁。在写备份前命令验证版本转换，只允许 `v11 -> v10`，再通过原子排他创建生成带微秒时间戳和随机后缀的完整数据库备份。备份复制与 SQLite `quick_check` 各自受 30 秒截止约束；失败或不完整的备份文件会被删除，原数据库不会进入降级事务。其他版本仍应恢复完整状态目录快照。
 
 ## 6. 协议兼容性
 
@@ -110,8 +110,8 @@ Schema；只切换 Git 分支可能无法完成回滚。
 ## 7. 当前缺口
 
 - 没有自动发布、版本签名和 release artifact。
-- 没有自动状态快照和回滚命令。
-- 没有 downgrade migration。
+- 没有通用自动状态快照；只有 v11 到 v10 提供受控回滚命令。
+- 除 v11 到 v10 外，没有通用跨版本 downgrade migration。
 - 没有跨版本兼容矩阵和协议协商。
 - 没有生产级滚动升级或高可用部署。
 

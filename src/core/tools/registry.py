@@ -13,11 +13,13 @@ from src.core.tools.catalog import (
 )
 from src.core.tools.security import ApprovalService, DefaultToolPolicyEngine, ToolExecutionPipeline
 from src.core.tools.security.enforcement import CapabilityEnforcer
+from src.core.tools.command_changes import create_staged_command_tools
 from src.core.tools.commands import create_run_command_in_container
 from src.core.tools.skills import create_skill_tools
 from src.core.tools.summarization import create_summarize_large_file
 from src.core.tools.weather import get_weather
 from src.core.tools.workspace import create_workspace_file_tools
+from src.core.tools.workspace_write import create_workspace_write_tools
 from src.core.workspace.models import WorkspaceContext
 
 
@@ -42,7 +44,14 @@ def create_workspace_toolset(
     approval_enabled: bool = True,
     default_timeout_seconds: float = 60.0,
     network_policy: str = "deny",
+    file_write_enabled: bool = True,
+    command_write_enabled: bool = False,
+    file_write_max_bytes: int = 1_048_576,
+    file_operation_max_entries: int = 100,
+    command_changeset_max_files: int = 100,
+    command_changeset_max_bytes: int = 10_485_760,
     hook_dispatcher=None,
+    resource_activity_recorder=None,
 ) -> WorkspaceToolset:
     """Create, classify, and freeze all tools available in one Workspace."""
     provider = model_provider
@@ -50,6 +59,22 @@ def create_workspace_toolset(
     list_skills, read_skill, skill_store = create_skill_tools(workspace.root)
     summarize = create_summarize_large_file(workspace.root, provider)
     command = create_run_command_in_container(workspace.root)
+    write_tools = (
+        create_workspace_write_tools(
+            workspace.root,
+            max_bytes=file_write_max_bytes,
+            max_entries=file_operation_max_entries,
+        )
+        if file_write_enabled else ()
+    )
+    staged_command_tools = (
+        create_staged_command_tools(
+            workspace.root,
+            max_files=command_changeset_max_files,
+            max_bytes=command_changeset_max_bytes,
+        )
+        if command_write_enabled else ()
+    )
     registry = ToolRegistry()
 
     def register(
@@ -87,6 +112,38 @@ def create_workspace_toolset(
         capabilities={ToolCapability.COMMAND_EXECUTION, ToolCapability.FILE_READ},
         approval=ApprovalRequirement.POLICY,
     )
+    for write_tool in write_tools:
+        register(
+            write_tool,
+            {ToolAudience.PARENT},
+            ToolRisk.CONTROLLED_EXECUTION,
+            capabilities={ToolCapability.FILE_WRITE},
+            approval=ApprovalRequirement.POLICY,
+            sandbox=SandboxMode.WORKSPACE_WRITE,
+        )
+    if staged_command_tools:
+        stage, apply_changes, discard_changes = staged_command_tools
+        register(
+            stage,
+            {ToolAudience.PARENT},
+            ToolRisk.CONTROLLED_EXECUTION,
+            capabilities={ToolCapability.COMMAND_EXECUTION, ToolCapability.FILE_READ},
+            approval=ApprovalRequirement.POLICY,
+        )
+        register(
+            apply_changes,
+            {ToolAudience.PARENT},
+            ToolRisk.CONTROLLED_EXECUTION,
+            capabilities={ToolCapability.FILE_WRITE},
+            approval=ApprovalRequirement.ALWAYS,
+            sandbox=SandboxMode.WORKSPACE_WRITE,
+        )
+        register(
+            discard_changes,
+            {ToolAudience.PARENT},
+            ToolRisk.INTERNAL_STATE,
+            capabilities={ToolCapability.INTERNAL_STATE},
+        )
     if task_service is not None:
         for task_tool in create_task_tools(task_service):
             register(
@@ -103,6 +160,7 @@ def create_workspace_toolset(
         risk_by_name=base_risks,
         hook_dispatcher=hook_dispatcher,
         workspace=workspace,
+        resource_activity_recorder=resource_activity_recorder,
     )
     register(
         delegate, {ToolAudience.PARENT}, ToolRisk.DELEGATION,
@@ -121,6 +179,7 @@ def create_workspace_toolset(
             approvals=ApprovalService(approval_repository),
             hook_dispatcher=hook_dispatcher,
             enforcer=CapabilityEnforcer(network_policy=network_policy),
+            resource_activity_recorder=resource_activity_recorder,
         )
     return WorkspaceToolset(
         registry=registry,

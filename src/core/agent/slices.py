@@ -1,7 +1,7 @@
 """Execution helper for one bounded LangGraph Slice."""
 
 from collections.abc import Iterator
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any
 
 from src.core.agent.budget import ExecutionBudget
@@ -83,7 +83,7 @@ class SliceExecutionService:
                     run_context,
                     checkpoint_thread_id=checkpoint_thread_id,
                     provider_error_handler=self.provider_error_handler,
-                    tool_context=tool_context,
+                    tool_context=replace(tool_context, slice_id=slice_id),
                 ),
                 slice_id,
             ):
@@ -173,6 +173,24 @@ class SliceExecutionService:
                 data={"status": "error", "stop_reason": StopReason.TURN_ERROR.value},
             )
             raise
+
+    def finish_for_goal_continuation(
+        self,
+        *,
+        slice_id: str | None,
+        execution,
+        graph_steps_used: int,
+        usage: dict,
+    ) -> None:
+        """Close a successful intermediate Slice before a Goal review Slice."""
+        self._finish_slice(
+            slice_id,
+            execution,
+            status=ExecutionStatus.COMPLETED,
+            stop_reason="goal_continuation",
+            graph_steps_used=graph_steps_used,
+            usage=usage,
+        )
 
     def _start_slice(self, execution, slice_number: int) -> str | None:
         if execution is None or self.execution_store is None:

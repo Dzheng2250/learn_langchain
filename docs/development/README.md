@@ -30,6 +30,7 @@
 | [内部端口与 Adapter 扩展指南](/docs/development/internal-adapter-extension.md) | 新增内部 Port、Adapter、后端和契约测试 |
 | [Agent Runtime 扩展指南](/docs/development/agent-runtime-extension.md) | 新增模型用途、工具、运行限制和事件消费者 |
 | [新增工具指南](/docs/development/tool-extension-guide.md) | 添加新 LangChain tool 的端到端步骤、audience/risk 决策表、观测层边界与反模式清单 |
+| [内置 Tool 使用与维护手册](/docs/development/built-in-tools-maintenance.md) | 当前内置 Tool 清单、注册条件、权限边界、运行链路和测试入口 |
 | [接口化重构技术债务](/docs/development/interface-refactor-backlog.md) | 尚未完成的接口拆分计划，状态为 Draft |
 
 ## 推荐阅读顺序
@@ -39,6 +40,7 @@
 | 第一次参与开发 | [开发指南](/docs/development/development-guide.md) -> [测试结构与运行指南](/docs/quality/testing-guide.md) |
 | 修改 RPC、CLI、配置或状态库 | [变更管理清单](/docs/development/change-management.md) -> 对应 API / Architecture / Reference 文档 |
 | 新增内部存储或 Adapter | [内部端口与 Adapter 扩展指南](/docs/development/internal-adapter-extension.md) -> [面向接口的 Core 设计](/docs/architecture/interface-driven-core.md) |
+| 使用或维护现有 Tool | [内置 Tool 使用与维护手册](/docs/development/built-in-tools-maintenance.md) -> [Tool 安全与审批](/docs/architecture/tool-security-and-approval.md) |
 | 准备发布 | [发布流程](/docs/development/release-process.md) -> [升级与回滚](/docs/operations/upgrade-and-rollback.md) |
 
 ## 写作约束

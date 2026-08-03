@@ -1,9 +1,11 @@
 """Single execution boundary for hooks, policy, approval, and observation."""
 
 import time
+from pathlib import PurePosixPath
 
 from langchain_core.messages import ToolMessage
 from langgraph.types import interrupt
+from pydantic import ValidationError
 
 from src.core.agent.budget import ToolBudgetExceeded, current_execution_budget
 from src.core.common.content import message_content_text
@@ -14,24 +16,32 @@ from src.core.telemetry import record_tool_failed, record_tool_finished, record_
 from src.core.tools.catalog import ToolCapability
 from src.core.tools.security.command_rules import command_rule_key
 from src.core.tools.security.enforcement import CapabilityEnforcer
+from src.core.resource_activity import bind_resource_activity, lookup_resource_evidence
 from src.core.tools.security.models import PolicyAction, ToolCallContext
 
 
 class ToolExecutionPipeline:
     """Authorize and execute every LangGraph tool request consistently."""
 
-    def __init__(self, specs, *, policy, approvals, hook_dispatcher=None, enforcer=None, event_source="agent_tool_node"):
+    def __init__(self, specs, *, policy, approvals, hook_dispatcher=None, enforcer=None, event_source="agent_tool_node", resource_activity_recorder=None):
         self.specs = dict(specs)
         self.policy = policy
         self.approvals = approvals
         self.hook_dispatcher = hook_dispatcher or NOOP_HOOK_DISPATCHER
         self.enforcer = enforcer or CapabilityEnforcer()
         self.event_source = event_source
+        self.resource_activity_recorder = resource_activity_recorder
 
     def invoke(self, request, execute):
         context = self._context_from_request(request)
+        pre_payload = {
+            "args": context.args,
+            "resource_evidence": lookup_resource_evidence(
+                self.resource_activity_recorder, context, source="tool_pipeline"
+            ),
+        }
         hook_context, hook_decision = self.hook_dispatcher.dispatch(
-            self._hook_context(context, HookPoint.PRE_TOOL_USE, {"args": context.args})
+            self._hook_context(context, HookPoint.PRE_TOOL_USE, pre_payload)
         )
         if hook_decision.action in {HookAction.REJECT, HookAction.DENY}:
             return self._denied(context, hook_decision.reason)
@@ -40,7 +50,22 @@ class ToolExecutionPipeline:
             if not isinstance(replacement, dict):
                 return self._denied(context, "PreToolUse hook must replace args with an object.")
             context = context.with_args(replacement)
-        request = self._validated_request(request, context)
+        try:
+            request = self._validated_request(request, context)
+        except ValidationError as exc:
+            self._dispatch_post_tool(
+                context,
+                "error",
+                error_type=type(exc).__name__,
+                resource_activity_ids=[],
+            )
+            record_tool_failed(
+                self.event_source,
+                tool=context.tool_name,
+                tool_call_id=context.tool_call_id,
+                error=exc,
+            )
+            return self._error(context, exc)
         rule_key, persistable = self._rule_identity(context)
         decision = self.policy.evaluate(
             context, rule_key=rule_key, persistable=persistable
@@ -96,12 +121,14 @@ class ToolExecutionPipeline:
             tool_call_id=context.tool_call_id,
             args=context.args,
         )
+        activity_ids = []
         try:
-            if budget is None:
-                value = execute(request)
-            else:
-                with budget.tool_slot():
+            with bind_resource_activity(self.resource_activity_recorder, context) as activity_ids:
+                if budget is None:
                     value = execute(request)
+                else:
+                    with budget.tool_slot():
+                        value = execute(request)
         except ToolBudgetExceeded as exc:
             record_tool_failed(
                 self.event_source,
@@ -112,7 +139,7 @@ class ToolExecutionPipeline:
             )
             raise
         except Exception as exc:
-            self._dispatch_post_tool(context, "error", error_type=type(exc).__name__)
+            self._dispatch_post_tool(context, "error", error_type=type(exc).__name__, resource_activity_ids=activity_ids)
             record_tool_failed(
                 self.event_source,
                 tool=context.tool_name,
@@ -122,7 +149,7 @@ class ToolExecutionPipeline:
             )
             return self._error(context, exc)
         preview = message_content_text(value) or repr(value)
-        self._dispatch_post_tool(context, "success", content=preview)
+        self._dispatch_post_tool(context, "success", content=preview, resource_activity_ids=activity_ids)
         record_tool_finished(
             self.event_source,
             tool=context.tool_name,
@@ -172,11 +199,16 @@ class ToolExecutionPipeline:
             getattr(runtime, "actor", "parent"),
             spec,
             getattr(runtime, "workspace_root", ""),
+            getattr(runtime, "turn_index", None),
+            getattr(runtime, "slice_id", None),
         )
 
     @staticmethod
     def _validated_request(request, context):
-        schema = getattr(request.tool, "args_schema", None)
+        # Validate only arguments exposed to the model. ``args_schema`` also
+        # contains LangGraph-injected parameters such as ToolRuntime, which are
+        # deliberately absent from the LLM tool call and injected by ToolNode.
+        schema = getattr(request.tool, "tool_call_schema", None)
         args = context.args
         if schema is not None:
             args = schema.model_validate(args).model_dump()
@@ -202,6 +234,18 @@ class ToolExecutionPipeline:
     def _rule_identity(context):
         if ToolCapability.COMMAND_EXECUTION in context.spec.capabilities:
             return command_rule_key(str(context.args.get("command", "")))
+        if ToolCapability.FILE_WRITE in context.spec.capabilities:
+            path = (
+                context.args.get("path")
+                or context.args.get("source")
+                or context.args.get("change_set_id")
+                or ""
+            )
+            normalized = str(path).replace("\\", "/").strip("/")
+            if not normalized:
+                return f"workspace-write:{context.tool_name}:", False
+            scope = PurePosixPath(normalized).parent.as_posix()
+            return f"workspace-write:{context.tool_name}:{scope}", True
         return f"tool:{context.tool_name}", True
 
     @staticmethod

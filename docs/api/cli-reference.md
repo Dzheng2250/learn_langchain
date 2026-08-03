@@ -44,6 +44,7 @@
 | `learn-agent-core init-user-config` | 将指定 `.env` 复制到用户级配置目录 | 否；配置生效需要重启 |
 | `learn-agent-core migrate-workspace` | 迁移旧 PostgreSQL Workspace Schema | 是 |
 | `learn-agent-core migrate-local-state` | 将保留 Session 导入本地权威状态 | 是 |
+| `learn-agent-core rollback-local-state` | 回滚明确支持的本地 Schema 版本 | 是 |
 | `learn-agent-core gc-artifacts` | 删除未被引用的本地 Artifact | 建议停止 |
 
 ## Workspace 与 Session 参数
@@ -138,7 +139,7 @@ learn-agent approval resolve <request_id> deny_workspace --session default
 
 可用响应为 `allow_once`、`deny_once`、`allow_session`、`deny_session`、`allow_workspace` 和 `deny_workspace`。`list` 返回脱敏参数摘要、capability、原因和 `persistable`；`resolve` 会恢复原工具中断，因此不能用 `session resume` 替代。
 
-Session 规则只影响当前 Session，Workspace 规则影响同一 Workspace 的后续 Session。复合 shell 命令只能单次审批，不能保存为持久规则。批准也不能绕过 Workspace 路径、符号链接、沙箱、主机执行和网络硬限制。完整语义见 [Tool 安全、审批与 Hook 架构](/docs/architecture/tool-security-and-approval.md)。
+Session 规则只影响当前 Session，Workspace 规则影响同一 Workspace 的后续 Session。复合 shell 命令只能单次审批，不能保存为持久规则。批准也不能绕过 Workspace 路径、符号链接、沙箱、主机执行和网络硬限制。 文件写入审批只显示操作、路径和大小，不显示正文；覆盖、移动、删除和 change set 应用只能单次批准。完整语义见 [Tool 安全、审批与 Hook 架构](/docs/architecture/tool-security-and-approval.md)。
 
 ## Hook 配置
 
@@ -266,6 +267,16 @@ learn-agent-core migrate-local-state \
 
 详细流程见[PostgreSQL 到本地状态迁移](/docs/operations/local-state-migration.md)。
 
+### `rollback-local-state`
+
+```shell
+learn-agent-core rollback-local-state \
+  --from-version 11 \
+  --to-version 10 \
+  [--apply]
+```
+
+默认先验证当前版本和转换是否受支持，再输出 dry-run。`--apply` 会先获取 `state.db.operation.lock` 跨进程排他锁，并使用原子排他创建在 `state.db` 同目录生成带微秒时间戳和随机后缀的完整备份；备份复制与 SQLite `quick_check` 各自受 30 秒截止约束，随后才在单个事务中删除 v11 的资源活动派生表及迁移标记。备份失败会清理不完整文件且不会执行降级。当前只支持 `v11 -> v10`；daemon 运行或其他本地状态维护命令持锁时拒绝执行。
 ### `gc-artifacts`
 
 ```shell

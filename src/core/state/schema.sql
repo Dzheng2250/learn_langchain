@@ -244,6 +244,31 @@ CREATE TABLE IF NOT EXISTS tool_approval_audit (
     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 
+
+CREATE TABLE IF NOT EXISTS resource_activity_counters (
+    execution_id TEXT PRIMARY KEY REFERENCES executions(execution_id) ON DELETE CASCADE,
+    recorded_count INTEGER NOT NULL DEFAULT 0,
+    dropped_count INTEGER NOT NULL DEFAULT 0
+);
+
+CREATE TABLE IF NOT EXISTS resource_activities (
+    activity_id TEXT PRIMARY KEY, sequence INTEGER NOT NULL,
+    workspace_id TEXT NOT NULL, session_id TEXT NOT NULL, turn_index INTEGER,
+    execution_id TEXT NOT NULL REFERENCES executions(execution_id) ON DELETE CASCADE,
+    slice_id TEXT, run_id TEXT NOT NULL DEFAULT '', tool_call_id TEXT NOT NULL DEFAULT '',
+    tool_name TEXT NOT NULL DEFAULT '', actor TEXT NOT NULL DEFAULT 'parent',
+    resource_uri TEXT NOT NULL, operation TEXT NOT NULL, observation_mode TEXT NOT NULL,
+    change_state TEXT NOT NULL, requested_range TEXT, observed_range TEXT,
+    returned_bytes INTEGER NOT NULL DEFAULT 0, resource_bytes INTEGER NOT NULL DEFAULT 0,
+    before_digest TEXT NOT NULL DEFAULT '', after_digest TEXT NOT NULL DEFAULT '',
+    before_lines INTEGER, after_lines INTEGER,
+    evidence_status TEXT NOT NULL DEFAULT 'not_applicable',
+    related_activity_ids TEXT NOT NULL DEFAULT '[]', metadata TEXT NOT NULL DEFAULT '{}',
+    event_key TEXT NOT NULL DEFAULT '',
+    occurred_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE(execution_id, sequence),
+    FOREIGN KEY(workspace_id, session_id) REFERENCES sessions(workspace_id, session_id) ON DELETE CASCADE
+);
 CREATE TABLE IF NOT EXISTS memories (
     memory_id TEXT PRIMARY KEY,
     workspace_id TEXT NOT NULL REFERENCES workspaces(workspace_id) ON DELETE CASCADE,
@@ -367,6 +392,14 @@ ON tool_permission_rules(workspace_id, tool_name, rule_key, session_id);
 CREATE INDEX IF NOT EXISTS idx_execution_task_dependencies_dep
 ON execution_task_dependencies(execution_id, depends_on_task_id);
 
+
+CREATE INDEX IF NOT EXISTS idx_resource_activities_execution ON resource_activities(execution_id, sequence);
+CREATE INDEX IF NOT EXISTS idx_resource_activities_session_turn ON resource_activities(workspace_id, session_id, turn_index, sequence);
+CREATE INDEX IF NOT EXISTS idx_resource_activities_run ON resource_activities(run_id, sequence);
+CREATE INDEX IF NOT EXISTS idx_resource_activities_tool_call ON resource_activities(tool_call_id, sequence);
+CREATE INDEX IF NOT EXISTS idx_resource_activities_uri ON resource_activities(execution_id, resource_uri, sequence);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_resource_activities_event_key
+ON resource_activities(execution_id, event_key) WHERE event_key <> '';
 CREATE INDEX IF NOT EXISTS idx_memories_workspace
 ON memories(workspace_id, importance DESC, updated_at DESC);
 

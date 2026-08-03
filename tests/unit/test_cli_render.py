@@ -6,6 +6,25 @@ from src.cli.render import AgentEventRenderer
 
 
 class AgentEventRendererTest(unittest.TestCase):
+    def test_goal_continuation_is_visible(self):
+        output = io.StringIO()
+        with redirect_stdout(output):
+            AgentEventRenderer().render({
+                "event": "goal_continuation_started",
+                "data": {"slice_number": 1},
+            })
+
+        self.assertIn("checking unfinished tasks", output.getvalue())
+    def test_resource_activity_summary_uses_shared_core_shape(self):
+        output = io.StringIO()
+        with redirect_stdout(output):
+            AgentEventRenderer().render({"event": "resource_activity_summary", "data": {"summary": {
+                "reads": {"resource_count": 2, "returned_bytes": 120},
+                "changes": {"changed_resource_count": 1},
+                "evidence": {"missing": 1},
+            }}})
+        self.assertIn("read 2 resource(s), 120 bytes", output.getvalue())
+        self.assertIn("changed 1; warnings 1", output.getvalue())
     def test_completed_agent_message_is_rendered_when_provider_emits_no_tokens(self):
         output = io.StringIO()
         renderer = AgentEventRenderer()
@@ -196,10 +215,27 @@ class AgentEventRendererTest(unittest.TestCase):
             )
 
         rendered = output.getvalue()
-        self.assertIn("[REDACTED]", rendered)
+        self.assertIn("Write: notes.txt", rendered)
+        self.assertIn("500 bytes", rendered)
         self.assertNotIn("should-not-render", rendered)
-        self.assertIn("... truncated ...", rendered)
+        self.assertNotIn("x" * 100, rendered)
 
+
+    def test_write_approval_hides_content_body(self):
+        output = io.StringIO()
+        renderer = AgentEventRenderer()
+        with redirect_stdout(output):
+            renderer.render({
+                "event": "tool_approval_required",
+                "data": {
+                    "request_id": "request",
+                    "tool": "write_workspace_file",
+                    "args": {"path": "notes.txt", "content": "private-body"},
+                },
+            })
+        rendered = output.getvalue()
+        self.assertIn("Write: notes.txt", rendered)
+        self.assertNotIn("private-body", rendered)
     def test_goal_done_event_renders_completion_marker(self):
         output = io.StringIO()
         renderer = AgentEventRenderer(goal_mode=True)

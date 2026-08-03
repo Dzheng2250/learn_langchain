@@ -13,6 +13,8 @@ from typing import Any
 # Reuse constants and helpers from the CLI renderer
 from rich.markup import escape
 
+from src.ipc.resource_activity import resource_activity_display_stats
+
 from src.cli.render import (
     ARG_FIELD_PREVIEW_LIMIT,
     ARG_PREVIEW_LIMIT,
@@ -106,6 +108,15 @@ def render_event(params: dict[str, Any]) -> str | None:
     if event == "step":
         return _render_step(data)
 
+    if event == "resource_activity_summary":
+        stats = resource_activity_display_stats(data.get("summary"))
+        return (
+            "[dim]Resources: "
+            f"read {stats['resource_count']} · "
+            f"{stats['returned_bytes']} bytes · "
+            f"changed {stats['changed_resource_count']} · "
+            f"warnings {stats['warnings']}[/dim]"
+        )
     if event == "done":
         return _render_done(data)
 
@@ -116,10 +127,18 @@ def render_event(params: dict[str, Any]) -> str | None:
         return _render_paused(data)
 
     if event == "tool_approval_required":
-        return (
+        tool = data.get("tool", "unknown")
+        detail = _tool_detail(tool, data.get("args"))
+        line = (
             "[yellow bold]Tool approval required[/yellow bold]\n"
-            f"[yellow]{data.get('tool', 'unknown')}[/yellow]"
+            f"[yellow]{tool}[/yellow]"
         )
+        if detail:
+            line += f"\n{dim(detail)}"
+        return line
+
+    if event == "goal_continuation_started":
+        return "[yellow]Goal continues: checking unfinished tasks.[/yellow]"
 
     if event == "model_retry_scheduled":
         return (
@@ -201,6 +220,29 @@ def _tool_detail(tool: str, args: Any) -> str | None:
     if tool == "delegate_to_subagent":
         objective = args.get("task") or args.get("goal") or args.get("instruction")
         return f"Delegating: {_preview(objective, 1000)}" if objective else None
+    if tool == "write_workspace_file":
+        return (
+            f"Write: {args.get('path', '<path>')} "
+            f"({len(str(args.get('content', '')).encode('utf-8'))} bytes, "
+            f"overwrite={bool(args.get('overwrite'))})"
+        )
+    if tool == "replace_workspace_text":
+        return (
+            f"Replace: {args.get('path', '<path>')} "
+            f"(old={len(str(args.get('old_text', '')))} chars, "
+            f"new={len(str(args.get('new_text', '')))} chars, "
+            f"expected={args.get('expected_count', 1)})"
+        )
+    if tool == "move_workspace_path":
+        return (
+            f"Move: {args.get('source', '<source>')} -> "
+            f"{args.get('destination', '<destination>')} "
+            f"(overwrite={bool(args.get('overwrite'))})"
+        )
+    if tool == "delete_workspace_path":
+        return f"Delete: {args.get('path', '<path>')} (recursive={bool(args.get('recursive'))})"
+    if tool == "create_workspace_directory":
+        return f"Create directory: {args.get('path', '<path>')}"
     return _generic_args_detail(args)
 
 
@@ -242,17 +284,17 @@ def _render_done(data: dict[str, Any]) -> str | None:
 
 def _render_error(data: dict[str, Any]) -> str:
     msg = data.get("message", "Agent turn failed.")
-    return f"[red]✗ error: {msg}[/red]"
+    return f"[red]✗ error: {escape(str(msg))}[/red]"
 
 
 def _render_paused(data: dict[str, Any]) -> str:
     reason = data.get("stop_reason", "paused")
-    return f"[yellow]■ paused: {reason}[/yellow]"
+    return f"[yellow]■ paused: {escape(str(reason))}[/yellow]"
 
 
 # ── helpers ─────────────────────────────────────────────────────────
 
 
 def dim(text: str) -> str:
-    """Wrap text in Rich dim markup."""
-    return f"[dim]{text}[/dim]"
+    """Escape untrusted event text before wrapping it in Rich dim markup."""
+    return f"[dim]{escape(str(text))}[/dim]"

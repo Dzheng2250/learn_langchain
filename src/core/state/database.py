@@ -89,10 +89,9 @@ class LocalStateDatabase:
             conn.close()
 
     @contextmanager
-    def transaction(self):
-        """Yield one immediate write transaction and roll back on failure."""
+    def _transaction(self, begin_statement: str):
         with self.connect() as conn:
-            conn.execute("BEGIN IMMEDIATE")
+            conn.execute(begin_statement)
             try:
                 yield conn
             except Exception:
@@ -100,6 +99,18 @@ class LocalStateDatabase:
                 raise
             else:
                 conn.commit()
+
+    @contextmanager
+    def read_transaction(self):
+        """Yield one consistent read snapshot without reserving the writer lock."""
+        with self._transaction("BEGIN") as conn:
+            yield conn
+
+    @contextmanager
+    def transaction(self):
+        """Yield one immediate write transaction and roll back on failure."""
+        with self._transaction("BEGIN IMMEDIATE") as conn:
+            yield conn
 
     def _configure_journal_mode(self, conn) -> None:
         """Configure the database-wide journal once per process instance."""

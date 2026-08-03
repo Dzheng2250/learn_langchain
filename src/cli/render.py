@@ -6,6 +6,7 @@ from typing import Any
 
 from src.cli.errors import CliError
 from src.core.common.redaction import sanitize_value
+from src.ipc.resource_activity import resource_activity_display_stats
 
 DETAIL_PREVIEW_LIMIT = 2000
 ARG_PREVIEW_LIMIT = 1000
@@ -94,6 +95,29 @@ def _tool_start_detail(tool: str | None, args: Any) -> str | None:
     if tool == "delegate_to_subagent":
         objective = args.get("task") or args.get("goal") or args.get("instruction")
         return f"Delegating: {_preview(objective, 1000)}" if objective else None
+    if tool == "write_workspace_file":
+        return (
+            f"Write: {args.get('path', '<path>')} "
+            f"({len(str(args.get('content', '')).encode('utf-8'))} bytes, "
+            f"overwrite={bool(args.get('overwrite'))})"
+        )
+    if tool == "replace_workspace_text":
+        return (
+            f"Replace: {args.get('path', '<path>')} "
+            f"(old={len(str(args.get('old_text', '')))} chars, "
+            f"new={len(str(args.get('new_text', '')))} chars, "
+            f"expected={args.get('expected_count', 1)})"
+        )
+    if tool == "move_workspace_path":
+        return (
+            f"Move: {args.get('source', '<source>')} -> "
+            f"{args.get('destination', '<destination>')} "
+            f"(overwrite={bool(args.get('overwrite'))})"
+        )
+    if tool == "delete_workspace_path":
+        return f"Delete: {args.get('path', '<path>')} (recursive={bool(args.get('recursive'))})"
+    if tool == "create_workspace_directory":
+        return f"Create directory: {args.get('path', '<path>')}"
     return _generic_tool_args_detail(args)
 
 
@@ -150,7 +174,7 @@ class AgentEventRenderer:
             self.pending_approval = dict(data)
             request_id = data.get("request_id", "")
             tool = data.get("tool", "unknown")
-            detail = _generic_tool_args_detail(data.get("args"))
+            detail = _tool_start_detail(tool, data.get("args"))
             print(f"\n[tool_approval_required: {tool}]", flush=True)
             if detail:
                 print(detail, flush=True)
@@ -172,6 +196,8 @@ class AgentEventRenderer:
                 f"\n[model_retry_exhausted: {data.get('error_category', 'unknown')}]",
                 flush=True,
             )
+        elif event == "goal_continuation_started":
+            print("\n[goal_continuation: checking unfinished tasks]", flush=True)
         elif event == "step":
             step_type = data.get("type", "step")
             if step_type == "agent_message" and not self.received_token:
@@ -189,6 +215,14 @@ class AgentEventRenderer:
                     content = _preview(data.get("content"))
                     if content:
                         print(content, flush=True)
+        elif event == "resource_activity_summary":
+            stats = resource_activity_display_stats(data.get("summary"))
+            print(
+                f"\n[resources: read {stats['resource_count']} resource(s), "
+                f"{stats['returned_bytes']} bytes; "
+                f"changed {stats['changed_resource_count']}; warnings {stats['warnings']}]",
+                flush=True,
+            )
         elif event == "done":
             status = data.get("status")
             if status == "paused":

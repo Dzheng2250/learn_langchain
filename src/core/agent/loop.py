@@ -22,8 +22,15 @@ from src.core.agent.run_observer import TurnRunObserver
 from src.core.agent.slices import SliceExecutionService
 from src.core.common.content import message_content_text
 from src.core.hooks import HookAction, HookContext, HookPoint, HookRejected, NOOP_HOOK_DISPATCHER
+from src.core.prompts.goal_mode import (
+    completion_review_message,
+    contains_completion_review,
+    replace_current_user_prompt,
+    sanitize_goal_messages,
+)
 from src.core.state.types import ExecutionStatus
 from src.core.tasks.context import ToolExecutionContext
+from src.core.telemetry import emit_event
 from src.core.telemetry import (
     bind_context,
     bind_run_context,
@@ -63,6 +70,7 @@ class TurnExecutionLoop:
         pause_handler: TurnLoopPauseHandler,
         config: LoopConfig,
         hook_runtime=None,
+        task_service=None,
     ) -> None:
         self.turn_coordinator = turn_coordinator
         self.run_limits = run_limits
@@ -72,6 +80,7 @@ class TurnExecutionLoop:
         self.pause_handler = pause_handler
         self.config = config
         self.hook_runtime = hook_runtime
+        self.task_service = task_service
         self.max_auto_slices = max(1, int(self.config.max_auto_slices))
 
     def stream_locked_turn(
@@ -81,6 +90,7 @@ class TurnExecutionLoop:
         user_input: str,
         run_id: str,
         *,
+        model_user_input: str | None = None,
         execution=None,
         resume: bool = False,
         resume_value: dict | None = None,
@@ -114,6 +124,11 @@ class TurnExecutionLoop:
                 execution_trace_token = bind_trace_context(execution_id=execution.execution_id)
             self.observer.run_started(session, user_input, run_context, current_turn, resume)
             input_messages = prepared.input_messages
+            if model_user_input is not None and model_user_input != user_input:
+                input_messages = replace_current_user_prompt(
+                    input_messages,
+                    model_user_input,
+                )
             checkpoint_thread_id = execution.checkpoint_thread_id if execution else None
             tool_context = ToolExecutionContext(
                 workspace_id=str(session.workspace.workspace_id),
@@ -121,16 +136,35 @@ class TurnExecutionLoop:
                 execution_id=execution.execution_id if execution else None,
                 run_id=run_id,
                 workspace_root=str(session.workspace.root),
+                turn_index=current_turn,
             )
             total_tool_calls = 0
             budget = ExecutionBudget()
             budget_token = bind_execution_budget(budget)
             exhausted_reason = StopReason.GRAPH_STEP_LIMIT.value
+            goal_mode = bool(execution is not None and execution.goal_mode)
+            goal_review_used = False
+            if resume and goal_mode and checkpoint_thread_id is not None:
+                get_state = getattr(graph, "get_state", None)
+                if callable(get_state):
+                    checkpoint = get_state({
+                        "configurable": {"thread_id": checkpoint_thread_id}
+                    })
+                    checkpoint_messages = getattr(checkpoint, "values", {}).get(
+                        "messages", []
+                    )
+                    goal_review_used = contains_completion_review(
+                        checkpoint_messages
+                    )
+            continuation_input = None
             for slice_number in range(1, self.max_auto_slices + 1):
                 if budget.wall_time_exhausted():
                     exhausted_reason = StopReason.GRANT_WALL_TIME_LIMIT.value
                     break
-                if resume and slice_number == 1 and resume_value is not None:
+                if continuation_input is not None:
+                    slice_input = continuation_input
+                    continuation_input = None
+                elif resume and slice_number == 1 and resume_value is not None:
                     slice_input = Command(resume=resume_value)
                 else:
                     slice_input = None if resume or slice_number > 1 else input_messages
@@ -180,12 +214,43 @@ class TurnExecutionLoop:
                             "final_text": message_content_text(final_messages[-1]) if final_messages else "",
                             "tool_call_count": total_tool_calls,
                             "slice_number": slice_number,
+                            "goal_mode": goal_mode,
                         },
                     ))
                     if stop_decision.action in {HookAction.REJECT, HookAction.DENY}:
                         raise HookRejected(
                             stop_decision.reason or "Stop hook rejected turn completion."
                         )
+                    should_review = (
+                        goal_mode
+                        and not goal_review_used
+                        and slice_number < self.max_auto_slices
+                        and self.task_service is not None
+                        and self.task_service.has_unfinished(tool_context)
+                    )
+                    if should_review:
+                        goal_review_used = True
+                        self.slice_execution_service.finish_for_goal_continuation(
+                            slice_id=slice_id,
+                            execution=execution,
+                            graph_steps_used=int(item["data"].get("graph_steps_used", 0)),
+                            usage=budget.snapshot(),
+                        )
+                        self.observer.slice_finished(slice_id)
+                        emit_event(
+                            "goal_continuation_started",
+                            "agent_loop",
+                            "Goal mode is continuing unfinished task work.",
+                            {"slice_number": slice_number},
+                        )
+                        yield {
+                            "event": "goal_continuation_started",
+                            "data": {"slice_number": slice_number},
+                        }
+                        continuation_input = [completion_review_message()]
+                        resume = False
+                        continue
+                    final_messages = sanitize_goal_messages(final_messages, user_input)
                     active_slice_id = slice_id
                     finalization = self.turn_coordinator.finalize(
                         session=session,

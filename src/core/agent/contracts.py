@@ -59,6 +59,7 @@ class LockedTurnStreamer(Protocol):
         user_input: str,
         run_id: str,
         *,
+        model_user_input: str | None = None,
         execution=None,
         resume: bool = False,
         control: ExecutionControl | None = None,

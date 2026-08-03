@@ -46,5 +46,5 @@ jobs:
             4. Please respond in Simplified Chinese.
 
           claude_args: |
-            --model deepseek-v4-flash
+            --model deepseek-v4-flash-0731
             --allowedTools "mcp__github_inline_comment__create_inline_comment,Bash(gh pr comment:*),Bash(gh pr diff:*),Bash(gh pr view:*)"

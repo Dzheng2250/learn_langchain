@@ -65,6 +65,15 @@
 
 并非所有 Provider 都保证产生 token。前端必须支持只收到完整 `step.agent_message` 的情况。
 
+## `goal_continuation_started`
+
+Goal 模式的父 Agent 已产生一次阶段性回答，但当前 Execution 的私有任务清单仍有 pending 或 in_progress 项时，Core 会最多触发一次完成度复核：
+
+```json
+{"event":"goal_continuation_started","data":{"slice_number":1}}
+```
+
+前端可以显示轻量的“正在继续未完成任务”状态。该事件不是终止事件，也不要求用户执行 `session resume`；后续 token、工具事件和最终 `done` 仍属于同一个 Turn。内部复核 Prompt 不会进入正式消息历史。
 ## 模型重试事件
 
 Core 会在当前 LLM 调用内部处理短期限流、网络中断和临时服务不可用。重试事件只描述当前模型调用，不代表整个 Agent Turn 已经失败。
@@ -270,3 +279,20 @@ Frontend rules:
 - `metadata` mode sends start/finish and character counts, but not raw reasoning text.
 - `redacted_thinking` never exposes raw content; clients should show only redacted metadata.
 - Reasoning events must not be appended to the final assistant message or saved as user-visible answer text.
+
+## Resource Activity Summary
+
+Core 先发送 `done`、`paused` 或终止 `error`，再查询并发送一次
+`resource_activity_summary`。即使此前某个非终止 token/工具通知发送失败，Core 仍会独立尝试发送终止事件；
+终止事件投递成功后才执行账本查询，因此查询或补充事件失败不会吞掉终止事件。若连接已经断开，
+前端重连后应通过 RPC 查询：
+
+```json
+{
+  "event": "resource_activity_summary",
+  "data": {"schema_version": 1, "run_id": "...", "summary": {}}
+}
+```
+
+该事件只提供聚合快照；断线恢复和历史详情统一调用 `resource_activity.summary` 与
+`resource_activity.list`。所有前端共享此协议，不存在 CLI/TUI 专用资源活动字段。

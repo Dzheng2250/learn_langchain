@@ -50,6 +50,8 @@ class ToolCallContext:
     actor: str
     spec: ToolSpec
     workspace_root: str = ""
+    turn_index: int | None = None
+    slice_id: str | None = None
 
     def with_args(self, args: dict[str, Any]):
         return replace(self, args=dict(args))

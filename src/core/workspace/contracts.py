@@ -16,6 +16,9 @@ class WorkspaceIdentityRepository(Protocol):
 
     def resolve(self, path: str) -> WorkspaceContext: ...
 
+    def find(self, path: str) -> WorkspaceContext | None:
+        """Return an already registered Workspace without creating or updating it."""
+
     def resolve_session(
         self,
         workspace: WorkspaceContext,

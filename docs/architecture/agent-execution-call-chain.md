@@ -156,14 +156,13 @@ worker slot 总数限制。Execution 已挂起时，服务返回结构化 pendin
 
 ```text
 runtime_registry.get(workspace)
-  -> 普通模式返回 runtime.graph
-  -> goal 模式返回 runtime.goal_graph
+  -> 所有模式返回同一个 runtime.graph
 ```
 
 缓存未命中时，`WorkspaceRuntimeFactory` 创建 Workspace 绑定的 ToolRegistry、SkillStore、父 Agent
 Graph 和子 Agent。工具路径始终绑定不可变 `WorkspaceContext`；请求不能通过修改全局变量切换目录。
 
-任务规划工具只存在于 goal Graph。普通对话不会因为 Runtime 缓存复用而获得 goal 私有工具。
+任务规划工具始终对父 Agent 可见。Goal 模式由 `UserPromptSubmit` 生命周期向当前用户消息注入策略，不创建另一套工具 schema 或 System Prompt，因此不会因模式切换破坏 Anthropic 的稳定前缀缓存。
 
 ### 第六阶段：准备 Turn 输入并进入 Slice 循环
 

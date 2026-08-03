@@ -5,6 +5,8 @@ import time
 import unittest
 from pathlib import Path
 from unittest.mock import patch
+
+from langchain_core.messages import AIMessage
 from uuid import uuid4
 
 from tests.support.paths import REPOSITORY_ROOT
@@ -48,6 +50,29 @@ class WorkspaceResolutionTest(unittest.TestCase):
             "rejected",
             summarize.invoke({"path": ".env", "question": "show secrets"}),
         )
+
+    def test_large_file_summary_reuses_the_original_file_bytes(self):
+        class Model:
+            def invoke(self, _messages):
+                return AIMessage(content="summary")
+
+        class Provider:
+            def create_chat_model(self, *_args, **_kwargs):
+                return Model()
+
+        root = ROOT / ".test_tmp" / f"summary-{uuid4().hex}"
+        root.mkdir(parents=True)
+        self.addCleanup(shutil.rmtree, root, True)
+        data = b"first line\nsecond line\n"
+        target = root / "large.txt"
+        target.write_bytes(data)
+        summarize = create_summarize_large_file(root, Provider())
+        with patch("src.core.tools.summarization.file_snapshot") as snapshot:
+            snapshot.return_value = {"bytes": len(data), "digest": "digest", "lines": 2}
+            result = summarize.invoke({"path": "large.txt", "question": "What is here?"})
+
+        self.assertEqual("summary", result)
+        snapshot.assert_called_once_with(target, data=data)
 
     def test_user_paths_support_explicit_overrides(self):
         with (

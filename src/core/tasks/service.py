@@ -56,6 +56,13 @@ class TaskPlanningService:
         depends_on: list[str] | None = None,
     ) -> str:
         """Update one private task and return its latest status."""
+        if all(
+            value is None
+            for value in (status, subject, description, notes, depends_on)
+        ):
+            raise ValueError(
+                "task_update requires a change; provide status for progress updates"
+            )
         task = self.repository.update(
             context,
             task_key.strip(),
@@ -77,6 +84,13 @@ class TaskPlanningService:
         if not tasks:
             return "No private task plan exists for this Execution."
         return self._bounded(self._format_list(tasks), self.settings.list_output_limit)
+
+    def has_unfinished(self, context: ToolExecutionContext) -> bool:
+        """Return whether an Execution plan contains actionable unfinished work."""
+        return any(
+            task.status in {TaskStatus.PENDING, TaskStatus.IN_PROGRESS}
+            for task in self.repository.list(context)
+        )
 
     def get(self, context: ToolExecutionContext, task_key: str) -> str:
         """Return one task's full private planning details."""

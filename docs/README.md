@@ -14,7 +14,7 @@
 |---|---|
 | 了解项目目标、能力边界和已知限制 | [项目概述](/docs/product/project-overview.md) |
 | 理解整个后端系统如何协作 | [系统架构总览](/docs/architecture/system-overview.md) |
-| 开发 CLI、TUI 或其他前端 | [前端接入指南](/docs/api/tui-client-guide.md) |
+| 开发 CLI、TUI 或其他前端 | [前端开发完整接入指南](/docs/api/frontend-integration-guide.md) |
 | 查询公开 RPC、事件和错误 | [RPC 参考](/docs/api/rpc-reference.md)、[流式事件](/docs/api/streaming-events.md)、[错误参考](/docs/api/error-reference.md) |
 | 扩展 Tool、Provider、RPC 或 Sink | [Core 平台扩展指南](/docs/development/platform-extension.md) |
 | 部署、运行、排障和恢复 | [部署指南](/docs/operations/deployment.md)、[运维 Runbook](/docs/operations/runbook.md) |
@@ -63,6 +63,7 @@
 - [流式事件参考](/docs/api/streaming-events.md)
 - [错误与恢复参考](/docs/api/error-reference.md)
 - [TUI 使用与命令参考](/docs/api/tui-reference.md)
+- [前端开发完整接入指南](/docs/api/frontend-integration-guide.md)
 - [前端接入指南](/docs/api/tui-client-guide.md)
 - [协议兼容性](/docs/api/protocol-compatibility.md)
 - [Core 平台扩展指南](/docs/development/platform-extension.md)

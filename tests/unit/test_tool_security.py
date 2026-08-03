@@ -10,6 +10,7 @@ from langgraph.checkpoint.memory import MemorySaver
 from langgraph.graph import END, START, MessagesState, StateGraph
 from langgraph.types import Command
 
+from src.core.adapters.sqlite.resource_activity import SQLiteResourceActivityRepository
 from src.core.adapters.sqlite.tool_approvals import SQLiteToolApprovalRepository
 from src.core.state import ExecutionRepository, LocalStateDatabase, LocalWorkspaceRepository
 from src.core.hooks import (
@@ -24,11 +25,16 @@ from src.core.tools.security.approval import ApprovalService
 from src.core.tools.security.command_rules import command_rule_key
 from src.core.tools.security.enforcement import CapabilityEnforcer
 from src.core.tools.security.models import (
-    ApprovalResponse, PolicyAction, ToolCallContext,
+    ApprovalResponse, PolicyAction, PolicyDecision, ToolCallContext,
 )
 from src.core.tools.security.policy import DefaultToolPolicyEngine
 from src.core.tools.security.pipeline import ToolExecutionPipeline
 from src.core.tools.observed import ObservedToolNode
+from src.core.resource_activity import (
+    ObservationMode, ResourceObservation, ResourceOperation,
+    bind_resource_activity, record_resource_activity,
+)
+from src.core.subagent.graph import create_delegate_tool
 from src.core.streaming.events import stream_graph_events
 from src.core.tasks.context import ToolExecutionContext
 
@@ -250,6 +256,43 @@ class ToolSecurityTest(unittest.TestCase):
         _key, persistable = command_rule_key("echo ok | grep ok")
         self.assertFalse(persistable)
 
+
+    def test_workspace_write_rule_matches_descendant_directory(self):
+        class WriteTool:
+            name = "write_workspace_file"
+
+        spec = _spec(
+            name=WriteTool.name,
+            tool=WriteTool(),
+            capabilities=frozenset({ToolCapability.FILE_WRITE}),
+            sandbox=SandboxMode.WORKSPACE_WRITE,
+        )
+        parent = replace(
+            self.context,
+            tool_name=WriteTool.name,
+            tool_call_id="write-parent",
+            args={"path": "src/package/file.py", "content": "x"},
+            spec=spec,
+        )
+        rule_key, persistable = ToolExecutionPipeline._rule_identity(parent)
+        decision = PolicyDecision(
+            PolicyAction.ASK, "approval", rule_key, persistable, spec.capabilities
+        )
+        service = ApprovalService(self.repository)
+        pending = service.request(parent, decision)
+        self.assertTrue(service.resolve_interrupt(
+            parent,
+            decision,
+            pending["request_id"],
+            {"request_id": pending["request_id"], "response": "allow_workspace"},
+        ))
+        child = replace(
+            parent,
+            tool_call_id="write-child",
+            args={"path": "src/package/deeper/other.py", "content": "y"},
+        )
+        child_key, _ = ToolExecutionPipeline._rule_identity(child)
+        self.assertEqual("allow", self.repository.matching_rule(child, child_key))
     def test_simple_argv_rule_matches_longer_command_prefix(self):
         rule_key, persistable = command_rule_key("python -m unittest")
         self.assertTrue(persistable)
@@ -336,6 +379,99 @@ class ToolSecurityTest(unittest.TestCase):
         self.assertEqual(1, len(post_hook.calls))
         self.assertEqual("success", post_hook.calls[0].payload["status"])
 
+    def test_delegate_subagent_tools_use_the_configured_hook_dispatcher(self):
+        calls = []
+
+        @tool
+        def inspect(path: str) -> str:
+            """Inspect one test path."""
+            calls.append(path)
+            record_resource_activity(ResourceObservation(
+                f"workspace://{path}", ResourceOperation.READ, ObservationMode.EXACT,
+            ))
+            return "ok"
+
+        class Model:
+            def __init__(self): self.count = 0
+            def invoke(self, _messages):
+                self.count += 1
+                if self.count == 1:
+                    return AIMessage(content="", tool_calls=[{
+                        "name": "inspect", "args": {"path": "safe.txt"},
+                        "id": "subagent-inspect", "type": "tool_call",
+                    }])
+                return AIMessage(content="done")
+
+        class Provider:
+            def create_chat_model(self, *_args, **_kwargs): return Model()
+
+        class CaptureHook:
+            def handle(self, context):
+                calls.append(f"hook:{context.subject}")
+                return HookDecision()
+
+        hooks = HookRegistry()
+        hooks.register(HookSpec("subagent-pre", HookPoint.PRE_TOOL_USE, CaptureHook(), matcher="^inspect$"))
+        hooks.freeze()
+        activity_repo = SQLiteResourceActivityRepository(self.database)
+        delegate = create_delegate_tool(
+            [inspect], Provider(), hook_dispatcher=HookDispatcher(hooks), max_steps=5,
+            resource_activity_recorder=activity_repo,
+        )
+        with bind_resource_activity(activity_repo, self.context):
+            result = delegate.func("inspect", "", {"messages": []})
+        activities = activity_repo.list(execution_id=self.context.execution_id)["items"]
+
+        self.assertEqual("done", result)
+        self.assertIn("hook:inspect", calls)
+        self.assertIn("safe.txt", calls)
+        self.assertEqual("subagent", activities[0]["actor"])
+        self.assertEqual("workspace://safe.txt", activities[0]["resource_uri"])
+    def test_observed_node_fallback_exposes_resource_evidence_to_hook(self):
+        @tool
+        def inspect(path: str) -> str:
+            """Inspect one test path."""
+            return path
+
+        class EvidenceRecorder:
+            def evidence_for(self, context):
+                return {"status": "current", "activity_id": "read-1", "path": context.args["path"]}
+            def record(self, _context, _observation):
+                return None
+
+        class CaptureHook:
+            def __init__(self): self.payload = None
+            def handle(self, context):
+                self.payload = context.payload
+                return HookDecision()
+
+        capture = CaptureHook()
+        hooks = HookRegistry()
+        hooks.register(HookSpec("capture", HookPoint.PRE_TOOL_USE, capture, matcher="^inspect$"))
+        hooks.freeze()
+        builder = StateGraph(MessagesState, context_schema=ToolExecutionContext)
+        builder.add_node("tools", ObservedToolNode(
+            [inspect], hook_dispatcher=HookDispatcher(hooks),
+            resource_activity_recorder=EvidenceRecorder(),
+        ))
+        builder.add_edge(START, "tools")
+        builder.add_edge("tools", END)
+        graph = builder.compile(checkpointer=MemorySaver())
+        list(stream_graph_events(
+            graph,
+            [AIMessage(content="", tool_calls=[{
+                "name": "inspect", "args": {"path": "./a.py"},
+                "id": "fallback-evidence", "type": "tool_call",
+            }])],
+            checkpoint_thread_id="fallback-evidence-thread",
+            tool_context=ToolExecutionContext(
+                self.context.workspace_id, self.context.session_id,
+                self.context.execution_id, self.context.run_id,
+                "subagent", self.context.workspace_root,
+            ),
+        ))
+        self.assertEqual("current", capture.payload["resource_evidence"]["status"])
+        self.assertEqual("./a.py", capture.payload["resource_evidence"]["path"])
     def test_langgraph_interrupt_resumes_the_same_tool_call(self):
         calls = []
 

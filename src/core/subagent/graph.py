@@ -26,6 +26,7 @@ def create_delegate_tool(
     risk_by_name=None,
     hook_dispatcher=None,
     workspace=None,
+    resource_activity_recorder=None,
 ):
     """Create a delegate tool whose sub-agent cannot recursively delegate."""
     provider = model_provider
@@ -55,6 +56,9 @@ def create_delegate_tool(
             base_tools,
             event_source="subagent_tool_node",
             risk_by_name=risk_by_name,
+            hook_dispatcher=hooks,
+            resource_activity_recorder=resource_activity_recorder,
+            actor="subagent",
         ),
     )
     builder.add_edge(START, "subagent")

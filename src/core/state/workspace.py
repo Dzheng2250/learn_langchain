@@ -4,7 +4,7 @@ from uuid import UUID, uuid4
 
 from src.core.state.database import LocalStateDatabase
 from src.core.workspace.models import SessionContext, WorkspaceContext
-from src.core.workspace.resolver import canonical_path_key, canonicalize_workspace
+from src.core.workspace.resolver import canonical_workspace_identity
 
 
 class LocalWorkspaceRepository:
@@ -15,8 +15,7 @@ class LocalWorkspaceRepository:
 
     def resolve(self, path: str) -> WorkspaceContext:
         """Atomically register or return one canonical Workspace."""
-        root = canonicalize_workspace(path)
-        canonical = canonical_path_key(root)
+        root, canonical = canonical_workspace_identity(path)
         with self.database.transaction() as conn:
             row = conn.execute(
                 "SELECT workspace_id FROM workspaces WHERE canonical_path = ?",
@@ -38,6 +37,18 @@ class LocalWorkspaceRepository:
                     (workspace_id, canonical, str(root)),
                 )
         return WorkspaceContext(UUID(workspace_id), root)
+
+    def find(self, path: str) -> WorkspaceContext | None:
+        """Return an existing canonical Workspace without mutating local state."""
+        root, canonical = canonical_workspace_identity(path)
+        with self.database.read_transaction() as conn:
+            row = conn.execute(
+                "SELECT workspace_id FROM workspaces WHERE canonical_path = ?",
+                (canonical,),
+            ).fetchone()
+        if row is None:
+            return None
+        return WorkspaceContext(UUID(row["workspace_id"]), root)
 
     def resolve_session(self, workspace: WorkspaceContext, session_name: str) -> tuple[SessionContext, bool]:
         """Resolve one Workspace-local Session and create its main branch."""

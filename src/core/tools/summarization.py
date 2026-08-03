@@ -15,6 +15,8 @@ from src.config.settings import (
 )
 from src.core.llm.contracts import LlmPurpose, ModelProvider
 from src.core.tools.workspace import read_workspace_lines
+from src.core.resource_activity import ObservationMode, ResourceObservation, ResourceOperation, record_resource_activity
+from src.core.resource_activity.observation import file_snapshot, workspace_uri
 
 
 def create_summarize_large_file(root: Path, model_provider: ModelProvider):
@@ -33,7 +35,7 @@ def create_summarize_large_file(root: Path, model_provider: ModelProvider):
     def summarize_large_file(path: str, question: str) -> str:
         """Summarize or search a large file in the current workspace."""
         try:
-            _target, lines = read_workspace_lines(root, path)
+            target, lines, data = read_workspace_lines(root, path)
         except (OSError, ValueError) as exc:
             return f"Large-file summary rejected: {exc}"
 
@@ -70,6 +72,15 @@ def create_summarize_large_file(root: Path, model_provider: ModelProvider):
                 HumanMessage(content=f"Question: {question}\nFile: {path}\n\n{notes_text}"),
             ]
         )
-        return message_content_text(response)[:LARGE_FILE_SUMMARY_LIMIT]
+        result = message_content_text(response)[:LARGE_FILE_SUMMARY_LIMIT]
+        snapshot = file_snapshot(target, data=data)
+        record_resource_activity(ResourceObservation(
+            workspace_uri(root, target), ResourceOperation.SUMMARIZE, ObservationMode.SUMMARY,
+            observed_range={"start_line": 1, "end_line": min(len(lines), LARGE_FILE_CHUNK_LINES * LARGE_FILE_MAX_CHUNKS)},
+            returned_bytes=len(result.encode("utf-8")), resource_bytes=snapshot["bytes"],
+            after_digest=snapshot["digest"], after_lines=snapshot["lines"],
+            metadata={"question_chars": len(question)},
+        ))
+        return result
 
     return summarize_large_file

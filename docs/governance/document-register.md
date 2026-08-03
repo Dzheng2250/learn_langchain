@@ -33,6 +33,7 @@
 | Agent 执行架构 | `/docs/architecture/agent-execution-architecture.md` |
 | Agent Runtime 扩展 | `/docs/development/agent-runtime-extension.md` |
 | 新增工具指南（端到端教程） | `/docs/development/tool-extension-guide.md` |
+| 内置 Tool 使用与维护 | `/docs/development/built-in-tools-maintenance.md` |
 | LLM Provider 边界 | `/docs/architecture/llm-provider-boundary.md` |
 | Anthropic 前缀缓存控制 | `/docs/architecture/prompt-cache-strategy.md` |
 | Agent 函数级调用链 | `/docs/architecture/agent-execution-call-chain.md` |
@@ -41,6 +42,7 @@
 | 本地状态 Schema 事实参考 | `/docs/reference/local-state-schema.md` |
 | 私有任务规划 | `/docs/architecture/private-task-planning.md` |
 | API 文档入口与通信边界 | `/docs/api/README.md` |
+| 前端开发端到端接入 | `/docs/api/frontend-integration-guide.md` |
 | 外部 RPC | `/docs/api/rpc-reference.md` |
 | 流式事件 | `/docs/api/streaming-events.md` |
 | 配置参数 | `/docs/reference/configuration-reference.md` |
@@ -95,6 +97,7 @@
 - `streaming-events.md`：服务端流式通知。
 - `error-reference.md`：错误类别与恢复策略。
 - `tui-reference.md`：内置 TUI 的命令、快捷键和用户可见能力。
+- `frontend-integration-guide.md`：新前端的端到端连接、事件、审批、恢复和安全流程。
 - `tui-client-guide.md`：第三方前端接入职责。
 - `protocol-compatibility.md`：兼容与不兼容变更规则。
 

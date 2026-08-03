@@ -83,3 +83,9 @@ Hook 可以影响流程；Telemetry 只能观察。Hook 不能覆盖 Workspace �
 - 外部命令有独立超时；非零退出、超时和非法 JSON 按 failure mode 处理。
 - Hook Telemetry 只记录 ID、相位、动作、耗时和错误类型，不记录完整 Prompt、工具参数或结果。
 - `PermissionRequest` Hook 只能自动 `allow_once`，不能创建 Session/Workspace 永久授权。
+
+## 资源活动证据
+
+Tool Hook 不负责生成资源访问事实。结构化 Tool 与执行器 Adapter 通过 `ResourceActivityRecorder`
+记录读取、摘要、写入和 staged change；`PreToolUse` 可读取 `resource_evidence`，`PostToolUse`
+可读取本次调用的 `resource_activity_ids`。Hook 可以告警或收紧策略，但不能修改或删除权威账本。
