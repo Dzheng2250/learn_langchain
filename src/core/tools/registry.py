@@ -11,7 +11,12 @@ from src.core.tools.catalog import (
     ApprovalRequirement, SandboxMode, ToolAudience, ToolCapability,
     ToolRegistry, ToolRisk, ToolSpec,
 )
-from src.core.tools.security import ApprovalService, DefaultToolPolicyEngine, ToolExecutionPipeline
+from src.core.tools.security import (
+    ApprovalCoordinator,
+    ApprovalService,
+    DefaultToolPolicyEngine,
+    ToolExecutionPipeline,
+)
 from src.core.tools.security.enforcement import CapabilityEnforcer
 from src.core.tools.command_changes import create_staged_command_tools
 from src.core.tools.commands import create_run_command_in_container
@@ -41,7 +46,8 @@ def create_workspace_toolset(
     task_service: TaskPlanningService | None = None,
     approval_repository=None,
     host_execution_enabled: bool = False,
-    approval_enabled: bool = True,
+    approval_mode_resolver=None,
+    approval_strategy_registry=None,
     default_timeout_seconds: float = 60.0,
     network_policy: str = "deny",
     file_write_enabled: bool = True,
@@ -169,14 +175,25 @@ def create_workspace_toolset(
     registry.freeze()
     pipeline = None
     if approval_repository is not None:
+        approvals = ApprovalService(approval_repository)
+        coordinator = (
+            ApprovalCoordinator(
+                approvals,
+                approval_mode_resolver,
+                approval_strategy_registry,
+            )
+            if approval_mode_resolver is not None
+            and approval_strategy_registry is not None
+            else None
+        )
         pipeline = ToolExecutionPipeline(
             {spec.name: spec for spec in registry.specs()},
             policy=DefaultToolPolicyEngine(
                 approval_repository,
-                approval_enabled=approval_enabled,
                 host_execution_enabled=host_execution_enabled,
             ),
-            approvals=ApprovalService(approval_repository),
+            approvals=approvals,
+            approval_coordinator=coordinator,
             hook_dispatcher=hook_dispatcher,
             enforcer=CapabilityEnforcer(network_policy=network_policy),
             resource_activity_recorder=resource_activity_recorder,

@@ -271,12 +271,12 @@ learn-agent-core migrate-local-state \
 
 ```shell
 learn-agent-core rollback-local-state \
-  --from-version 11 \
-  --to-version 10 \
+  --from-version 12 \
+  --to-version 11 \
   [--apply]
 ```
 
-默认先验证当前版本和转换是否受支持，再输出 dry-run。`--apply` 会先获取 `state.db.operation.lock` 跨进程排他锁，并使用原子排他创建在 `state.db` 同目录生成带微秒时间戳和随机后缀的完整备份；备份复制与 SQLite `quick_check` 各自受 30 秒截止约束，随后才在单个事务中删除 v11 的资源活动派生表及迁移标记。备份失败会清理不完整文件且不会执行降级。当前只支持 `v11 -> v10`；daemon 运行或其他本地状态维护命令持锁时拒绝执行。
+默认先验证当前版本和转换是否受支持，再输出 dry-run。`--apply` 会先获取 `state.db.operation.lock` 跨进程排他锁，并使用原子排他创建在 `state.db` 同目录生成带微秒时间戳和随机后缀的完整备份；备份复制与 SQLite `quick_check` 各自受 30 秒截止约束，随后才在单个事务中执行降级。备份失败会清理不完整文件且不会执行降级。当前支持 `v12 -> v11`（移除审批模式元数据）和 `v11 -> v10`（删除资源活动派生表）；daemon 运行或其他本地状态维护命令持锁时拒绝执行。
 ### `gc-artifacts`
 
 ```shell

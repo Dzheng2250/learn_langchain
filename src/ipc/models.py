@@ -57,6 +57,11 @@ class ApprovalResolveParams(SessionParams):
     ]
 
 
+class ApprovalModeSetParams(SessionParams):
+    mode: str = Field(min_length=1, max_length=100)
+    acknowledge_risk: bool = False
+
+
 class ResourceActivityScopeParams(AuthenticatedParams):
     """Select resource activity by Execution or historical Session Turn."""
     execution_id: str = Field(default="", max_length=200)

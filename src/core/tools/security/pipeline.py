@@ -25,10 +25,11 @@ from src.core.tools.security.models import PolicyAction, ToolCallContext
 class ToolExecutionPipeline:
     """Authorize and execute every LangGraph tool request consistently."""
 
-    def __init__(self, specs, *, policy, approvals, hook_dispatcher=None, enforcer=None, event_source="agent_tool_node", resource_activity_recorder=None):
+    def __init__(self, specs, *, policy, approvals, approval_coordinator=None, hook_dispatcher=None, enforcer=None, event_source="agent_tool_node", resource_activity_recorder=None):
         self.specs = dict(specs)
         self.policy = policy
         self.approvals = approvals
+        self.approval_coordinator = approval_coordinator
         self.hook_dispatcher = hook_dispatcher or NOOP_HOOK_DISPATCHER
         self.enforcer = enforcer or CapabilityEnforcer()
         self.event_source = event_source
@@ -98,18 +99,46 @@ class ToolExecutionPipeline:
                 )
             )
             if hook_decision.action == HookAction.ALLOW_ONCE:
-                allowed = self.approvals.allow_once_from_hook(context, decision)
-            elif hook_decision.action in {HookAction.DENY, HookAction.REJECT}:
-                allowed = False
-            else:
-                pending = self.approvals.request(context, decision)
-                if pending.get("status") == "resolved":
-                    allowed = str(pending.get("response", "")).startswith("allow_")
+                try:
+                    self.enforcer.validate(context)
+                except (OSError, ValueError, PermissionError) as exc:
+                    return self._denied(context, str(exc))
+                if self.approval_coordinator is None:
+                    allowed = self.approvals.allow_once_from_hook(context, decision)
                 else:
-                    response = interrupt({"type": "tool_approval_required", "request": pending})
-                    allowed = self.approvals.resolve_interrupt(
-                        context, decision, pending["request_id"], response
+                    allowed = self.approval_coordinator.allow_once_from_hook(
+                        context, decision
                     )
+            elif hook_decision.action in {HookAction.DENY, HookAction.REJECT}:
+                return self._denied(
+                    context,
+                    hook_decision.reason or "PermissionRequest hook denied the call.",
+                )
+            else:
+                try:
+                    self.enforcer.validate(context)
+                except (OSError, ValueError, PermissionError) as exc:
+                    return self._denied(context, str(exc))
+                if self.approval_coordinator is None:
+                    pending = self.approvals.request(context, decision)
+                    if pending.get("status") == "resolved":
+                        allowed = str(pending.get("response", "")).startswith("allow_")
+                    else:
+                        response = interrupt({"type": "tool_approval_required", "request": pending})
+                        allowed = self.approvals.resolve_interrupt(
+                            context, decision, pending["request_id"], response
+                        )
+                else:
+                    flow = self.approval_coordinator.begin(context, decision)
+                    if flow.allowed is None:
+                        response = interrupt(
+                            {"type": "tool_approval_required", "request": flow.request}
+                        )
+                        allowed = self.approval_coordinator.resolve_manual(
+                            context, decision, flow.request, response
+                        )
+                    else:
+                        allowed = flow.allowed
             if not allowed:
                 return self._denied(context, "User denied the tool call.")
             refreshed = self.policy.evaluate(
@@ -117,10 +146,15 @@ class ToolExecutionPipeline:
             )
             if refreshed.action == PolicyAction.DENY:
                 return self._denied(context, refreshed.reason)
-        try:
-            self.enforcer.validate(context)
-        except (OSError, ValueError, PermissionError) as exc:
-            return self._denied(context, str(exc))
+            try:
+                self.enforcer.validate(context)
+            except (OSError, ValueError, PermissionError) as exc:
+                return self._denied(context, str(exc))
+        else:
+            try:
+                self.enforcer.validate(context)
+            except (OSError, ValueError, PermissionError) as exc:
+                return self._denied(context, str(exc))
         return self._execute(context, request, execute)
 
     def _contain_failure(self, request, context, exc: Exception) -> ToolMessage:

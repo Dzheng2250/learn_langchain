@@ -43,6 +43,8 @@
 | `session.reset` | 从归档消息重建 recent_messages | 是 | 是 |
 | `approval.list` | 查询当前 Session 待审批工具调用 | 是 | 是 |
 | `approval.resolve` | 审批并恢复原工具调用 | 否 | 否 |
+| `approval.mode.get` | 查询全局、Session override 与有效审批模式 | 是 | 是 |
+| `approval.mode.set` | 设置 Session 审批模式或恢复继承 | 基本幂等 | 谨慎 |
 | `resource_activity.summary` | 查询 Execution 或历史 Turn 的资源活动聚合 | 是 | 是 |
 | `resource_activity.list` | 游标分页查询资源活动明细 | 是 | 是 |
 “不可自动重试”表示连接中断时请求可能已经在 Core 内执行。直接重发可能造成重复模型调用、工具调用或消息写入。
@@ -153,6 +155,13 @@ Core 先写回最终响应，再开始优雅关闭。客户端不应假设收到
     "running": 0,
     "failed": 0,
     "recent_failures": []
+  },
+  "tool_approval": {
+    "default_mode": "manual",
+    "override_mode": null,
+    "effective_mode": "manual",
+    "supported_modes": ["manual", "accept_all"],
+    "pending_count": 0
   }
 }
 ```
@@ -161,6 +170,8 @@ Core 先写回最终响应，再开始优雅关闭。客户端不应假设收到
 长期记忆提取和 checkpoint 清理。它们可能调用 LLM，但不属于当前前台对话请求；如果这里出现
 `job_type=context_summary` 或 `job_type=memory_extract`，前端应提示这是后台派生任务失败，而不是
 本轮用户输入导致当前对话失败。
+
+`tool_approval` 与 `approval.mode.get` 使用同一结构，供前端在启动、Session 切换或 daemon 重连后恢复状态栏和审批入口；它不替代 `approval.list` 的请求明细。
 
 如果 Session 已被归档，`session.status` 返回 `status=archived`，不会自动创建同名新 Session。
 
@@ -260,6 +271,33 @@ checkpoint 删除通过后台维护任务完成，因此返回成功不表示 ch
 ```
 
 `response` 可为 `allow_once`、`allow_session`、`allow_workspace`、`deny_once`、`deny_session` 或 `deny_workspace`。该方法通过 LangGraph checkpoint 恢复原工具调用，不会重新开始整个 Turn。复合 shell 命令只允许单次审批。
+
+## `approval.mode.get`
+
+使用与 `session.status` 相同的 Workspace 和 Session 参数，返回：
+
+```json
+{
+  "schema_version": 1,
+  "default_mode": "manual",
+  "override_mode": null,
+  "effective_mode": "manual",
+  "supported_modes": ["manual", "accept_all"],
+  "pending_count": 0
+}
+```
+
+`override_mode=null` 表示继承 daemon 全局默认。`supported_modes` 来自服务端策略注册表，前端不能写死只有两个模式。未知持久值会安全回退为 `manual`。
+
+## `approval.mode.set`
+
+额外接收 `mode`，其值为服务端支持的模式名或 `inherit`。切换到 `accept_all` 时还必须传 `acknowledge_risk=true`：
+
+```json
+{"mode":"accept_all","acknowledge_risk":true}
+```
+
+响应与 `approval.mode.get` 相同，并增加 `existing_pending_unchanged`。模式切换只影响之后创建的请求；现有 pending 不会被自动执行。`accept_all` 只把策略产生的 `ASK` 记为自动 `allow_once`，不能覆盖 `DENY`、Hook 拒绝或路径、沙箱、网络等硬边界。
 
 ## 结果兼容规则
 

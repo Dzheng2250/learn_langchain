@@ -12,7 +12,7 @@ from src.config.settings import (
     MEMORY_MIN_IMPORTANCE,
     POSTGRES_PROJECTION_ENABLED,
     HOST_EXECUTION_ENABLED,
-    TOOL_APPROVAL_ENABLED,
+    TOOL_APPROVAL_MODE,
     TOOL_DEFAULT_TIMEOUT_SECONDS,
     TOOL_NETWORK_POLICY,
     FILE_WRITE_ENABLED,
@@ -94,6 +94,7 @@ from src.core.state import (
 )
 from src.core.tasks import TaskPlanningService, TaskRepository
 from src.core.tools.approval_service import ToolApprovalService
+from src.core.tools.security import ApprovalModeResolver, ApprovalStrategyRegistry
 from src.core.workspace.runtime import WorkspaceRuntimeFactory, WorkspaceRuntimeRegistry
 from src.core.tracing import TracingModelProvider
 
@@ -181,6 +182,13 @@ class CoreContainer(containers.DeclarativeContainer):
         SQLiteToolApprovalRepository,
         database=state_database,
     )
+    approval_strategy_registry = providers.Singleton(ApprovalStrategyRegistry)
+    approval_mode_resolver = providers.Singleton(
+        ApprovalModeResolver,
+        store=tool_approval_repository,
+        registry=approval_strategy_registry,
+        default_mode=providers.Object(TOOL_APPROVAL_MODE),
+    )
     context_manager = providers.Factory(
         AgentContextManager,
         model_provider=model_provider,
@@ -229,6 +237,8 @@ class CoreContainer(containers.DeclarativeContainer):
         ToolApprovalService,
         repository=tool_approval_repository,
         session_store=session_lifecycle_store,
+        strategy_registry=approval_strategy_registry,
+        default_mode=providers.Object(TOOL_APPROVAL_MODE),
     )
 
     context_summary_handler = providers.Factory(
@@ -340,8 +350,9 @@ class CoreContainer(containers.DeclarativeContainer):
         checkpointer_provider=checkpoint_manager.provided.initialize,
         task_service=task_service,
         approval_repository=tool_approval_repository,
+        approval_mode_resolver=approval_mode_resolver,
+        approval_strategy_registry=approval_strategy_registry,
         host_execution_enabled=providers.Object(HOST_EXECUTION_ENABLED),
-        approval_enabled=providers.Object(TOOL_APPROVAL_ENABLED),
         default_timeout_seconds=providers.Object(TOOL_DEFAULT_TIMEOUT_SECONDS),
         network_policy=providers.Object(TOOL_NETWORK_POLICY),
         file_write_enabled=providers.Object(FILE_WRITE_ENABLED),
@@ -401,6 +412,7 @@ class CoreContainer(containers.DeclarativeContainer):
         session_store=session_context_store,
         execution_repository=execution_repository,
         maintenance_repository=maintenance_repository,
+        approval_mode_service=tool_approval_service,
     )
     session_checkpoint_cleanup = providers.Factory(
         SessionCheckpointCleanupQueue,

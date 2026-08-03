@@ -324,6 +324,14 @@ Textual `TextArea` 子类，多行输入：
 TUI 的用户命令、快捷键、当前能力和限制统一维护在
 [TUI 使用与命令参考](/docs/api/tui-reference.md)。
 
+## 工具审批 UI
+
+TUI 使用 Textual 原生 `ModalScreen`、`OptionList` 和 `RadioSet`，不在 ChatLog 中自行实现焦点、键盘导航或选择状态。`tool_approval_required` 到达时只进入本地 pending 队列；必须等同一 RPC 的终态确认 `status=paused`、`stop_reason=tool_approval` 后，才打开单请求弹窗。这样 UI 不会在 LangGraph checkpoint 尚未持久化时调用 `approval.resolve`。
+
+审批弹窗返回稳定的响应字符串，`ChatScreen` 再调用通用 RPC；弹窗本身不判断 Policy，也不能放宽权限。`persistable=false` 时不会创建 Session/Workspace 选项。审批中心通过 `approval.mode.get/set` 管理 Session override，启用 `accept_all` 使用独立确认弹窗。Session 切换和 daemon 重连后都从 Core 重新读取有效模式，状态栏只显示服务端事实。
+
+已有 pending 与模式是两类状态：切换模式不消费本地队列，也不批量恢复 Execution。任何新前端都应复用相同 RPC，而不是读取 SQLite 或复制 TUI 状态机。
+
 流式 token 换行、认证参数遗漏和 Schema 迁移防御等历史修复记录已迁移到
 [TUI 实现问题与修复记录](/docs/history/tui-implementation-fixes.md)。
 

@@ -8,6 +8,7 @@ from rich.markup import render as render_markup
 from rich.text import Text
 
 from src.tui.screens.chat import ChatScreen
+from src.tui.screens.approval import approval_options
 from src.tui.renderer import render_event, render_task_progress
 from src.tui.widgets.chat_log import ChatLog, _LogEntry, _ReasoningState
 
@@ -37,6 +38,21 @@ async def _completed_coroutine():
     return None
 
 class TuiChatLogTest(unittest.TestCase):
+    def test_non_persistable_approval_hides_scoped_responses(self):
+        self.assertEqual(
+            ("allow_once", "deny_once"),
+            tuple(response for response, _label in approval_options(False)),
+        )
+
+    def test_persistable_approval_exposes_all_scoped_responses(self):
+        self.assertEqual(
+            {
+                "allow_once", "deny_once", "allow_session", "allow_workspace",
+                "deny_session", "deny_workspace",
+            },
+            {response for response, _label in approval_options(True)},
+        )
+
     def test_resource_activity_summary_uses_shared_core_shape(self):
         rendered = render_event({"event": "resource_activity_summary", "data": {"summary": {
             "reads": {"resource_count": 3, "returned_bytes": 64},

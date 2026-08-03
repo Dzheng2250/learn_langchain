@@ -13,9 +13,8 @@ class ToolGuardian(Protocol):
 
 
 class DefaultToolPolicyEngine:
-    def __init__(self, rules, *, approval_enabled=True, host_execution_enabled=False, guardian=None) -> None:
+    def __init__(self, rules, *, host_execution_enabled=False, guardian=None) -> None:
         self.rules = rules
-        self.approval_enabled = approval_enabled
         self.host_execution_enabled = host_execution_enabled
         self.guardian = guardian
 
@@ -37,10 +36,7 @@ class DefaultToolPolicyEngine:
             return self._make(PolicyAction.ALLOW, context, "Stored rule allowed this call.")
         action = (
             PolicyAction.ALLOW
-            if not fresh_approval and (
-                spec.approval == ApprovalRequirement.NONE
-                or (spec.approval == ApprovalRequirement.POLICY and not self.approval_enabled)
-            )
+            if not fresh_approval and spec.approval == ApprovalRequirement.NONE
             else PolicyAction.ASK
         )
         decision = self._make(

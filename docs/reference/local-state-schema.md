@@ -143,6 +143,8 @@ active context window 的 summary_text
 | `tool_permission_rules` | 保存 Session 或 Workspace 范围的 allow/deny 规则 |
 | `tool_approval_audit` | 保存不可变的审批响应审计记录 |
 
+Schema v12 增加审批模式元数据：`sessions.tool_approval_mode` 保存可为空的 Session override；`tool_approval_requests.approval_mode` 固化请求创建时模式；`tool_approval_audit.decision_source` 与 `approval_mode` 区分用户、自动、Hook 和旧记录。模式名不使用 SQL `CHECK`，因此新增注册策略不需要数据库迁移；应用层负责验证，未知值按 `manual` 安全处理。
+
 `executions.status` 表示业务执行状态，例如：
 
 - `running`：正在执行。
@@ -267,6 +269,16 @@ DROP TABLE tool_permission_rules;
 DROP TABLE tool_approval_requests;
 DELETE FROM local_schema_migrations WHERE version IN (8, 9, 10);
 ```
+
+### Schema v12 离线回滚到 v11
+
+v12 只增加审批模式与决策来源列，不删除请求、规则或审计事实。停止 daemon 并完成备份后，可使用受控命令：
+
+```shell
+learn-agent-core rollback-local-state --from-version 12 --to-version 11 --apply
+```
+
+该转换删除 `sessions.tool_approval_mode`、`tool_approval_requests.approval_mode`、`tool_approval_audit.decision_source` 和 `tool_approval_audit.approval_mode`，并移除 v12 迁移记录。回滚会丢失 Session 模式 override 和审计来源标签；请求响应、持久权限规则及 v11 资源活动账本继续保留。恢复 v11 Core 后，所有审批按旧版人工语义处理。
 
 ## `resource_activities`
 

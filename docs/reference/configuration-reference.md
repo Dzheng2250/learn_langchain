@@ -94,7 +94,8 @@ telemetry/      默认 JSONL 观测事件
 | `LEARN_AGENT_MAX_AUTO_SLICES_PER_GRANT` | `3` | 一次 chat/resume 最多自动继续的 Slice 数。 |
 | `LEARN_AGENT_MAX_GRANT_WALL_SECONDS` | `600` | 单个 Grant 的协作式总时长上限，单位为秒。 |
 | `LEARN_AGENT_MAX_PARALLEL_TOOL_CALLS` | `4` | 同一 Grant 中允许并行执行的工具数。 |
-| `LEARN_AGENT_TOOL_APPROVAL_ENABLED` | `true` | 是否启用工具策略审批；需要审批时暂停当前 Execution。 |
+| `LEARN_AGENT_TOOL_APPROVAL_MODE` | `manual` | 全局工具审批模式。`manual` 在策略返回 `ASK` 时暂停并等待人工决定；`accept_all` 自动记录一次性允许，但不能绕过拒绝规则、Hook 拒绝和能力硬边界。 |
+| `LEARN_AGENT_TOOL_APPROVAL_ENABLED` | 未设置 | 已废弃的兼容变量。仅当新变量未设置时生效：`true` 映射为 `manual`，`false` 映射为 `accept_all`。 |
 | `LEARN_AGENT_HOST_EXECUTION_ENABLED` | `false` | 是否允许注册主机完全访问工具；此类工具仍必须逐次审批。 |
 | `LEARN_AGENT_TOOL_DEFAULT_TIMEOUT_SECONDS` | `60` | 未声明专用超时的工具默认执行上限。 |
 | `LEARN_AGENT_NETWORK_POLICY` | `deny` | 工具网络默认策略，与文件和命令权限分别判断。 |

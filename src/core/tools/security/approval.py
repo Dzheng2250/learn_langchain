@@ -9,8 +9,25 @@ from src.core.tools.security.models import ApprovalResponse
 
 
 class ApprovalRepository(Protocol):
-    def create_request(self, context, decision, args_summary: dict) -> dict: ...
-    def apply_response(self, request_id, response, *, context, rule_key, persistable) -> None: ...
+    def create_request(
+        self,
+        context,
+        decision,
+        args_summary: dict,
+        *,
+        approval_mode: str,
+    ) -> dict: ...
+    def apply_response(
+        self,
+        request_id,
+        response,
+        *,
+        context,
+        rule_key,
+        persistable,
+        decision_source: str,
+        approval_mode: str,
+    ) -> None: ...
     def matching_rule(self, context, rule_key: str) -> str | None: ...
     def list_pending(self, *, workspace_id=None, session_id=None) -> list[dict]: ...
     def get_pending(self, request_id: str) -> dict | None: ...
@@ -20,9 +37,12 @@ class ApprovalService:
     def __init__(self, repository: ApprovalRepository) -> None:
         self.repository = repository
 
-    def request(self, context, decision) -> dict:
+    def request(self, context, decision, *, approval_mode: str = "manual") -> dict:
         request = self.repository.create_request(
-            context, decision, _safe_args_summary(context.args)
+            context,
+            decision,
+            _safe_args_summary(context.args),
+            approval_mode=approval_mode,
         )
         emit_event(
             "tool_approval_requested", "tool_policy", "Tool approval required.",
@@ -30,7 +50,15 @@ class ApprovalService:
         )
         return request
 
-    def resolve_interrupt(self, context, decision, request_id, raw_response) -> bool:
+    def resolve_interrupt(
+        self,
+        context,
+        decision,
+        request_id,
+        raw_response,
+        *,
+        approval_mode: str = "manual",
+    ) -> bool:
         payload = raw_response if isinstance(raw_response, dict) else {}
         if payload.get("request_id") != request_id:
             raise PermissionError("Approval response does not match the pending request.")
@@ -43,6 +71,8 @@ class ApprovalService:
             context=context,
             rule_key=decision.rule_key,
             persistable=decision.persistable,
+            decision_source="user",
+            approval_mode=approval_mode,
         )
         emit_event(
             "tool_approval_resolved", "tool_policy", "Tool approval resolved.",
@@ -50,9 +80,46 @@ class ApprovalService:
         )
         return response.allowed
 
-    def allow_once_from_hook(self, context, decision) -> bool:
+    def resolve_automatic(
+        self,
+        context,
+        decision,
+        request_id,
+        response,
+        *,
+        approval_mode: str,
+    ) -> bool:
+        self.repository.apply_response(
+            request_id,
+            response,
+            context=context,
+            rule_key=decision.rule_key,
+            persistable=decision.persistable,
+            decision_source="automatic",
+            approval_mode=approval_mode,
+        )
+        emit_event(
+            "tool_approval_auto_resolved",
+            "tool_policy",
+            "Tool approval resolved automatically.",
+            {
+                "tool": context.tool_name,
+                "request_id": request_id,
+                "response": response.value,
+                "approval_mode": approval_mode,
+            },
+        )
+        return response.allowed
+
+    def allow_once_from_hook(
+        self,
+        context,
+        decision,
+        *,
+        approval_mode: str = "manual",
+    ) -> bool:
         """Persist a hook-granted single-use approval for resume idempotency."""
-        request = self.request(context, decision)
+        request = self.request(context, decision, approval_mode=approval_mode)
         if request.get("status") == "resolved":
             return str(request.get("response") or "").startswith("allow_")
         self.repository.apply_response(
@@ -61,6 +128,8 @@ class ApprovalService:
             context=context,
             rule_key=decision.rule_key,
             persistable=decision.persistable,
+            decision_source="hook",
+            approval_mode=approval_mode,
         )
         emit_event(
             "tool_approval_resolved", "tool_policy", "Tool approval resolved by hook.",

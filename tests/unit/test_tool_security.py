@@ -25,7 +25,11 @@ from src.core.tools.security.approval import ApprovalService
 from src.core.tools.security.command_rules import command_rule_key
 from src.core.tools.security.enforcement import CapabilityEnforcer
 from src.core.tools.security.models import (
-    ApprovalResponse, PolicyAction, PolicyDecision, ToolCallContext,
+    ApprovalResponse, ApprovalStrategyAction, ApprovalStrategyDecision,
+    PolicyAction, PolicyDecision, ToolCallContext,
+)
+from src.core.tools.security.modes import (
+    ApprovalCoordinator, ApprovalModeResolver, ApprovalStrategyRegistry,
 )
 from src.core.tools.security.policy import DefaultToolPolicyEngine
 from src.core.tools.security.pipeline import ToolExecutionPipeline
@@ -806,6 +810,185 @@ class ToolSecurityTest(unittest.TestCase):
         self.assertEqual(0, count)
         self.assertEqual(1, requests)
         self.assertEqual(1, audits)
+
+    def test_approval_strategy_registry_accepts_extension_and_rejects_duplicates(self):
+        class DenyAll:
+            name = "deny_all"
+
+            def decide(self, _context, _decision):
+                return ApprovalStrategyDecision(
+                    ApprovalStrategyAction.AUTO_DENY,
+                    ApprovalResponse.DENY_ONCE,
+                )
+
+        registry = ApprovalStrategyRegistry()
+        registry.register(DenyAll())
+
+        self.assertEqual("deny_all", registry.get("deny_all").name)
+        with self.assertRaisesRegex(ValueError, "Duplicate"):
+            registry.register(DenyAll())
+
+    def test_accept_all_resolves_ask_once_without_persistent_rule(self):
+        calls = []
+
+        @tool
+        def command(command: str) -> str:
+            """Record an automatically accepted command."""
+            calls.append(command)
+            return "ok"
+
+        registry = ApprovalStrategyRegistry()
+        resolver = ApprovalModeResolver(
+            self.repository,
+            registry,
+            default_mode="accept_all",
+        )
+        approvals = ApprovalService(self.repository)
+        coordinator = ApprovalCoordinator(approvals, resolver, registry)
+        spec = _spec(tool=command)
+        pipeline = ToolExecutionPipeline(
+            {"command": spec},
+            policy=DefaultToolPolicyEngine(self.repository),
+            approvals=approvals,
+            approval_coordinator=coordinator,
+        )
+        builder = StateGraph(MessagesState, context_schema=ToolExecutionContext)
+        builder.add_node("tools", ObservedToolNode([command], pipeline=pipeline))
+        builder.add_edge(START, "tools")
+        builder.add_edge("tools", END)
+        graph = builder.compile(checkpointer=MemorySaver())
+
+        events = list(stream_graph_events(
+            graph,
+            [AIMessage(content="", tool_calls=[{
+                "name": "command", "args": {"command": "python -V"},
+                "id": "accept-all-call", "type": "tool_call",
+            }])],
+            checkpoint_thread_id="accept-all-thread",
+            tool_context=ToolExecutionContext(
+                self.context.workspace_id, self.context.session_id,
+                self.context.execution_id, self.context.run_id,
+                "parent", self.context.workspace_root,
+            ),
+        ))
+
+        self.assertEqual(["python -V"], calls)
+        self.assertNotIn("tool_approval_required", {item["event"] for item in events})
+        with self.database.connect() as conn:
+            request = conn.execute(
+                "SELECT status, response, approval_mode FROM tool_approval_requests "
+                "WHERE tool_call_id='accept-all-call'"
+            ).fetchone()
+            audit = conn.execute(
+                "SELECT decision_source, approval_mode FROM tool_approval_audit "
+                "WHERE tool_call_id='accept-all-call'"
+            ).fetchone()
+            rules = conn.execute(
+                "SELECT COUNT(*) FROM tool_permission_rules"
+            ).fetchone()[0]
+        self.assertEqual(("resolved", "allow_once", "accept_all"), tuple(request))
+        self.assertEqual(("automatic", "accept_all"), tuple(audit))
+        self.assertEqual(0, rules)
+
+    def test_accept_all_cannot_bypass_capability_enforcer(self):
+        calls = []
+
+        @tool
+        def command(command: str) -> str:
+            """Record a command that a hard boundary must prevent."""
+            calls.append(command)
+            return "ok"
+
+        class RejectingEnforcer:
+            def validate(self, _context):
+                raise PermissionError("hard boundary")
+
+        registry = ApprovalStrategyRegistry()
+        resolver = ApprovalModeResolver(
+            self.repository,
+            registry,
+            default_mode="accept_all",
+        )
+        approvals = ApprovalService(self.repository)
+        pipeline = ToolExecutionPipeline(
+            {"command": _spec(tool=command)},
+            policy=DefaultToolPolicyEngine(self.repository),
+            approvals=approvals,
+            approval_coordinator=ApprovalCoordinator(
+                approvals, resolver, registry
+            ),
+            enforcer=RejectingEnforcer(),
+        )
+        builder = StateGraph(MessagesState, context_schema=ToolExecutionContext)
+        builder.add_node("tools", ObservedToolNode([command], pipeline=pipeline))
+        builder.add_edge(START, "tools")
+        builder.add_edge("tools", END)
+        graph = builder.compile(checkpointer=MemorySaver())
+
+        events = list(stream_graph_events(
+            graph,
+            [AIMessage(content="", tool_calls=[{
+                "name": "command", "args": {"command": "python -V"},
+                "id": "accept-all-hard-deny", "type": "tool_call",
+            }])],
+            checkpoint_thread_id="accept-all-hard-deny-thread",
+            tool_context=ToolExecutionContext(
+                self.context.workspace_id, self.context.session_id,
+                self.context.execution_id, self.context.run_id,
+                "parent", self.context.workspace_root,
+            ),
+        ))
+
+        self.assertEqual([], calls)
+        self.assertNotIn("tool_approval_required", {item["event"] for item in events})
+        with self.database.connect() as conn:
+            count = conn.execute(
+                "SELECT COUNT(*) FROM tool_approval_requests "
+                "WHERE tool_call_id='accept-all-hard-deny'"
+            ).fetchone()[0]
+        self.assertEqual(0, count)
+
+    def test_mode_switch_does_not_resolve_existing_manual_request(self):
+        registry = ApprovalStrategyRegistry()
+        resolver = ApprovalModeResolver(
+            self.repository,
+            registry,
+            default_mode="manual",
+        )
+        coordinator = ApprovalCoordinator(
+            ApprovalService(self.repository), resolver, registry
+        )
+        decision = DefaultToolPolicyEngine(self.repository).evaluate(
+            self.context, rule_key="tool:command", persistable=True
+        )
+
+        first = coordinator.begin(self.context, decision)
+        self.repository.set_session_mode(
+            self.context.workspace_id,
+            self.context.session_id,
+            "accept_all",
+        )
+        second = coordinator.begin(self.context, decision)
+
+        self.assertIsNone(first.allowed)
+        self.assertIsNone(second.allowed)
+        self.assertEqual(first.request["request_id"], second.request["request_id"])
+        self.assertEqual("manual", second.request["approval_mode"])
+
+    def test_unknown_persisted_mode_falls_back_to_manual(self):
+        registry = ApprovalStrategyRegistry()
+        self.repository.set_session_mode(
+            self.context.workspace_id,
+            self.context.session_id,
+            "future_mode",
+        )
+        resolver = ApprovalModeResolver(
+            self.repository,
+            registry,
+            default_mode="accept_all",
+        )
+
+        self.assertEqual("manual", resolver.resolve(self.context))
 
 
 if __name__ == "__main__":

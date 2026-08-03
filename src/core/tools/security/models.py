@@ -30,6 +30,24 @@ class ApprovalResponse(StrEnum):
         return self.value.rsplit("_", 1)[1]
 
 
+class ToolApprovalMode(StrEnum):
+    MANUAL = "manual"
+    ACCEPT_ALL = "accept_all"
+
+
+class ApprovalStrategyAction(StrEnum):
+    WAIT = "wait"
+    AUTO_ALLOW = "auto_allow"
+    AUTO_DENY = "auto_deny"
+
+
+@dataclass(frozen=True)
+class ApprovalStrategyDecision:
+    action: ApprovalStrategyAction
+    response: ApprovalResponse | None = None
+    reason: str = ""
+
+
 class ToolExecutionStatus(StrEnum):
     SUCCESS = "success"
     DENIED = "denied"

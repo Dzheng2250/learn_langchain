@@ -27,11 +27,16 @@
 | `/resume` | 恢复暂停的 execution | `/resume` |
 | `/resume <指令>` | 带额外指令恢复 | `/resume 先只改测试` |
 | `/discard` | 丢弃暂停的 execution | `/discard` |
+| `/approvals` | 列出当前 Session 的待审批请求 | `/approvals` |
+| `/approve [id] <response>` | 处理待审批请求并恢复原 Execution | `/approve allow_once` |
+| `/approval-mode` | 查看当前审批模式 | `/approval-mode` |
+| `/approval-mode <mode>` | 设置 Session override 或恢复继承 | `/approval-mode accept_all --ack` |
 | `/session <name>` | 切换 session | `/session feature-x` |
 | `/session` | 查看当前 session | `/session` |
 | `/clear` | 清空日志 | `/clear` |
-| `Ctrl+O` | 展开或收起工具调用明细；任务进度块始终可见 | — |
 | `Ctrl+O` | 展开或收起工具调用过程；任务进度块始终保留最新状态 | — |
+| `Ctrl+T` | 展开或收起最近的 thinking 块 | — |
+| `Ctrl+Y` | 打开工具审批中心 | — |
 | `Ctrl+C` | 取消操作 | — |
 | `Ctrl+D` | 退出 TUI | — |
 
@@ -60,6 +65,14 @@
 - `/resume` 恢复暂停 execution。
 - `/discard` 丢弃暂停 execution。
 
+### 工具审批
+
+- `manual` 模式下，Core 确认 Execution 已以 `tool_approval` 暂停后，TUI 才打开审批弹窗，避免 checkpoint 尚未提交时提前恢复。
+- 弹窗支持 `A`/`D` 单次允许或拒绝；可持久请求还支持 `S`/`W` 与 `Shift+S`/`Shift+W`。没有默认批准项，`Esc` 只关闭弹窗并保留 pending。
+- `Ctrl+Y` 打开审批中心，可查看 pending 数量并切换 `inherit/manual/accept_all`。启用 `accept_all` 必须再确认一次；既有 pending 不会自动执行。
+- 状态栏显示 `approval: manual` 或 `approval: auto`。自动模式不会弹出新审批窗口，但拒绝规则和路径、沙箱、网络硬边界仍会生效。
+- `/approve`、`/approvals` 和 `/approval-mode` 保留为无鼠标、脚本调试和 UI 故障恢复入口。
+
 ### Goal 模式
 
 - 通过 `/goal` 进入目标模式，状态栏显示 `goal` 标记。
@@ -69,6 +82,7 @@
 
 - 连接状态、daemon 地址、session 名称。
 - 上下文使用额度 `ctx: XK/128K (X%)`。
+- 有效工具审批模式 `approval: manual/auto`。
 
 ## 6. 当前不支持
 
@@ -95,4 +109,3 @@
 - 从 TUI 启动/停止 daemon。
 - 查看 daemon 日志。
 - Trace/Telemetry 查看。
-

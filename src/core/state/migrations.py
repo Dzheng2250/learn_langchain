@@ -1,7 +1,7 @@
 """Idempotent transactional migrations for the authoritative local state database."""
 
 
-LATEST_SCHEMA_VERSION = 11
+LATEST_SCHEMA_VERSION = 12
 
 
 def apply_local_migrations(conn) -> None:
@@ -81,6 +81,34 @@ def apply_local_migrations(conn) -> None:
         _record_migration(conn, 11, "resource_activity_ledger")
     else:
         _ensure_resource_activity_tables(conn)
+    if current_version < 12 or 12 not in applied_versions:
+        _ensure_tool_approval_modes(conn)
+        _record_migration(conn, 12, "tool_approval_modes")
+    else:
+        _ensure_tool_approval_modes(conn)
+
+
+def _ensure_tool_approval_modes(conn) -> None:
+    """Add extensible Session modes and approval decision provenance."""
+    _ensure_column(conn, "sessions", "tool_approval_mode", "TEXT")
+    _ensure_column(
+        conn,
+        "tool_approval_requests",
+        "approval_mode",
+        "TEXT NOT NULL DEFAULT 'manual'",
+    )
+    _ensure_column(
+        conn,
+        "tool_approval_audit",
+        "decision_source",
+        "TEXT NOT NULL DEFAULT 'legacy'",
+    )
+    _ensure_column(
+        conn,
+        "tool_approval_audit",
+        "approval_mode",
+        "TEXT NOT NULL DEFAULT 'manual'",
+    )
 
 
 def _ensure_resource_activity_tables(conn) -> None:
@@ -125,7 +153,7 @@ def _ensure_resource_activity_tables(conn) -> None:
     _ensure_column(conn, "resource_activities", "event_key", "TEXT NOT NULL DEFAULT ''")
     conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_resource_activities_event_key ON resource_activities(execution_id, event_key) WHERE event_key <> ''")
 
-SUPPORTED_LOCAL_SCHEMA_DOWNGRADES = frozenset({(11, 10)})
+SUPPORTED_LOCAL_SCHEMA_DOWNGRADES = frozenset({(12, 11), (11, 10)})
 
 
 def validate_local_schema_downgrade(*, from_version: int, to_version: int) -> None:
@@ -145,7 +173,19 @@ def downgrade_local_schema(conn, *, from_version: int, to_version: int) -> None:
     )
     if current != int(from_version):
         raise ValueError(f"Expected local schema v{from_version}, found v{current}.")
-    downgrade_v11_to_v10(conn)
+    if (int(from_version), int(to_version)) == (12, 11):
+        downgrade_v12_to_v11(conn)
+    else:
+        downgrade_v11_to_v10(conn)
+
+
+def downgrade_v12_to_v11(conn) -> None:
+    """Remove approval mode metadata while preserving approval facts."""
+    conn.execute("ALTER TABLE sessions DROP COLUMN tool_approval_mode")
+    conn.execute("ALTER TABLE tool_approval_requests DROP COLUMN approval_mode")
+    conn.execute("ALTER TABLE tool_approval_audit DROP COLUMN decision_source")
+    conn.execute("ALTER TABLE tool_approval_audit DROP COLUMN approval_mode")
+    conn.execute("DELETE FROM local_schema_migrations WHERE version=12")
 
 def downgrade_v11_to_v10(conn) -> None:
     """Remove v11 observations; rollback intentionally discards only derived metadata."""
@@ -164,6 +204,7 @@ def _ensure_tool_approval_tables(conn) -> None:
             actor TEXT NOT NULL, args_summary TEXT NOT NULL DEFAULT '{}',
             capabilities TEXT NOT NULL DEFAULT '[]', rule_key TEXT NOT NULL DEFAULT '',
             persistable INTEGER NOT NULL DEFAULT 0, reason TEXT NOT NULL DEFAULT '',
+            approval_mode TEXT NOT NULL DEFAULT 'manual',
             status TEXT NOT NULL DEFAULT 'pending', response TEXT,
             created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP, resolved_at TEXT,
             UNIQUE(execution_id, tool_call_id),
@@ -190,6 +231,8 @@ def _ensure_tool_approval_tables(conn) -> None:
             workspace_id TEXT NOT NULL, session_id TEXT NOT NULL,
             execution_id TEXT NOT NULL, tool_call_id TEXT NOT NULL,
             tool_name TEXT NOT NULL, response TEXT NOT NULL,
+            decision_source TEXT NOT NULL DEFAULT 'legacy',
+            approval_mode TEXT NOT NULL DEFAULT 'manual',
             created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
             FOREIGN KEY(request_id) REFERENCES tool_approval_requests(request_id) ON DELETE CASCADE
         )

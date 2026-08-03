@@ -6,7 +6,8 @@ from src.core.handlers.agent import AgentHandlers
 from src.core.handlers.core import CoreHandlers
 from src.core.bus.router import INVALID_PARAMS, RpcRouter
 from src.ipc.models import (
-    ChatParams, PingParams, ResourceActivityListParams, ResourceActivityScopeParams,
+    ApprovalModeSetParams, ChatParams, PingParams,
+    ResourceActivityListParams, ResourceActivityScopeParams,
     SessionDeleteParams, SessionParams, ShutdownParams,
 )
 
@@ -84,6 +85,58 @@ class CoreHandlersTest(unittest.IsolatedAsyncioTestCase):
 
 
 class AgentHandlersTest(unittest.IsolatedAsyncioTestCase):
+    async def test_approval_mode_get_and_set_share_the_generic_rpc_contract(self):
+        class ApprovalModes:
+            def get_mode(self, workspace_root, session_name):
+                return {
+                    "schema_version": 1,
+                    "default_mode": "manual",
+                    "override_mode": None,
+                    "effective_mode": "manual",
+                    "supported_modes": ["manual", "accept_all"],
+                    "pending_count": 0,
+                    "scope": [workspace_root, session_name],
+                }
+
+            def set_mode(
+                self,
+                workspace_root,
+                session_name,
+                mode,
+                *,
+                acknowledge_risk=False,
+            ):
+                return {
+                    "effective_mode": mode,
+                    "acknowledged": acknowledge_risk,
+                    "scope": [workspace_root, session_name],
+                }
+
+        handlers = AgentHandlers(FakeAgentService(), approval_service=ApprovalModes())
+        context = FakeRequestContext()
+        current = await handlers.approval_mode_get(
+            SessionParams(
+                auth_token="token",
+                workspace_root="workspace",
+                session_name="session",
+            ),
+            context,
+        )
+        changed = await handlers.approval_mode_set(
+            ApprovalModeSetParams(
+                auth_token="token",
+                workspace_root="workspace",
+                session_name="session",
+                mode="accept_all",
+                acknowledge_risk=True,
+            ),
+            context,
+        )
+
+        self.assertEqual("manual", current["effective_mode"])
+        self.assertEqual("accept_all", changed["effective_mode"])
+        self.assertTrue(changed["acknowledged"])
+
     async def test_chat_adapts_service_events_to_notifications(self):
         handlers = AgentHandlers(FakeAgentService())
         context = FakeRequestContext()

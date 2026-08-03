@@ -4,6 +4,9 @@ Committed defaults live here. Deployment-specific values and secrets can be
 overridden with environment variables or the Core user-level .env file.
 """
 
+import os
+import warnings
+
 from src.config.env import env_bool, env_float, env_int, env_str
 
 
@@ -15,7 +18,27 @@ MAX_GRAPH_STEPS_PER_SLICE = env_int("LEARN_AGENT_MAX_GRAPH_STEPS_PER_SLICE", 20)
 MAX_AUTO_SLICES_PER_GRANT = env_int("LEARN_AGENT_MAX_AUTO_SLICES_PER_GRANT", 3)
 MAX_GRANT_WALL_SECONDS = env_float("LEARN_AGENT_MAX_GRANT_WALL_SECONDS", 600.0)
 MAX_PARALLEL_TOOL_CALLS = env_int("LEARN_AGENT_MAX_PARALLEL_TOOL_CALLS", 4)
-TOOL_APPROVAL_ENABLED = env_bool("LEARN_AGENT_TOOL_APPROVAL_ENABLED", True)
+
+
+def _load_tool_approval_mode() -> str:
+    configured = os.getenv("LEARN_AGENT_TOOL_APPROVAL_MODE")
+    if configured is not None:
+        return configured.strip().lower()
+    legacy = os.getenv("LEARN_AGENT_TOOL_APPROVAL_ENABLED")
+    if legacy is not None:
+        warnings.warn(
+            "LEARN_AGENT_TOOL_APPROVAL_ENABLED is deprecated; use "
+            "LEARN_AGENT_TOOL_APPROVAL_MODE=manual|accept_all.",
+            FutureWarning,
+            stacklevel=2,
+        )
+        return "manual" if env_bool("LEARN_AGENT_TOOL_APPROVAL_ENABLED", True) else "accept_all"
+    return "manual"
+
+
+TOOL_APPROVAL_MODE = _load_tool_approval_mode()
+# Compatibility alias for integrations that still import the old boolean.
+TOOL_APPROVAL_ENABLED = TOOL_APPROVAL_MODE == "manual"
 HOST_EXECUTION_ENABLED = env_bool("LEARN_AGENT_HOST_EXECUTION_ENABLED", False)
 TOOL_DEFAULT_TIMEOUT_SECONDS = env_float("LEARN_AGENT_TOOL_DEFAULT_TIMEOUT_SECONDS", 60.0)
 TOOL_NETWORK_POLICY = env_str("LEARN_AGENT_NETWORK_POLICY", "deny").strip().lower()

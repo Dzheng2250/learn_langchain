@@ -417,6 +417,16 @@ deny_once  | deny_session  | deny_workspace
 ```
 
 当审批请求 `persistable=false` 时，只能发送 `allow_once` 或 `deny_once`。
+
+### 5.11 `approval.mode.get`
+
+使用与 `approval.list` 相同的 Session scope。返回 `default_mode`、可为空的 `override_mode`、`effective_mode`、服务端 `supported_modes` 和 `pending_count`。前端必须使用服务端返回的模式列表，不能假定以后永远只有 `manual/accept_all`。
+
+### 5.12 `approval.mode.set`
+
+接收 `mode=inherit|<supported mode>`。设置 `accept_all` 时必须同时传 `acknowledge_risk=true`，并在 UI 中明确说明：自动模式只处理之后产生的 `ASK`，已有 pending 不变，硬安全边界仍然生效。响应中的 `existing_pending_unchanged=true` 不是失败，而是提示客户端继续保留审批队列入口。
+
+所有前端应把模式管理和具体请求处理视为两个接口：模式决定未来 `ASK` 如何协调；`approval.list/resolve` 处理已经存在的人工请求。切换模式后不得在客户端自行批量 resolve pending。
 ## 6. 最小客户端实现
 
 ```python
