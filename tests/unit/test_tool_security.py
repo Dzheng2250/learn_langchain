@@ -256,7 +256,231 @@ class ToolSecurityTest(unittest.TestCase):
         _key, persistable = command_rule_key("echo ok | grep ok")
         self.assertFalse(persistable)
 
+    def test_quoted_heredoc_parser_failure_is_exact_and_not_persistable(self):
+        command = "python3 - <<'EOF'\nprint('ok')\nEOF"
 
+        key, persistable = command_rule_key(command)
+
+        self.assertEqual(f"command-exact:{command}", key)
+        self.assertFalse(persistable)
+
+    def test_unexpected_policy_failure_becomes_a_tool_error(self):
+        calls = []
+
+        @tool
+        def command(command: str) -> str:
+            """Record a command that must not run when policy fails."""
+            calls.append(command)
+            return "ok"
+
+        class BrokenPolicy:
+            def evaluate(self, *_args, **_kwargs):
+                raise RuntimeError("policy unavailable")
+
+        spec = _spec(
+            tool=command,
+            approval=ApprovalRequirement.NONE,
+        )
+        pipeline = ToolExecutionPipeline(
+            {"command": spec},
+            policy=BrokenPolicy(),
+            approvals=ApprovalService(self.repository),
+        )
+        builder = StateGraph(MessagesState, context_schema=ToolExecutionContext)
+        builder.add_node("tools", ObservedToolNode([command], pipeline=pipeline))
+        builder.add_edge(START, "tools")
+        builder.add_edge("tools", END)
+        graph = builder.compile(checkpointer=MemorySaver())
+
+        events = list(stream_graph_events(
+            graph,
+            [AIMessage(content="", tool_calls=[{
+                "name": "command",
+                "args": {"command": "python -V"},
+                "id": "broken-policy",
+                "type": "tool_call",
+            }])],
+            checkpoint_thread_id="broken-policy-thread",
+            tool_context=ToolExecutionContext(
+                self.context.workspace_id,
+                self.context.session_id,
+                self.context.execution_id,
+                self.context.run_id,
+                "parent",
+                self.context.workspace_root,
+            ),
+        ))
+
+        self.assertEqual([], calls)
+        self.assertEqual("done", events[-1]["event"])
+        result = next(
+            item for item in events
+            if item["event"] == "step"
+            and item["data"].get("type") == "tool_call_result"
+        )
+        self.assertIn("RuntimeError: policy unavailable", result["data"]["content"])
+
+
+    def test_fallback_hook_failure_becomes_a_tool_error(self):
+        calls = []
+
+        @tool
+        def command(command: str) -> str:
+            """Record a command that must not run when a hook fails."""
+            calls.append(command)
+            return "ok"
+
+        class BrokenDispatcher:
+            def dispatch(self, _context):
+                raise RuntimeError("hook unavailable")
+
+        builder = StateGraph(MessagesState, context_schema=ToolExecutionContext)
+        builder.add_node(
+            "tools",
+            ObservedToolNode([command], hook_dispatcher=BrokenDispatcher()),
+        )
+        builder.add_edge(START, "tools")
+        builder.add_edge("tools", END)
+        graph = builder.compile(checkpointer=MemorySaver())
+
+        events = list(stream_graph_events(
+            graph,
+            [AIMessage(content="", tool_calls=[{
+                "name": "command",
+                "args": {"command": "python -V"},
+                "id": "broken-fallback-hook",
+                "type": "tool_call",
+            }])],
+            checkpoint_thread_id="broken-fallback-hook-thread",
+            tool_context=ToolExecutionContext(
+                self.context.workspace_id,
+                self.context.session_id,
+                self.context.execution_id,
+                self.context.run_id,
+                "parent",
+                self.context.workspace_root,
+            ),
+        ))
+
+        self.assertEqual([], calls)
+        self.assertEqual("done", events[-1]["event"])
+        result = next(
+            item for item in events
+            if item["event"] == "step"
+            and item["data"].get("type") == "tool_call_result"
+        )
+        self.assertIn("RuntimeError: hook unavailable", result["data"]["content"])
+
+    def test_post_hook_failure_keeps_the_successful_tool_result(self):
+        calls = []
+
+        @tool
+        def command(command: str) -> str:
+            """Return success even when post-tool observation fails."""
+            calls.append(command)
+            return "ok"
+
+        class BrokenPostDispatcher:
+            def dispatch(self, context):
+                if context.point == HookPoint.POST_TOOL_USE:
+                    raise RuntimeError("post hook unavailable")
+                return context, HookDecision()
+
+        spec = _spec(
+            tool=command,
+            risk=ToolRisk.READ_ONLY,
+            capabilities=frozenset(),
+            approval=ApprovalRequirement.NONE,
+        )
+        pipeline = ToolExecutionPipeline(
+            {"command": spec},
+            policy=DefaultToolPolicyEngine(self.repository),
+            approvals=ApprovalService(self.repository),
+            hook_dispatcher=BrokenPostDispatcher(),
+        )
+        builder = StateGraph(MessagesState, context_schema=ToolExecutionContext)
+        builder.add_node("tools", ObservedToolNode([command], pipeline=pipeline))
+        builder.add_edge(START, "tools")
+        builder.add_edge("tools", END)
+        graph = builder.compile(checkpointer=MemorySaver())
+
+        events = list(stream_graph_events(
+            graph,
+            [AIMessage(content="", tool_calls=[{
+                "name": "command",
+                "args": {"command": "python -V"},
+                "id": "broken-post-hook",
+                "type": "tool_call",
+            }])],
+            checkpoint_thread_id="broken-post-hook-thread",
+            tool_context=ToolExecutionContext(
+                self.context.workspace_id,
+                self.context.session_id,
+                self.context.execution_id,
+                self.context.run_id,
+                "parent",
+                self.context.workspace_root,
+            ),
+        ))
+
+        self.assertEqual(["python -V"], calls)
+        self.assertEqual("done", events[-1]["event"])
+        result = next(
+            item for item in events
+            if item["event"] == "step"
+            and item["data"].get("type") == "tool_call_result"
+        )
+        self.assertEqual("ok", result["data"]["content"])
+
+    def test_tool_implementation_failure_stays_inside_the_graph(self):
+        @tool
+        def command(command: str) -> str:
+            """Raise one implementation error for fault-containment testing."""
+            raise RuntimeError(f"cannot execute {command}")
+
+        spec = _spec(
+            tool=command,
+            risk=ToolRisk.READ_ONLY,
+            capabilities=frozenset(),
+            approval=ApprovalRequirement.NONE,
+        )
+        pipeline = ToolExecutionPipeline(
+            {"command": spec},
+            policy=DefaultToolPolicyEngine(self.repository),
+            approvals=ApprovalService(self.repository),
+        )
+        builder = StateGraph(MessagesState, context_schema=ToolExecutionContext)
+        builder.add_node("tools", ObservedToolNode([command], pipeline=pipeline))
+        builder.add_edge(START, "tools")
+        builder.add_edge("tools", END)
+        graph = builder.compile(checkpointer=MemorySaver())
+
+        events = list(stream_graph_events(
+            graph,
+            [AIMessage(content="", tool_calls=[{
+                "name": "command",
+                "args": {"command": "python -V"},
+                "id": "broken-tool",
+                "type": "tool_call",
+            }])],
+            checkpoint_thread_id="broken-tool-thread",
+            tool_context=ToolExecutionContext(
+                self.context.workspace_id,
+                self.context.session_id,
+                self.context.execution_id,
+                self.context.run_id,
+                "parent",
+                self.context.workspace_root,
+            ),
+        ))
+
+        self.assertEqual("done", events[-1]["event"])
+        result = next(
+            item for item in events
+            if item["event"] == "step"
+            and item["data"].get("type") == "tool_call_result"
+        )
+        self.assertIn("RuntimeError: cannot execute python -V", result["data"]["content"])
     def test_workspace_write_rule_matches_descendant_directory(self):
         class WriteTool:
             name = "write_workspace_file"

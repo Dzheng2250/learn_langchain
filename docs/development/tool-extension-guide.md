@@ -127,7 +127,7 @@ flowchart TD
 3. **选择 audience**：见 6.3。
 4. **选择 risk**：见 6.4。
 5. **在 `create_workspace_toolset()` 中调用 `register(...)`**：如果是工厂，先 `factory = create_my_tools(workspace.root)`；紧接现有 register 行；如果工厂返回多个工具就循环 register，共享同一份 risk + description。
-6. **让 `ObservedToolNode` 自动接管**：不要在新工具里写 telemetry；不要在工具内再次扣 `ExecutionBudget`；只需要保证返回值是 `str` 或 `ToolMessage`，领域错误以字符串返回（`ObservedToolNode._tool_error_message` 仅兜底未捕获异常）。
+6. **让统一工具边界自动接管**：不要在新工具里写 telemetry；不要在工具内再次扣 `ExecutionBudget`；可预期领域拒绝返回清晰字符串，其他普通异常由 `ToolExecutionPipeline` 或 fallback `ObservedToolNode` 转为 error `ToolMessage`。
 7. **编写测试 + 跑全量单测**：见第 7 节与第 11 节。
 
 ### 5.3 三种模式代码骨架
@@ -151,7 +151,7 @@ def my_feature_tool(arg_a: str, arg_b: int = 0) -> str:
 
 - 函数签名注解全部用 Python 类型（`str` / `int` / `list[dict[str, Any]]`），LangChain 自动派生 JSON schema。
 - docstring 首句必须给出**模型可读的输入输出契约**（不是给维护者看的实现说明）。
-- 异常一律 `return "..."`（见 6.5）。
+- 可预期领域拒绝返回清晰字符串；普通运行时异常交给统一工具边界（见 6.5）。
 
 #### 5.3.2 Workspace 工厂骨架
 
@@ -227,7 +227,7 @@ def create_my_injected_tools(service):
 - `runtime: ToolRuntime` 放在**参数末尾**或**关键字参数位置**，避免与 LLM 可见参数交错。
 - 复用 `_context_from_runtime(runtime) -> <领域 dataclass>` 这种辅助函数（参考 [`src/core/tasks/tools.py`](/src/core/tasks/tools.py)），把 `runtime.context` 抽取成本工具领域的 dataclass，不在工具体内直接访问 runtime 属性。
 - 测试时若绕过 graph 直接调用，用 `SimpleNamespace(context=...)` 充当 runtime 替身。
-- 错误处理：`except ValueError as exc: return _tool_error(exc)` 模式（参考 [`tasks/tools.py`](/src/core/tasks/tools.py)），仅对**领域校验错**返回字符串；真正的运行时异常让 `ObservedToolNode` 兜底。
+- 错误处理：`except ValueError as exc: return _tool_error(exc)` 模式（参考 [`tasks/tools.py`](/src/core/tasks/tools.py)），仅对**可预期领域校验错**返回字符串；真正的运行时异常交给统一工具边界。
 
 ### 5.4 完整端到端示例 `count_loc`
 
@@ -354,14 +354,15 @@ def test_count_loc_schema_does_not_leak_root(workspace):
 
 ### 6.5 异常处理策略
 
-| 异常类型 | 处理方式 | 示例 |
+| 异常类型 | 工具体处理 | 统一边界行为 |
 |---|---|---|
-| 领域校验错（`ValueError` / 路径越界） | `try/except` 内 `return "xxx rejected: {exc}"` | 路径越界、沙箱排除、空输入 |
-| 容器 / 子进程不可恢复错 | 同上，字符串错误中给出原因 | [`commands.py`](/src/core/tools/commands.py) 中 FileNotFoundError |
-| 真正的运行时异常（网络断、模型挂） | **不捕获**，让 `ObservedToolNode._tool_error_message` 统一兜底 → 生成 `status="error"` 的 ToolMessage | [`summarization.py`](/src/core/tools/summarization.py) 中 provider 调用 |
-| 预算耗尽（`ToolBudgetExceeded`） | **不捕获**，让 `ObservedToolNode` 重新 `raise` | 由 `_observe_tool_call` 显式处理 |
+| 可预期领域拒绝（路径越界、空输入、`expected_count` 不匹配） | 返回清晰、可操作的错误字符串 | 作为普通工具结果交给模型 |
+| 工具实现或基础设施异常（文件、容器、网络、provider） | 不需要逐层重复捕获；仅在能补充领域语义时转换 | `ToolExecutionPipeline` / fallback `ObservedToolNode` 转为 `status="error"` 的 `ToolMessage` |
+| 参数、Hook、命令解析、Policy、Approval、Enforcer、Telemetry 异常 | 工具体不处理 | 由工具管线统一隔离，不升级为 `graph_error` |
+| `GraphBubbleUp` / LangGraph `interrupt()` | **禁止捕获** | 继续上抛，以保存审批 checkpoint |
+| `ToolBudgetExceeded` | **禁止捕获** | 继续上抛，由 Execution 预算语义处理 |
 
-原则：**领域错返回字符串，基础设施错抛给观测层**，避免在工具体内重复实现边界语义。参考 [`src/core/tools/workspace.py:80-81`](/src/core/tools/workspace.py) 的 `try/except (OSError, ValueError) → return f"Workspace file read rejected: {exc}"` 写法。
+原则：**工具可以描述预期领域失败，但不能自行复制全局容错管线**。所有普通异常最终都应成为模型可见的工具错误；只有 graph 控制流和预算信号可以越过工具边界。命令语法解析失败必须保守降级为不可持久化的 exact rule。Post Hook 或 Telemetry 失败不得覆盖已经成功的工具结果，防止含副作用的工具被模型重复执行。
 
 ### 6.6 路径安全约束
 
