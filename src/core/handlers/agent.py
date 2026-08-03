@@ -19,6 +19,7 @@ from src.ipc.models import (
     ChatParams,
     SessionDeleteParams,
     SessionParams,
+    SessionHistoryParams,
     SessionResumeParams,
     ResourceActivityScopeParams,
     ResourceActivityListParams,
@@ -34,16 +35,20 @@ class AgentHandlers:
         session_service: SessionLifecycleController | None = None,
         approval_service=None,
         resource_activity_service=None,
+        session_history_service=None,
     ) -> None:
         self.agent_service = agent_service
         self.session_service = session_service or agent_service
         self.approval_service = approval_service
         self.resource_activity_service = resource_activity_service
+        self.session_history_service = session_history_service
 
     def register(self, router: RpcRouter) -> None:
         """Expose chat and explicit Session recovery methods."""
         router.register("agent.chat", ChatParams, self.chat)
         router.register("session.status", SessionParams, self.session_status)
+        if self.session_history_service is not None:
+            router.register("session.history", SessionHistoryParams, self.session_history)
         router.register("session.resume", SessionResumeParams, self.session_resume)
         router.register("session.discard", SessionParams, self.session_discard)
         router.register("session.delete", SessionDeleteParams, self.session_delete)
@@ -152,6 +157,20 @@ class AgentHandlers:
             self.session_service.session_status,
             params.workspace_root,
             params.session_name,
+        )
+
+    async def session_history(
+        self,
+        params: SessionHistoryParams,
+        _context: RequestContext,
+    ) -> dict:
+        """Return one frontend-safe page of committed Session history."""
+        return await self._session_call(
+            self.session_history_service.list_history,
+            params.workspace_root,
+            params.session_name,
+            before_turn=params.before_turn,
+            limit_turns=params.limit_turns,
         )
 
     async def session_discard(self, params: SessionParams, _context: RequestContext) -> dict:

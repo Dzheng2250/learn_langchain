@@ -37,6 +37,7 @@
 | `core.shutdown` | 请求优雅关闭 | 基本幂等 | 谨慎 |
 | `agent.chat` | 发起新一轮对话 | 否 | 否 |
 | `session.status` | 查询待恢复 Execution | 是 | 是 |
+| `session.history` | 按完整 Turn 分页读取已提交历史 | 是 | 是 |
 | `session.resume` | 恢复待执行任务 | 否 | 否 |
 | `session.discard` | 丢弃待恢复 Execution | 基本幂等 | 谨慎 |
 | `session.delete` | 归档或硬删除 Session | 基本幂等 | 谨慎 |
@@ -179,6 +180,62 @@ Core 先写回最终响应，再开始优雅关闭。客户端不应假设收到
 JSON-RPC `-32602 Invalid params`，不会伪装成服务端内部错误。`approval.list/resolve` 对无效 Session、
 审批请求不存在或无法恢复对应 Execution 使用相同错误契约。数据库锁、I/O 和程序缺陷仍返回内部错误，
 客户端不应把它们当成参数问题自动改写请求。
+
+## `session.history`
+
+返回指定 Session 已经提交的消息历史，不返回暂停 Execution 中尚未提交的回答草稿。不存在的
+Session 返回空页，归档 Session 仍可读取。
+
+参数：
+
+| 字段 | 类型 | 限制 | 含义 |
+|---|---|---|---|
+| `workspace_root` | string | 1..4000 字符 | Workspace 根目录 |
+| `session_name` | string | 1..200 字符 | Session 名称 |
+| `before_turn` | integer/null | 大于等于 0 | 排他游标，只返回更早的 Turn |
+| `limit_turns` | integer | 1..100，默认 30 | 本页最多返回的完整 Turn 数 |
+
+响应按 `turn_index` 正序排列，分页不会截断同一 Turn 内的
+`tool_use -> tool_result -> final answer`：
+
+```json
+{
+  "schema_version": 1,
+  "session_name": "default",
+  "archived": false,
+  "turns": [
+    {
+      "turn_index": 12,
+      "messages": [
+        {
+          "message_id": "...",
+          "role": "assistant",
+          "message_type": "AIMessage",
+          "blocks": [
+            {"type": "reasoning", "char_count": 856, "display": "collapsed", "redacted": false},
+            {"type": "text", "text": "最终回答"}
+          ]
+        }
+      ]
+    }
+  ],
+  "next_before_turn": 12,
+  "has_more": true
+}
+```
+
+`blocks` 支持 `text`、`reasoning`、`tool_call` 和 `tool_result`。reasoning 是否包含受限正文由
+`LEARN_AGENT_REASONING_DISPLAY` 决定；redacted thinking 永不返回正文。工具参数经过脱敏和截断，
+工具结果只返回安全预览。响应不包含数据库 `raw`、thinking signature、完整文件正文或密钥。
+
+活动分支存在时，Core 从 branch head 沿 `parent_message_id` 读取祖先链，因此分支历史包含分叉点
+之前的上下文，但不混入其他分支。旧 Session 或无效 branch head 会回退到
+`turn_index, message_ordinal` 顺序。
+
+`limit_turns` 是数量上限，不保证响应一定包含这么多 Turn。为了让一条 UTF-8 NDJSON 响应保持在
+Core 的消息帧限制内，服务端还会按序列化字节预算减少本页数量，但只会移除完整 Turn。此时
+`has_more=true`，客户端应继续使用 `next_before_turn` 请求更早历史，不能通过增大
+`limit_turns` 假设可以绕过帧限制。
 
 ## `session.resume`
 

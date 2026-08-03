@@ -41,6 +41,11 @@ class SessionParams(AuthenticatedParams):
     session_name: str = Field(default="default", min_length=1, max_length=200)
 
 
+class SessionHistoryParams(SessionParams):
+    before_turn: int | None = Field(default=None, ge=0)
+    limit_turns: int = Field(default=30, ge=1, le=100)
+
+
 class SessionDeleteParams(SessionParams):
     hard_delete: bool = False
 

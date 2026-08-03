@@ -93,6 +93,144 @@ class SQLiteStateAdapterTest(unittest.TestCase):
         self.assertEqual(3, len(message_ids))
         self.assertEqual(len(set(message_ids)), len(message_ids))
 
+    def test_conversation_history_page_keeps_complete_turns(self):
+        for turn_index in range(1, 4):
+            self.archive_and_save(
+                turn_index,
+                [
+                    HumanMessage(content=f"user-{turn_index}"),
+                    AIMessage(content=f"answer-{turn_index}"),
+                ],
+                AgentContextState(),
+            )
+
+        reader = SQLiteConversationHistoryStore(self.database)
+        latest = reader.list_page(self.session, before_turn=None, limit_turns=2)
+        older = reader.list_page(
+            self.session,
+            before_turn=latest.next_before_turn,
+            limit_turns=2,
+        )
+
+        self.assertEqual([2, 2, 3, 3], [item.turn_index for item in latest.messages])
+        self.assertTrue(latest.has_more)
+        self.assertEqual(2, latest.next_before_turn)
+        self.assertEqual([1, 1], [item.turn_index for item in older.messages])
+        self.assertFalse(older.has_more)
+        self.assertIsNone(older.next_before_turn)
+
+    def test_conversation_history_page_follows_active_branch_ancestry(self):
+        self.archive_and_save(
+            1,
+            [HumanMessage(content="root-user"), AIMessage(content="root-answer")],
+            AgentContextState(),
+        )
+        with self.database.connect() as conn:
+            active_branch_id = conn.execute(
+                "SELECT active_branch_id FROM sessions WHERE session_id=?",
+                (str(self.session.session_id),),
+            ).fetchone()["active_branch_id"]
+            root_head = conn.execute(
+                "SELECT head_message_id FROM branches WHERE branch_id=?",
+                (active_branch_id,),
+            ).fetchone()["head_message_id"]
+        self.archive_and_save(
+            2,
+            [HumanMessage(content="old-path"), AIMessage(content="old-answer")],
+            AgentContextState(),
+        )
+        branch_id = "history-test-branch"
+        with self.database.transaction() as conn:
+            conn.execute(
+                """
+                INSERT INTO branches(
+                    branch_id, workspace_id, session_id, branch_name,
+                    head_message_id, created_from_message_id
+                ) VALUES (?, ?, ?, 'alternate', ?, ?)
+                """,
+                (
+                    branch_id,
+                    str(self.workspace.workspace_id),
+                    str(self.session.session_id),
+                    root_head,
+                    root_head,
+                ),
+            )
+            conn.execute(
+                "UPDATE sessions SET active_branch_id=? WHERE session_id=?",
+                (branch_id, str(self.session.session_id)),
+            )
+            SQLiteConversationHistoryStore(
+                self.database,
+                transaction_conn=conn,
+            ).append_messages(
+                self.session,
+                2,
+                [HumanMessage(content="new-path"), AIMessage(content="new-answer")],
+            )
+
+        page = SQLiteConversationHistoryStore(self.database).list_page(
+            self.session,
+            before_turn=None,
+            limit_turns=30,
+        )
+
+        contents = [item.content for item in page.messages]
+        self.assertEqual(
+            ["root-user", "root-answer", "new-path", "new-answer"],
+            contents,
+        )
+        self.assertNotIn("old-path", contents)
+
+    def test_conversation_history_page_keeps_invalid_raw_as_fallback_record(self):
+        self.archive_and_save(
+            1,
+            [HumanMessage(content="fallback")],
+            AgentContextState(),
+        )
+        with self.database.transaction() as conn:
+            conn.execute(
+                "UPDATE messages SET raw='not-json' WHERE session_id=?",
+                (str(self.session.session_id),),
+            )
+
+        page = SQLiteConversationHistoryStore(self.database).list_page(
+            self.session,
+            before_turn=None,
+            limit_turns=30,
+        )
+
+        self.assertEqual("fallback", page.messages[0].content)
+        self.assertIsNone(page.messages[0].raw)
+
+    def test_conversation_history_page_falls_back_for_invalid_branch_head(self):
+        self.archive_and_save(
+            1,
+            [HumanMessage(content="legacy-user"), AIMessage(content="legacy-answer")],
+            AgentContextState(),
+        )
+        with self.database.transaction() as conn:
+            conn.execute(
+                """
+                UPDATE branches SET head_message_id='missing-message'
+                WHERE branch_id=(
+                    SELECT active_branch_id FROM sessions WHERE session_id=?
+                )
+                """,
+                (str(self.session.session_id),),
+            )
+
+        page = SQLiteConversationHistoryStore(self.database).list_page(
+            self.session,
+            before_turn=None,
+            limit_turns=30,
+        )
+
+        self.assertEqual(
+            ["legacy-user", "legacy-answer"],
+            [item.content for item in page.messages],
+        )
+
 
     def test_conversation_history_content_projection_extracts_text_blocks(self):
         self.archive_and_save(

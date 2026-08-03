@@ -2,13 +2,15 @@ import asyncio
 import unittest
 from unittest.mock import patch
 
+from pydantic import ValidationError
+
 from src.core.handlers.agent import AgentHandlers
 from src.core.handlers.core import CoreHandlers
 from src.core.bus.router import INVALID_PARAMS, RpcRouter
 from src.ipc.models import (
     ApprovalModeSetParams, ChatParams, PingParams,
     ResourceActivityListParams, ResourceActivityScopeParams,
-    SessionDeleteParams, SessionParams, ShutdownParams,
+    SessionDeleteParams, SessionHistoryParams, SessionParams, ShutdownParams,
 )
 
 
@@ -66,12 +68,72 @@ class FakeSessionService:
         }
 
 
+class FakeSessionHistoryService:
+    def __init__(self):
+        self.calls = []
+
+    def list_history(self, workspace_root, session_name, **kwargs):
+        self.calls.append((workspace_root, session_name, kwargs))
+        return {
+            "schema_version": 1,
+            "session_name": session_name,
+            "archived": False,
+            "turns": [],
+            "next_before_turn": None,
+            "has_more": False,
+        }
+
+
 class CoreHandlersTest(unittest.IsolatedAsyncioTestCase):
     async def test_ping_returns_health_data(self):
         handlers = CoreHandlers(asyncio.Event(), server_version="test")
         result = await handlers.ping(PingParams(auth_token="token"), FakeRequestContext())
         self.assertEqual("ok", result["status"])
         self.assertEqual("test", result["server_version"])
+
+    async def test_session_history_delegates_validated_pagination(self):
+        history = FakeSessionHistoryService()
+        handlers = AgentHandlers(
+            FakeAgentService(),
+            session_history_service=history,
+        )
+
+        result = await handlers.session_history(
+            SessionHistoryParams(
+                auth_token="token",
+                workspace_root="workspace",
+                session_name="history",
+                before_turn=20,
+                limit_turns=30,
+            ),
+            FakeRequestContext(),
+        )
+
+        self.assertEqual("history", result["session_name"])
+        self.assertEqual(
+            [("workspace", "history", {"before_turn": 20, "limit_turns": 30})],
+            history.calls,
+        )
+
+    async def test_session_history_params_bound_complete_turn_page_size(self):
+        params = SessionHistoryParams(
+            auth_token="token",
+            workspace_root="workspace",
+        )
+        self.assertEqual(30, params.limit_turns)
+        self.assertIsNone(params.before_turn)
+        with self.assertRaises(ValidationError):
+            SessionHistoryParams(
+                auth_token="token",
+                workspace_root="workspace",
+                limit_turns=101,
+            )
+        with self.assertRaises(ValidationError):
+            SessionHistoryParams(
+                auth_token="token",
+                workspace_root="workspace",
+                before_turn=-1,
+            )
 
     async def test_shutdown_requests_connection_close_and_app_shutdown(self):
         shutdown_event = asyncio.Event()

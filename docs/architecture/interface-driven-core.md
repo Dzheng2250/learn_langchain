@@ -67,6 +67,7 @@ Application Service
 | 端口 | 职责 |
 |---|---|
 | `ConversationHistoryStore` | 追加和读取会话消息历史 |
+| `ConversationHistoryReader` | 按活动分支和完整 Turn 分页读取前端安全历史记录 |
 | `SessionStore` | 读取和更新 Session 摘要、近期消息、`turn_index` |
 | `SessionLifecycleStore` | 解析 Session 身份并执行归档、删除、历史重建等生命周期持久化 |
 | `ExecutionStore` | 在成功 Turn 的 Unit of Work 中完成最终 Slice / Execution |
@@ -108,6 +109,7 @@ src/core/adapters/sqlite/
 | 能力 | 当前实现 | 说明 |
 |---|---|---|
 | 按 Turn 读取消息 | `SQLiteConversationHistoryStore.load_turn()` | 保持消息顺序和 message id 顺序 |
+| 分页读取 Session 历史 | `SessionHistoryQueryService -> ConversationHistoryReader.list_page()` | 应用层负责 DTO 脱敏，SQLite adapter 负责分支祖先链和完整 Turn 游标 |
 | 重建近期上下文 | `SQLiteConversationHistoryStore.rebuild_recent()` | 从完整归档恢复 `recent_messages` |
 | 追加消息 | `SQLiteConversationHistoryStore.append_messages()` | 负责 `messages.raw`、role/content 提取和 active branch head 推进 |
 | 读取 Session 上下文 | `SQLiteSessionStore.load_context()` | 返回 `AgentContextState` 和 `turn_index` |
