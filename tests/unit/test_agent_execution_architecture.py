@@ -165,6 +165,7 @@ class AgentExecutionArchitectureTest(unittest.TestCase):
             constructor.call_args.kwargs["metadata"],
         )
         self.assertEqual(0, constructor.call_args.kwargs["max_retries"])
+        self.assertEqual(16_384, constructor.call_args.kwargs["max_tokens"])
         bound_tools = model.bind_tools.call_args.args[0]
         self.assertEqual("cached_tool", bound_tools[0]["name"])
         self.assertEqual(
@@ -565,6 +566,33 @@ class AgentExecutionArchitectureTest(unittest.TestCase):
 
         self.assertTrue(provider.models)
         self.assertIsNotNone(provider.models[0].received_configs[0])
+
+    def test_parent_graph_rejects_output_limit_response(self):
+        class TruncatedModel(FakeModel):
+            def invoke(self, _messages, config=None):
+                self.received_configs.append(config)
+                return AIMessage(
+                    content=[{"type": "thinking", "thinking": "unfinished"}],
+                    response_metadata={"stop_reason": "max_tokens"},
+                )
+
+        class TruncatedProvider(RecordingProvider):
+            def create_chat_model(self, purpose, **kwargs):
+                self.calls.append((purpose, kwargs))
+                model = TruncatedModel()
+                self.models.append(model)
+                return model
+
+        graph = create_parent_graph([], "", TruncatedProvider())
+
+        events = list(stream_graph_events(graph, [HumanMessage(content="hello")]))
+
+        self.assertEqual("error", events[-1]["event"])
+        self.assertEqual(
+            StopReason.MODEL_OUTPUT_LIMIT.value,
+            events[-1]["data"]["stop_reason"],
+        )
+        self.assertNotIn("done", [event["event"] for event in events])
 
     def test_tool_registry_derives_audience_specific_views(self):
         registry = ToolRegistry()

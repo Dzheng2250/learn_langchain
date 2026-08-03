@@ -9,6 +9,7 @@ from src.config.settings import FILE_READ_CHUNK_LINES
 from src.core.common.debug import debug_print, format_message, format_messages
 from src.core.telemetry import emit_event, record_error
 from src.core.llm.contracts import LlmPurpose, ModelProvider
+from src.core.llm.completion import ensure_complete_response, response_stop_reason
 from src.core.prompts import build_parent_system_prompt
 from src.core.tasks.context import ToolExecutionContext
 from src.core.tools.observed import ObservedToolNode
@@ -54,12 +55,16 @@ def create_parent_graph(
         except Exception as exc:
             record_error("agent_loop", "llm", exc, "Parent LLM call failed.", event_type="llm_failed")
             raise
+        ensure_complete_response(response)
         debug_print("LLM OUTPUT MESSAGE", format_message(response))
         emit_event(
             "llm_finished",
             "agent_loop",
             "Parent LLM call finished.",
-            {"has_tool_calls": bool(getattr(response, "tool_calls", None))},
+            {
+                "has_tool_calls": bool(getattr(response, "tool_calls", None)),
+                "stop_reason": response_stop_reason(response),
+            },
         )
         return {"messages": [response]}
 

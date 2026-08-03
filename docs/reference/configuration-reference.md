@@ -46,6 +46,7 @@ learn-agent start
 | `LEARN_AGENT_LLM_BASE_URL` | 空 | Anthropic API 地址。留空时使用 `ChatAnthropic` 默认地址。 |
 | `LEARN_AGENT_MODEL` | `required (no default)` | 传给模型服务的模型名称，必须与服务端支持的名称一致。 |
 | `LEARN_AGENT_MODEL_CONTEXT_LIMIT` | `128000` | 模型上下文窗口大小（token），用于 TUI 显示上下文使用百分比。不影响实际提交给模型的 token 数量。 |
+| `LEARN_AGENT_LLM_MAX_TOKENS` | `16384` | 单次模型响应的最大输出 token。thinking/reasoning 与最终文本共享该预算；若耗尽，Turn 会以 `model_output_limit` 失败并保留诊断状态，不会误记为完成。 |
 | `LEARN_AGENT_SUMMARY_TRIGGER_TOKEN_LIMIT` | `5000` | 上下文 token 数超过此值时触发自动压缩。测试阶段默认 5K，生产环境建议设为模型上下文窗口的 80%。 |
 | `LEARN_AGENT_LLM_RETRY_ENABLED` | `true` | 是否启用 Core 统一 LLM 重试。启用后由 `ResilientModelProvider` 负责重试，SDK 内置重试保持关闭，避免重复重试。 |
 | `LEARN_AGENT_LLM_FOREGROUND_MAX_ATTEMPTS` | `3` | 前台 Agent、子 Agent 和文件总结模型调用的最大尝试次数。内容审查、认证、无效请求等确定性错误不会重试。 |

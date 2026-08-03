@@ -63,6 +63,7 @@ BASH_PATH = "bash"
 # LLM configuration is provider-neutral; the default provider is Anthropic.
 MODEL = env_str("LEARN_AGENT_MODEL", "")
 MODEL_CONTEXT_LIMIT = env_int("LEARN_AGENT_MODEL_CONTEXT_LIMIT", 128_000)
+LLM_MAX_TOKENS = env_int("LEARN_AGENT_LLM_MAX_TOKENS", 16_384)
 LLM_API_KEY = env_str("LEARN_AGENT_LLM_API_KEY", "")
 LLM_BASE_URL = env_str("LEARN_AGENT_LLM_BASE_URL", "")
 REASONING_DISPLAY = env_str("LEARN_AGENT_REASONING_DISPLAY", "collapsed").strip().lower()

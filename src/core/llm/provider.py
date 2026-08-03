@@ -8,6 +8,7 @@ from langchain_anthropic.chat_models import convert_to_anthropic_tool
 from src.config.settings import (
     LLM_API_KEY,
     LLM_BASE_URL,
+    LLM_MAX_TOKENS,
     MODEL,
     PROMPT_CACHE_ENABLED,
     PROMPT_CACHE_MESSAGES,
@@ -71,6 +72,7 @@ class AnthropicProvider:
             temperature=temperature,
             streaming=streaming,
             metadata={"purpose": purpose.value},
+            max_tokens=LLM_MAX_TOKENS,
             max_retries=0,
         )
         policy = PromptCachePolicy(

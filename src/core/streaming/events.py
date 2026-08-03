@@ -18,6 +18,7 @@ from src.core.llm.retry_context import (
     current_attempt_id,
     mark_attempt_output_emitted,
 )
+from src.core.llm.completion import ModelOutputLimitError, response_stop_reason
 
 
 def stream_graph_events(
@@ -244,10 +245,22 @@ def stream_graph_events(
 
     yield from finish_reasoning()
 
+    final_messages = final_state.get("messages", []) if final_state is not None else []
+    if final_messages and response_stop_reason(final_messages[-1]) == "max_tokens":
+        yield graph_failure_event(
+            ModelOutputLimitError(
+                "The model exhausted its output token budget before producing a "
+                "complete response. Increase LEARN_AGENT_LLM_MAX_TOKENS and resume."
+            ),
+            graph_steps_used=graph_steps_used,
+            provider_error_handler=provider_error_handler,
+        )
+        return
+
     yield {
         "event": "done",
         "data": {
-            "messages": final_state["messages"] if final_state is not None else input_messages,
+            "messages": final_messages if final_state is not None else input_messages,
             "stop_reason": StopReason.COMPLETED.value,
             "tool_call_count": tool_call_count,
             "graph_steps_used": graph_steps_used,
