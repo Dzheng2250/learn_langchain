@@ -194,5 +194,22 @@ class StreamingEventsTest(unittest.TestCase):
         self.assertTrue(finished)
         self.assertTrue(finished[-1]["data"]["redacted"])
         self.assertNotIn("secret", str(events))
+
+    def test_max_tokens_final_state_is_not_reported_as_completed(self):
+        response = AIMessage(
+            content=[{"type": "thinking", "thinking": "unfinished"}],
+            response_metadata={"stop_reason": "max_tokens"},
+        )
+        events = list(
+            stream_graph_events(
+                FakeGraph([("values", {"messages": [response]})]),
+                [],
+            )
+        )
+
+        self.assertEqual("error", events[-1]["event"])
+        self.assertEqual("model_output_limit", events[-1]["data"]["stop_reason"])
+        self.assertTrue(events[-1]["data"]["retryable"])
+        self.assertNotIn("done", [event["event"] for event in events])
 if __name__ == "__main__":
     unittest.main()

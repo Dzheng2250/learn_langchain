@@ -34,6 +34,7 @@ AgentGraph / Summary / Memory / FileSummary
 - 从 `LEARN_AGENT_LLM_API_KEY`、`LEARN_AGENT_MODEL` 和 `LEARN_AGENT_LLM_BASE_URL` 读取配置。
 - 构造 `ChatAnthropic(model=..., api_key=..., base_url=..., streaming=..., metadata={"purpose": ...})`。
 - 将 `max_retries` 设为 `0`，避免 SDK 隐式重试与项目自己的重试策略叠加。
+- 显式传入 `LEARN_AGENT_LLM_MAX_TOKENS`。thinking/reasoning 也消耗输出预算；服务端返回 `stop_reason=max_tokens` 时，Core 会拒绝提交不完整响应，并以 `model_output_limit` 记录失败，避免空白回答被误判为完成。
 - 当调用方传入工具时，先用 `convert_to_anthropic_tool()` 转换 schema，由 `PromptCachePolicy` 建立工具断点，再调用 `model.bind_tools()`。
 - 用 `PromptCacheRunnable` 包装 Runnable，在每次 `invoke()` 前复制并改写 system 和历史 message block。
 - 缓存 marker 不写回 Session、数据库或 checkpoint；服务商返回的 cache creation/read token 由 Trace callback 提取。

@@ -21,6 +21,7 @@ class StopReason(StrEnum):
     GRANT_WALL_TIME_LIMIT = "grant_wall_time_limit"
     CLIENT_DISCONNECTED = "client_disconnected"
     TOOL_APPROVAL = "tool_approval"
+    MODEL_OUTPUT_LIMIT = "model_output_limit"
     GRAPH_ERROR = "graph_error"
     TURN_ERROR = "turn_error"
 

@@ -2,6 +2,7 @@
 
 from src.core.agent.models import StopReason
 from src.core.errors import ErrorCategory, ProviderErrorHandler
+from src.core.llm.completion import ModelOutputLimitError
 from src.core.telemetry import record_error
 
 
@@ -16,6 +17,34 @@ def provider_failure_stage(resolution) -> str:
 
 def graph_failure_event(exc: Exception, *, graph_steps_used: int, provider_error_handler=None) -> dict:
     """Record and build one provider/graph failure event."""
+    if isinstance(exc, ModelOutputLimitError):
+        record_error(
+            "agent_stream",
+            "llm_output",
+            exc,
+            "Model output reached its configured token limit.",
+            {
+                "failure_source": "agent_turn",
+                "failure_stage": "parent_model_provider",
+                "failure_scope": "current_turn",
+                "user_action": "increase_output_limit_and_resume",
+            },
+            event_type="llm_output_truncated",
+        )
+        return {
+            "event": "error",
+            "data": {
+                "type": StopReason.MODEL_OUTPUT_LIMIT.value,
+                "stop_reason": StopReason.MODEL_OUTPUT_LIMIT.value,
+                "message": str(exc),
+                "graph_steps_used": graph_steps_used,
+                "retryable": True,
+                "failure_source": "agent_turn",
+                "failure_stage": "parent_model_provider",
+                "failure_scope": "current_turn",
+                "user_action": "increase_output_limit_and_resume",
+            },
+        }
     resolution = (provider_error_handler or ProviderErrorHandler()).resolve(exc)
     failure_context = {
         "failure_source": "agent_turn",
@@ -46,4 +75,3 @@ def graph_failure_event(exc: Exception, *, graph_steps_used: int, provider_error
             **failure_context,
         },
     }
-
