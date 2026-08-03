@@ -8,7 +8,10 @@ def command_rule_key(command: str) -> tuple[str, bool]:
     try:
         import bashlex
         parts = bashlex.parse(command)
-    except (ImportError, ValueError):
+    except Exception:
+        # Parser support is deliberately narrower than Bash. Any parser
+        # failure must fail closed to an exact, non-persistable identity
+        # instead of aborting the ToolNode (for example, quoted heredocs).
         return f"command-exact:{command.strip()}", False
     if len(parts) != 1 or parts[0].kind != "command":
         return f"command-exact:{command.strip()}", False

@@ -8,9 +8,11 @@ from types import SimpleNamespace
 
 from langchain_core.messages import ToolMessage
 from langchain_core.tools import BaseTool
+from langgraph.errors import GraphBubbleUp
 from langgraph.prebuilt import ToolNode
 
 from src.core.common.content import message_content_text
+from src.core.common.debug import debug_print
 
 from src.core.hooks import HookAction, HookContext, HookPoint, NOOP_HOOK_DISPATCHER
 from src.core.telemetry import record_tool_failed, record_tool_finished, record_tool_started
@@ -93,12 +95,15 @@ def _observe_tool_call(
     if budget is not None:
         budget.charge(tool or "unknown", (risk_by_name or {}).get(tool, ToolRisk.READ_ONLY))
 
-    record_tool_started(
-        source,
-        tool=tool,
-        tool_call_id=tool_call_id,
-        args=_tool_call_args(request),
-    )
+    try:
+        record_tool_started(
+            source,
+            tool=tool,
+            tool_call_id=tool_call_id,
+            args=_tool_call_args(request),
+        )
+    except Exception as telemetry_exc:
+        debug_print("TOOL START TELEMETRY FAILED", telemetry_exc)
 
     try:
         if budget is None:
@@ -108,48 +113,56 @@ def _observe_tool_call(
                 result = execute(request)
     except ToolBudgetExceeded as exc:
         duration_ms = int((time.monotonic() - started_at) * 1000)
-        record_tool_failed(
-            source,
-            tool=tool,
-            tool_call_id=tool_call_id,
-            error=exc,
-            duration_ms=duration_ms,
-        )
+        try:
+            record_tool_failed(
+                source,
+                tool=tool,
+                tool_call_id=tool_call_id,
+                error=exc,
+                duration_ms=duration_ms,
+            )
+        except Exception as telemetry_exc:
+            debug_print("TOOL FAILURE TELEMETRY FAILED", telemetry_exc)
         raise
     except Exception as exc:
         duration_ms = int((time.monotonic() - started_at) * 1000)
-        record_tool_failed(
-            source,
-            tool=tool,
-            tool_call_id=tool_call_id,
-            error=exc,
-            duration_ms=duration_ms,
-        )
+        try:
+            record_tool_failed(
+                source,
+                tool=tool,
+                tool_call_id=tool_call_id,
+                error=exc,
+                duration_ms=duration_ms,
+            )
+        except Exception as telemetry_exc:
+            debug_print("TOOL FAILURE TELEMETRY FAILED", telemetry_exc)
         return _tool_error_message(request, exc)
 
     duration_ms = int((time.monotonic() - started_at) * 1000)
     preview = _result_preview(result)
-    if _result_is_error(result):
-        record_tool_failed(
-            source,
-            tool=tool,
-            tool_call_id=tool_call_id,
-            payload={
-                "content_preview": preview,
-                "content_chars": len(preview),
-            },
-            duration_ms=duration_ms,
-        )
-    else:
-        record_tool_finished(
-            source,
-            tool=tool,
-            tool_call_id=tool_call_id,
-            content=preview,
-            duration_ms=duration_ms,
-        )
+    try:
+        if _result_is_error(result):
+            record_tool_failed(
+                source,
+                tool=tool,
+                tool_call_id=tool_call_id,
+                payload={
+                    "content_preview": preview,
+                    "content_chars": len(preview),
+                },
+                duration_ms=duration_ms,
+            )
+        else:
+            record_tool_finished(
+                source,
+                tool=tool,
+                tool_call_id=tool_call_id,
+                content=preview,
+                duration_ms=duration_ms,
+            )
+    except Exception as telemetry_exc:
+        debug_print("TOOL RESULT TELEMETRY FAILED", telemetry_exc)
     return result
-
 
 def _hook_context_from_request(request, point: HookPoint, payload: dict[str, Any]) -> HookContext:
     runtime = getattr(request.runtime, "context", None)
@@ -232,11 +245,36 @@ class ObservedToolNode(ToolNode):
                     return existing_wrapper(observed_request, execute)
 
                 result = _observe_tool_call(event_source, request, wrapped_execute, risk_by_name)
-            hooks.dispatch(_hook_context_from_request(
-                request,
-                HookPoint.POST_TOOL_USE,
-                {"status": "error" if _result_is_error(result) else "success", "content": _result_preview(result), "resource_activity_ids": activity_ids},
-            ))
+            try:
+                hooks.dispatch(_hook_context_from_request(
+                    request,
+                    HookPoint.POST_TOOL_USE,
+                    {
+                        "status": "error" if _result_is_error(result) else "success",
+                        "content": _result_preview(result),
+                        "resource_activity_ids": activity_ids,
+                    },
+                ))
+            except Exception as hook_exc:
+                debug_print("POST TOOL HOOK FAILED", hook_exc)
             return result
 
-        super().__init__(tools, wrap_tool_call=observed_wrapper, **kwargs)
+        def fault_contained_wrapper(request, execute):
+            """Keep fallback ToolNode failures model-visible and graph-local."""
+            try:
+                return observed_wrapper(request, execute)
+            except (GraphBubbleUp, ToolBudgetExceeded):
+                raise
+            except Exception as exc:
+                try:
+                    record_tool_failed(
+                        event_source,
+                        tool=_tool_call_name(request),
+                        tool_call_id=_tool_call_id(request),
+                        error=exc,
+                    )
+                except Exception as telemetry_exc:
+                    debug_print("TOOL FAILURE TELEMETRY FAILED", telemetry_exc)
+                return _tool_error_message(request, exc)
+
+        super().__init__(tools, wrap_tool_call=fault_contained_wrapper, **kwargs)

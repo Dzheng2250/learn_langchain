@@ -4,11 +4,13 @@ import time
 from pathlib import PurePosixPath
 
 from langchain_core.messages import ToolMessage
+from langgraph.errors import GraphBubbleUp
 from langgraph.types import interrupt
 from pydantic import ValidationError
 
 from src.core.agent.budget import ToolBudgetExceeded, current_execution_budget
 from src.core.common.content import message_content_text
+from src.core.common.debug import debug_print
 from src.core.hooks import (
     HookAction, HookContext, HookDecision, HookPoint, NOOP_HOOK_DISPATCHER,
 )
@@ -33,7 +35,18 @@ class ToolExecutionPipeline:
         self.resource_activity_recorder = resource_activity_recorder
 
     def invoke(self, request, execute):
-        context = self._context_from_request(request)
+        """Run one tool call without leaking ordinary failures into the graph."""
+        context = None
+        try:
+            context = self._context_from_request(request)
+            return self._invoke_with_context(request, execute, context)
+        except (GraphBubbleUp, ToolBudgetExceeded):
+            # These are state-machine control signals, not tool failures.
+            raise
+        except Exception as exc:
+            return self._contain_failure(request, context, exc)
+
+    def _invoke_with_context(self, request, execute, context):
         pre_payload = {
             "args": context.args,
             "resource_evidence": lookup_resource_evidence(
@@ -110,17 +123,66 @@ class ToolExecutionPipeline:
             return self._denied(context, str(exc))
         return self._execute(context, request, execute)
 
+    def _contain_failure(self, request, context, exc: Exception) -> ToolMessage:
+        """Convert any ordinary pipeline-stage failure into a tool result."""
+        tool_name, tool_call_id = self._request_identity(request, context)
+        if context is not None:
+            try:
+                self._dispatch_post_tool(
+                    context,
+                    "error",
+                    error_type=type(exc).__name__,
+                    resource_activity_ids=[],
+                )
+            except Exception as hook_exc:
+                debug_print("TOOL ERROR HOOK FAILED", hook_exc)
+        try:
+            record_tool_failed(
+                self.event_source,
+                tool=tool_name,
+                tool_call_id=tool_call_id,
+                error=exc,
+            )
+        except Exception as telemetry_exc:
+            debug_print("TOOL FAILURE TELEMETRY FAILED", telemetry_exc)
+        return ToolMessage(
+            content=f"Tool {tool_name} failed: {type(exc).__name__}: {exc}",
+            name=tool_name,
+            tool_call_id=tool_call_id,
+            status="error",
+            additional_kwargs={"tool_execution_status": "failed"},
+        )
+
+    @staticmethod
+    def _request_identity(request, context=None) -> tuple[str, str]:
+        """Read a best-effort identity even when request decoding failed."""
+        if context is not None:
+            return context.tool_name, context.tool_call_id or "unknown-tool-call"
+        try:
+            call = request.tool_call
+            if not isinstance(call, dict):
+                call = {}
+        except Exception:
+            call = {}
+        return (
+            str(call.get("name") or "unknown"),
+            str(call.get("id") or "unknown-tool-call"),
+        )
+
     def _execute(self, context, request, execute):
         started_at = time.monotonic()
         budget = current_execution_budget()
         if budget is not None:
             budget.charge(context.tool_name, context.spec.risk)
-        record_tool_started(
-            self.event_source,
-            tool=context.tool_name,
-            tool_call_id=context.tool_call_id,
-            args=context.args,
-        )
+        try:
+            record_tool_started(
+                self.event_source,
+                tool=context.tool_name,
+                tool_call_id=context.tool_call_id,
+                args=context.args,
+            )
+        except Exception as telemetry_exc:
+            debug_print("TOOL START TELEMETRY FAILED", telemetry_exc)
         activity_ids = []
         try:
             with bind_resource_activity(self.resource_activity_recorder, context) as activity_ids:
@@ -130,44 +192,65 @@ class ToolExecutionPipeline:
                     with budget.tool_slot():
                         value = execute(request)
         except ToolBudgetExceeded as exc:
-            record_tool_failed(
-                self.event_source,
-                tool=context.tool_name,
-                tool_call_id=context.tool_call_id,
-                error=exc,
-                duration_ms=int((time.monotonic() - started_at) * 1000),
-            )
+            self._record_failure(context, exc, started_at)
             raise
         except Exception as exc:
-            self._dispatch_post_tool(context, "error", error_type=type(exc).__name__, resource_activity_ids=activity_ids)
+            self._dispatch_post_tool(
+                context,
+                "error",
+                error_type=type(exc).__name__,
+                resource_activity_ids=activity_ids,
+            )
+            self._record_failure(context, exc, started_at)
+            return self._error(context, exc)
+        preview = message_content_text(value) or repr(value)
+        self._dispatch_post_tool(
+            context,
+            "success",
+            content=preview,
+            resource_activity_ids=activity_ids,
+        )
+        try:
+            record_tool_finished(
+                self.event_source,
+                tool=context.tool_name,
+                tool_call_id=context.tool_call_id,
+                content=preview,
+                duration_ms=int((time.monotonic() - started_at) * 1000),
+            )
+        except Exception as telemetry_exc:
+            debug_print("TOOL SUCCESS TELEMETRY FAILED", telemetry_exc)
+        return value
+
+    def _record_failure(self, context, exc: Exception, started_at=None) -> None:
+        try:
             record_tool_failed(
                 self.event_source,
                 tool=context.tool_name,
                 tool_call_id=context.tool_call_id,
                 error=exc,
-                duration_ms=int((time.monotonic() - started_at) * 1000),
+                duration_ms=(
+                    int((time.monotonic() - started_at) * 1000)
+                    if started_at is not None
+                    else None
+                ),
             )
-            return self._error(context, exc)
-        preview = message_content_text(value) or repr(value)
-        self._dispatch_post_tool(context, "success", content=preview, resource_activity_ids=activity_ids)
-        record_tool_finished(
-            self.event_source,
-            tool=context.tool_name,
-            tool_call_id=context.tool_call_id,
-            content=preview,
-            duration_ms=int((time.monotonic() - started_at) * 1000),
-        )
-        return value
+        except Exception as telemetry_exc:
+            debug_print("TOOL FAILURE TELEMETRY FAILED", telemetry_exc)
 
     def _dispatch_post_tool(self, context, status: str, **payload) -> HookDecision:
-        _updated, decision = self.hook_dispatcher.dispatch(
-            self._hook_context(
-                context,
-                HookPoint.POST_TOOL_USE,
-                {"status": status, **payload},
+        try:
+            _updated, decision = self.hook_dispatcher.dispatch(
+                self._hook_context(
+                    context,
+                    HookPoint.POST_TOOL_USE,
+                    {"status": status, **payload},
+                )
             )
-        )
-        return decision
+            return decision
+        except Exception as hook_exc:
+            debug_print("POST TOOL HOOK FAILED", hook_exc)
+            return HookDecision()
 
     @staticmethod
     def _hook_context(context, point, payload):

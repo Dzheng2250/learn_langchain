@@ -32,6 +32,17 @@ ToolRegistry
 
 Tool 安全模块不再定义私有 Hook。它消费系统级 `PreToolUse`、`PermissionRequest` 和 `PostToolUse` 三个相位；完整模型、配置和失败策略见 [Agent 生命周期 Hook 架构](/docs/architecture/agent-lifecycle-hooks.md)。参数替换后必须重新执行 schema 与权限校验，Hook 不能绕过硬边界或创建永久授权。
 
+## 工具异常隔离
+
+`ToolExecutionPipeline` 是整条工具链的统一错误边界。上下文构造、Pre Hook、参数校验、命令规则解析、策略判断、审批、能力校验、工具实现、Post Hook 和 Telemetry 中出现的普通 `Exception`，都不能逃逸成 `graph_error`：管线会尽力记录失败，并返回 `status="error"` 的 `ToolMessage`，让模型决定修正参数、换用工具或向用户说明。
+
+只有两类状态机信号允许继续上抛：
+
+- `GraphBubbleUp`：包含 LangGraph `interrupt()`，用于持久审批暂停和恢复。
+- `ToolBudgetExceeded`：用于终止超出 Execution 工具预算的调用。
+
+命令解析器不支持某种合法 Bash 语法时，必须降级为“完整命令精确匹配、不可持久化”的规则，不能让解析异常终止 graph，也不能放宽为可复用前缀授权。工具已经成功产生副作用后，Post Hook 或 Telemetry 故障只记录诊断信息，不得把成功结果改写成失败，以免模型重试并重复执行副作用。
+
 ## 权限决策与审批
 
 策略引擎只产生三种结果：
