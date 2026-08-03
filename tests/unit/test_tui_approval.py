@@ -1,6 +1,7 @@
 """Mounted Textual tests for tool-approval dialogs."""
 
 import unittest
+from unittest.mock import PropertyMock, patch
 
 from textual.app import App
 from textual.widgets import Button, OptionList
@@ -11,6 +12,8 @@ from src.tui.screens.approval import (
     ToolApprovalModal,
     approval_request_detail,
 )
+from src.tui.client import safe_rpc_error_detail
+from src.tui.screens.chat import ChatScreen
 
 
 class TuiApprovalModalTest(unittest.IsolatedAsyncioTestCase):
@@ -98,6 +101,45 @@ class TuiApprovalModalTest(unittest.IsolatedAsyncioTestCase):
             [{"action": "review", "request_id": "request-second"}],
             results,
         )
+
+    def test_next_dialog_skips_request_currently_being_resolved(self) -> None:
+        pushed = []
+        screen = ChatScreen.__new__(ChatScreen)
+        screen._approval_modal_open = False
+        screen._paused_execution = True
+        screen._resolving_approval_ids = {"request-old"}
+        screen._pending_approval_requests = {
+            "request-old": {"request_id": "request-old", "tool": "old"},
+            "request-new": {"request_id": "request-new", "tool": "new"},
+        }
+        fake_app = type("App", (), {
+            "push_screen": lambda _self, modal, callback: pushed.append(
+                (modal.request["request_id"], callback)
+            )
+        })()
+
+        with patch.object(
+            ChatScreen,
+            "app",
+            new_callable=PropertyMock,
+            return_value=fake_app,
+        ):
+            ChatScreen._show_next_approval(screen)
+
+        self.assertEqual("request-new", screen._active_approval_request_id)
+        self.assertEqual("request-new", pushed[0][0])
+
+    def test_rpc_error_detail_excludes_rejected_input_values(self) -> None:
+        detail = safe_rpc_error_detail([
+            {
+                "loc": ["response"],
+                "msg": "Input should be 'allow_once'",
+                "input": "secret-value",
+            }
+        ])
+
+        self.assertEqual("response: Input should be 'allow_once'", detail)
+        self.assertNotIn("secret-value", detail)
 
 
 if __name__ == "__main__":

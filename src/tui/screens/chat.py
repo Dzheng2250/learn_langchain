@@ -96,6 +96,7 @@ class ChatScreen(Screen):
         self._input_task: asyncio.Task[Any] | None = None
         self._pending_approval_ids: set[str] = set()
         self._pending_approval_requests: dict[str, dict[str, Any]] = {}
+        self._resolving_approval_ids: set[str] = set()
         self._approval_modal_open = False
         self._active_approval_request_id: str | None = None
 
@@ -334,6 +335,9 @@ class ChatScreen(Screen):
                 pending_requests = getattr(self, "_pending_approval_requests", None)
                 if pending_requests is not None:
                     pending_requests.clear()
+                resolving_ids = getattr(self, "_resolving_approval_ids", None)
+                if resolving_ids is not None:
+                    resolving_ids.clear()
                 self._active_approval_request_id = None
                 bar = self.query_one(StatusBar)
                 bar.set_session(args)
@@ -639,6 +643,14 @@ class ChatScreen(Screen):
             request_id = next(iter(self._pending_approval_ids), None)
         if not request_id:
             return
+        resolving_ids = getattr(self, "_resolving_approval_ids", None)
+        if resolving_ids is None:
+            resolving_ids = set()
+            self._resolving_approval_ids = resolving_ids
+        if request_id in resolving_ids:
+            self._log_note("This approval request is already being resolved.")
+            return
+        resolving_ids.add(request_id)
         self._busy = True
         current_task = asyncio.current_task()
         client = AsyncCoreClient(
@@ -670,11 +682,13 @@ class ChatScreen(Screen):
             self._log_error("Connection lost while resuming the approved tool call.")
         except CoreRequestError as exc:
             self._log_error(f"Approval failed: {exc}")
+            await self._list_approvals()
         except asyncio.CancelledError:
             raise
         except Exception as exc:
             self._log_error(f"Unexpected approval error: {exc}")
         finally:
+            resolving_ids.discard(request_id)
             await client.close()
             self._clear_inflight(current_task, client)
 
@@ -683,9 +697,21 @@ class ChatScreen(Screen):
         if self._approval_modal_open or not self._paused_execution:
             return
         requests = getattr(self, "_pending_approval_requests", {})
-        request = requests.get(request_id) if request_id else None
+        resolving = getattr(self, "_resolving_approval_ids", set())
+        request = (
+            requests.get(request_id)
+            if request_id and request_id not in resolving
+            else None
+        )
         if request is None:
-            request = next(iter(requests.values()), None)
+            request = next(
+                (
+                    item
+                    for item in requests.values()
+                    if str(item.get("request_id") or "") not in resolving
+                ),
+                None,
+            )
         if request is None:
             return
         request_id = str(request.get("request_id") or "")
@@ -724,7 +750,12 @@ class ChatScreen(Screen):
         except Exception as exc:
             self._log_error(f"Cannot open approval center: {exc}")
             return
-        requests = tuple(self._pending_approval_requests.values())
+        resolving = getattr(self, "_resolving_approval_ids", set())
+        requests = tuple(
+            request
+            for request in self._pending_approval_requests.values()
+            if str(request.get("request_id") or "") not in resolving
+        )
         self.app.push_screen(
             ApprovalCenterModal(mode, requests),
             self._approval_center_result,
@@ -1010,6 +1041,9 @@ class ChatScreen(Screen):
         requests = getattr(self, "_pending_approval_requests", None)
         if requests is not None:
             requests.clear()
+        resolving_ids = getattr(self, "_resolving_approval_ids", None)
+        if resolving_ids is not None:
+            resolving_ids.clear()
         self._active_approval_request_id = None
 
         if task is not None and not task.done():
