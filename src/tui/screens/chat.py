@@ -31,10 +31,81 @@ from src.tui.renderer import (
     render_event,
     render_task_progress,
 )
-from src.tui.widgets.chat_log import ChatLog
+from src.tui.widgets.chat_log import ChatLog, HistoryEntry
 from src.tui.widgets.approval_bar import ApprovalBar
 from src.tui.widgets.input_bar import InputBar
 from src.tui.widgets.status_bar import StatusBar
+
+
+def _history_entries(turns: list[dict[str, Any]]) -> list[HistoryEntry]:
+    """Convert stable Core history DTOs into TUI-only visual entries."""
+    entries: list[HistoryEntry] = []
+    for turn in turns:
+        for message in turn.get("messages", []):
+            role = str(message.get("role") or "unknown")
+            blocks = message.get("blocks") or []
+            if role in {"user", "system"}:
+                text = "".join(
+                    str(block.get("text") or "")
+                    for block in blocks
+                    if block.get("type") == "text"
+                )
+                if text:
+                    if role == "user":
+                        markup = (
+                            "[bold bright_white]You:[/bold bright_white] "
+                            + escape(text)
+                        )
+                    else:
+                        markup = f"[dim]System: {escape(text)}[/dim]"
+                    entries.append(HistoryEntry("markup", markup))
+                if role == "system":
+                    continue
+            for block in blocks:
+                block_type = str(block.get("type") or "")
+                if block_type == "text":
+                    if role == "user":
+                        continue
+                    text = str(block.get("text") or "")
+                    if text:
+                        entries.append(HistoryEntry("markdown", text))
+                elif block_type == "reasoning":
+                    entries.append(
+                        HistoryEntry(
+                            "reasoning",
+                            content=str(block.get("content") or ""),
+                            char_count=int(block.get("char_count") or 0),
+                            redacted=bool(block.get("redacted")),
+                            display=str(block.get("display") or "metadata"),
+                            expanded=False,
+                        )
+                    )
+                elif block_type == "tool_call":
+                    markup = render_event({
+                        "event": "step",
+                        "data": {
+                            "type": "tool_call_start",
+                            "tool": block.get("name") or "unknown",
+                            "args": block.get("args") or {},
+                            "id": block.get("id") or "",
+                        },
+                    })
+                    if markup:
+                        entries.append(HistoryEntry("tool", markup))
+                elif block_type == "tool_result":
+                    markup = render_event({
+                        "event": "step",
+                        "data": {
+                            "type": "tool_call_result",
+                            "tool": block.get("name") or "unknown",
+                            "tool_call_id": block.get("tool_call_id") or "",
+                            "content": block.get("content") or "",
+                            "is_error": bool(block.get("is_error")),
+                        },
+                    })
+                    if markup:
+                        entries.append(HistoryEntry("tool", markup))
+    return entries
 
 
 class ChatScreen(Screen):
@@ -97,6 +168,10 @@ class ChatScreen(Screen):
         self._pending_approval_ids: set[str] = set()
         self._pending_approval_requests: dict[str, dict[str, Any]] = {}
         self._resolving_approval_ids: set[str] = set()
+        self._history_generation = 0
+        self._history_before_turn: int | None = None
+        self._history_has_more = False
+        self._history_loading = False
 
     def compose(self):
         yield StatusBar()
@@ -161,8 +236,7 @@ class ChatScreen(Screen):
         self._client = client
         status_bar.set_connected(self._config.core_host, self._config.core_port)
 
-        # Check for paused execution
-        await self._check_session_status()
+        await self._load_session_view(self._session_name)
 
     async def _ensure_connected(self) -> AsyncCoreClient:
         """Return a connected client; try once if not already connected."""
@@ -180,10 +254,16 @@ class ChatScreen(Screen):
         self._client = client
         return client
 
-    async def _check_session_status(self) -> None:
+    async def _check_session_status(
+        self,
+        *,
+        session_name: str | None = None,
+        generation: int | None = None,
+    ) -> None:
         """Check if the current session has a paused execution."""
         if not self._auth_token:
             return
+        target_session = session_name or self._session_name
         client = AsyncCoreClient(
             self._config.core_host,
             self._config.core_port,
@@ -196,9 +276,11 @@ class ChatScreen(Screen):
                 {
                     "auth_token": self._auth_token,
                     "workspace_root": self._workspace_root,
-                    "session_name": self._session_name,
+                    "session_name": target_session,
                 },
             )
+            if generation is not None and generation != self._history_generation:
+                return
             pending = result.get("pending_execution")
             if pending is not None:
                 self._paused_execution = True
@@ -228,6 +310,124 @@ class ChatScreen(Screen):
             status_bar.set_error(str(exc))
         finally:
             await client.close()
+
+    async def _load_session_view(self, session_name: str) -> None:
+        """Load committed history and live Session status into one TUI view."""
+        self._history_generation += 1
+        generation = self._history_generation
+        self._history_before_turn = None
+        self._history_has_more = False
+        self._history_loading = True
+        self._reset_session_visual_state()
+        try:
+            result = await self._request_session_history(
+                session_name,
+                before_turn=None,
+            )
+            if generation != self._history_generation:
+                return
+            entries = _history_entries(result.get("turns", []))
+            self._history_before_turn = result.get("next_before_turn")
+            self._history_has_more = bool(result.get("has_more"))
+            self.query_one(ChatLog).replace_history(
+                entries,
+                has_more=self._history_has_more,
+            )
+        except Exception as exc:
+            if generation == self._history_generation:
+                log = self.query_one(ChatLog)
+                log.clear()
+                log.write_event(
+                    "[yellow]Session history could not be loaded. "
+                    f"New messages are still available: {escape(str(exc))}[/yellow]"
+                )
+        finally:
+            if generation == self._history_generation:
+                self._history_loading = False
+        if generation == self._history_generation:
+            await self._check_session_status(
+                session_name=session_name,
+                generation=generation,
+            )
+
+    def _reset_session_visual_state(self) -> None:
+        """Clear all Session-owned TUI state before loading another Session."""
+        self.query_one(ChatLog).clear()
+        self._streamed_response_active = False
+        self._show_tool_events = False
+        self._goal_mode = False
+        self._paused_execution = False
+        self._pending_approval_ids.clear()
+        self._pending_approval_requests.clear()
+        self._resolving_approval_ids.clear()
+        self.query_one(ApprovalBar).clear_request()
+        status = self.query_one(StatusBar)
+        status.set_goal_mode(False)
+        status.set_paused(False)
+
+    async def _request_session_history(
+        self,
+        session_name: str,
+        *,
+        before_turn: int | None,
+    ) -> dict[str, Any]:
+        """Request one complete-Turn history page from Core."""
+        client = AsyncCoreClient(
+            self._config.core_host,
+            self._config.core_port,
+            timeout=self._config.connect_timeout,
+        )
+        try:
+            await client.connect()
+            return await client.request(
+                "session.history",
+                {
+                    "auth_token": self._auth_token,
+                    "workspace_root": self._workspace_root,
+                    "session_name": session_name,
+                    "before_turn": before_turn,
+                    "limit_turns": 30,
+                },
+            )
+        finally:
+            await client.close()
+
+    async def _load_older_history(self) -> None:
+        """Prepend one older page while retaining the current viewport anchor."""
+        if (
+            self._history_loading
+            or not self._history_has_more
+            or self._history_before_turn is None
+        ):
+            return
+        generation = self._history_generation
+        session_name = self._session_name
+        self._history_loading = True
+        log = self.query_one(ChatLog)
+        log.set_history_loading(True)
+        try:
+            result = await self._request_session_history(
+                session_name,
+                before_turn=self._history_before_turn,
+            )
+            if generation != self._history_generation or session_name != self._session_name:
+                return
+            self._history_before_turn = result.get("next_before_turn")
+            self._history_has_more = bool(result.get("has_more"))
+            log.prepend_history(
+                _history_entries(result.get("turns", [])),
+                has_more=self._history_has_more,
+            )
+        except Exception as exc:
+            if generation == self._history_generation:
+                log.set_history_loading(False, has_more=True)
+                self.notify(
+                    f"Earlier history could not be loaded: {exc}",
+                    severity="warning",
+                )
+        finally:
+            if generation == self._history_generation:
+                self._history_loading = False
 
     # ── input handling ──────────────────────────────────────────────
 
@@ -330,21 +530,15 @@ class ChatScreen(Screen):
             await self._approval_mode_command(args)
         elif cmd == "session":
             if args:
+                if self._busy:
+                    self._log_note(
+                        "Cannot switch Session while an Agent request is running."
+                    )
+                    return
                 self._session_name = args
-                pending_ids = getattr(self, "_pending_approval_ids", None)
-                if pending_ids is not None:
-                    pending_ids.clear()
-                pending_requests = getattr(self, "_pending_approval_requests", None)
-                if pending_requests is not None:
-                    pending_requests.clear()
-                resolving_ids = getattr(self, "_resolving_approval_ids", None)
-                if resolving_ids is not None:
-                    resolving_ids.clear()
-                self.query_one(ApprovalBar).clear_request()
                 bar = self.query_one(StatusBar)
                 bar.set_session(args)
-                self._log_note(f"Switched to session: {args}")
-                await self._check_session_status()
+                await self._load_session_view(args)
             else:
                 self._log_note(f"Current session: {self._session_name}")
         elif cmd == "clear":
@@ -998,6 +1192,9 @@ class ChatScreen(Screen):
             self._inflight_client = None
             self._busy = False
             self._streamed_response_active = False
+            log = self.query_one(ChatLog)
+            log.set_history_loading(False, has_more=self._history_has_more)
+            log.request_older_history_if_needed()
 
     # ── key actions ─────────────────────────────────────────────────
 
@@ -1006,6 +1203,7 @@ class ChatScreen(Screen):
         log = self.query_one(ChatLog)
         log.pause_auto_scroll()
         log.scroll_page_up(animate=False)
+        log.request_older_history_if_needed()
 
     def action_log_page_down(self) -> None:
         """Scroll chat history downward and resume following at the bottom."""
@@ -1021,6 +1219,21 @@ class ChatScreen(Screen):
         log = self.query_one(ChatLog)
         log.pause_auto_scroll()
         log.scroll_home(animate=False)
+        log.request_older_history_if_needed()
+
+    def on_chat_log_history_top_reached(
+        self,
+        event: ChatLog.HistoryTopReached,
+    ) -> None:
+        """Fetch an older page after user-controlled navigation reaches the top."""
+        event.stop()
+        if self._busy:
+            return
+        self.run_worker(
+            self._load_older_history(),
+            exclusive=False,
+            name="load-older-session-history",
+        )
 
     def action_log_end(self) -> None:
         """Jump to latest chat output and resume follow-tail."""

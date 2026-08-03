@@ -92,6 +92,7 @@ class TuiApp(App):
 核心编排器，职责：
 
 - **生命周期管理**：on_mount 时加载鉴权 token、发现 workspace、连接 daemon、检查 session 状态。
+- **历史恢复**：启动和 Session 切换时调用 `session.history`，顶部滚动时游标加载更早页面。
 - **输入分发**：根据用户输入决定是 `/` 命令还是普通聊天消息，dispatch 到对应 handler。
 - **事件回调**：作为 `AsyncCoreClient.request()` 的 `on_event` 参数，将 agent.event 通知转发到 renderer。
 - **状态同步**：收到 `done` 事件后更新 StatusBar（上下文额度、暂停状态、goal 模式）。
@@ -106,10 +107,17 @@ class TuiApp(App):
 | `_paused_execution` | `bool` | 是否有已暂停的 execution |
 | `_busy` | `bool` | 是否有请求正在执行 |
 | `_streamed_response_active` | `bool` | 当前 token 流是否活跃 |
+| `_history_generation` | `int` | Session 历史装载代次，用于丢弃快速切换产生的迟到响应 |
+| `_history_before_turn` | `int \| None` | 下一页排他 Turn 游标 |
+| `_history_loading` | `bool` | 防止顶部滚动重复发起分页请求 |
 
 ### 2.3 AsyncCoreClient ([`client.py`](/src/tui/client.py))
 
 纯异步 TCP/NDJSON JSON-RPC 客户端。与 CLI 的同步 `CoreClient`（`src/cli/client.py`）不同，它使用 `asyncio.open_connection()` 避免阻塞 TUI 事件循环。
+
+连接会把 `StreamReader` 的单行上限显式设置为 `CORE_MAX_MESSAGE_BYTES + 1`。不能使用 asyncio
+默认约 64 KiB 的上限，因为 Session 历史等合法 JSON-RPC 响应可能超过该大小；超过 Core
+协议上限的响应会被归类为 `CoreProtocolError`，而不是把底层分隔符错误直接显示给用户。
 
 #### 协议处理流程
 
@@ -286,6 +294,16 @@ TUI 不应让每个 token 都触发完整历史重绘和整段 Markdown 解析�
 - 发送新消息或 resume 时设置“强制跟随”窗口，因为 Textual 的 `scroll_end()` 需要等后续 layout 才会稳定，不能让紧随其后的旧 `scroll_y/max_scroll_y` 采样把 follow-tail 误关掉。强制跟随不是永久锁，只要用户在这之后滚动，`watch_scroll_y()` 会立即取消强制跟随并以用户滚动为准。
 - 底部判断优先使用 `scroll_y/max_scroll_y` 数值，因为 `is_vertical_scroll_end` 在布局未稳定时可能出现滞后。
 - 用户手动回到底部后，下一次输出会恢复自动跟随；每次发送新消息或 resume 时会显式回到底部并重新开启 follow-tail。这样长输出期间用户可以自由查看前文。
+
+历史恢复使用同一个 `ChatLog` 数据模型。初次进入 Session 时批量替换最近 30 个完整 Turn，并在
+Textual `batch_update()` 中重建可见 widget；完成后滚动到底部。用户到达顶部且 Core 返回
+`has_more=true` 时，ChatLog 只发送一次分页消息。旧页前插后按 `max_scroll_y` 增量修正 `scroll_y`，
+因此用户正在阅读的行不会跳动。流式请求期间暂缓前插，防止重建 widget 打断活动 token 尾部；请求
+结束后若用户仍位于顶部再继续加载。
+
+Session 切换由统一 `_load_session_view()` 完成：先清空当前 Session 所有视图状态，再依次恢复提交
+历史和 `session.status`。每次切换增加 generation，旧 Session 的迟到 RPC 响应不得更新新 Session。
+reasoning 和工具历史分别沿用 `Ctrl+T`、`Ctrl+O` 的折叠机制，不另造历史专用控件。
 
 后续若要进一步优化，可在活动 widget 内做更细的分段或虚拟滚动，但不应回到每个 token 全量重绘的实现。
 

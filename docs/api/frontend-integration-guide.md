@@ -85,6 +85,9 @@ Core daemon
 - 文本必须使用 UTF-8，序列化中文时无需转义为 ASCII。
 - token 必须放在每次请求的 `params.auth_token`，不得记录到日志。
 - 当前不支持 batch，也不支持同一连接并发多个请求。
+- 客户端的单行读取上限必须至少覆盖 Core 的 `CORE_MAX_MESSAGE_BYTES`（当前默认 1 MiB）。Python
+  `asyncio.open_connection()` 默认约 64 KiB，必须显式传入 `limit=CORE_MAX_MESSAGE_BYTES + 1`；
+  否则 `session.history` 等较大响应会在合法消息到达时误报分隔符不存在。
 
 ## 4. 身份与关联规则
 
@@ -235,7 +238,36 @@ Core daemon
 
 若存在暂停执行，`pending_execution` 为对象，并至少携带 Execution 身份、状态、停止原因和 goal 模式；客户端应把它视为可扩展对象并忽略未知字段。归档 Session 返回 `status="archived"`。
 
-### 5.5 `session.resume`
+### 5.5 `session.history`
+
+前端启动、重连或切换 Session 时，先读取最近一页已提交历史，再读取 `session.status`：
+
+```json
+{
+  "jsonrpc": "2.0",
+  "id": "history-1",
+  "method": "session.history",
+  "params": {
+    "auth_token": "<daemon-token>",
+    "workspace_root": "D:\\project",
+    "session_name": "default",
+    "before_turn": null,
+    "limit_turns": 30
+  }
+}
+```
+
+结果中的 `turns` 按正序显示。继续加载上一页时，把上一页的 `next_before_turn` 原样作为新的
+`before_turn`；它是排他游标。只有 `has_more=true` 时才继续请求。前端应按 block 类型渲染：
+
+- `text`：用户文本按字面转义，assistant 文本可走 Markdown。
+- `reasoning`：默认折叠；`redacted=true` 或没有 `content` 时只显示元数据。
+- `tool_call/tool_result`：默认折叠，只显示 Core 返回的安全参数和结果预览。
+
+该接口不包含未提交草稿。不要把断线前缓存的 token 与返回历史直接拼接；应先把草稿标记为
+incomplete，再以 Core 返回的提交历史为准。
+
+### 5.6 `session.resume`
 
 `instruction` 是附加恢复指令，可以为空；它不是新的聊天消息。
 
@@ -270,7 +302,7 @@ Core daemon
 }
 ```
 
-### 5.6 `session.discard`
+### 5.7 `session.discard`
 
 ```json
 {
@@ -291,7 +323,7 @@ Core daemon
 
 没有待执行任务时返回 idle 语义；归档 Session 返回 archived 语义。前端必须按 `result.status` 分支，不能只判断 HTTP/TCP 成功。
 
-### 5.7 `session.delete`
+### 5.8 `session.delete`
 
 归档：
 
@@ -321,7 +353,7 @@ Core daemon
 
 硬删除不可恢复，前端必须二次确认。
 
-### 5.8 `session.reset`
+### 5.9 `session.reset`
 
 ```json
 {
@@ -350,7 +382,7 @@ Core daemon
 }
 ```
 
-### 5.9 `approval.list`
+### 5.10 `approval.list`
 
 ```json
 {
@@ -390,7 +422,7 @@ Core daemon
 
 审批对象目前尚未建模为严格公开响应类型，实际可能增加 `reason`、时间或规则字段；前端只应依赖上述核心字段并忽略未知字段。
 
-### 5.10 `approval.resolve`
+### 5.11 `approval.resolve`
 
 ```json
 {
@@ -418,11 +450,11 @@ deny_once  | deny_session  | deny_workspace
 
 当审批请求 `persistable=false` 时，只能发送 `allow_once` 或 `deny_once`。
 
-### 5.11 `approval.mode.get`
+### 5.12 `approval.mode.get`
 
 使用与 `approval.list` 相同的 Session scope。返回 `default_mode`、可为空的 `override_mode`、`effective_mode`、服务端 `supported_modes` 和 `pending_count`。前端必须使用服务端返回的模式列表，不能假定以后永远只有 `manual/accept_all`。
 
-### 5.12 `approval.mode.set`
+### 5.13 `approval.mode.set`
 
 接收 `mode=inherit|<supported mode>`。设置 `accept_all` 时必须同时传 `acknowledge_risk=true`，并在 UI 中明确说明：自动模式只处理之后产生的 `ASK`，已有 pending 不变，硬安全边界仍然生效。响应中的 `existing_pending_unchanged=true` 不是失败，而是提示客户端继续保留审批队列入口。
 
@@ -917,7 +949,7 @@ connection interrupted
      -> no pending execution: allow a new chat
 ```
 
-当前协议不支持事件游标和断线续传，断线前遗漏的 token 无法重新订阅。正式消息以 Core 持久化状态为准，但当前尚无公开的 Session 历史查询 RPC。
+当前协议不支持事件游标和断线续传，断线前遗漏的 token 无法重新订阅。正式消息以 Core 持久化状态为准；重连后使用 `session.history` 恢复已提交消息，并用 `session.status` 判断是否存在待恢复 Execution。
 
 ## 14. 错误处理
 
@@ -949,6 +981,7 @@ connection interrupted
 | 操作 | RPC |
 |---|---|
 | 查询当前 Session 状态 | `session.status` |
+| 分页读取已提交历史 | `session.history` |
 | 恢复暂停 Execution | `session.resume` |
 | 丢弃暂停 Execution | `session.discard` |
 | 归档或硬删除 Session | `session.delete` |
@@ -956,7 +989,8 @@ connection interrupted
 
 归档是默认删除语义；硬删除不可恢复，前端必须对 `hard_delete=true` 提供二次确认。
 
-当前没有 Session 列表和消息历史查询 RPC。因此通用 GUI 还不能只靠公开协议实现“会话侧边栏”和“加载完整历史”。不得通过直接查询 SQLite 绕过这一限制，应先扩展公开 RPC。
+当前仍没有 Session 列表 RPC，但已可通过 `session.history` 加载已知 Session 的完整提交历史。
+会话侧边栏需要另行增加 Session 列表接口；不得通过直接查询 SQLite 绕过这一限制。
 
 ## 16. Context 与 Token 用量
 
@@ -1004,6 +1038,7 @@ Transport 不决定 UI 文案，renderer 不发送 RPC，状态层不读取 Core
 - 工具审批允许、拒绝和再次审批均可继续同一 Execution。
 - 断线后不自动重发非幂等请求。
 - `session.status` 能驱动恢复和丢弃入口。
+- `session.history` 能按完整 Turn 分页，前插旧页时保持用户视口。
 - reasoning 与正式回答分离。
 - 未知事件和未知字段不会导致崩溃。
 - token、工具正文和敏感参数不会写入客户端日志。
@@ -1012,7 +1047,7 @@ Transport 不决定 UI 文案，renderer 不发送 RPC，状态层不读取 Core
 
 ## 21. 当前缺口
 
-- Session 列表与完整消息历史查询。
+- Session 列表查询。
 - 执行中取消。
 - 事件序号、断线续传和 Run 重新订阅。
 - 同一连接多请求并发。

@@ -7,7 +7,7 @@ import json
 from collections.abc import Awaitable, Callable
 from typing import Any
 
-from src.config.settings import CORE_HOST, CORE_PORT
+from src.config.settings import CORE_HOST, CORE_MAX_MESSAGE_BYTES, CORE_PORT
 
 EventCallback = Callable[[dict[str, Any]], Awaitable[None] | None]
 
@@ -65,10 +65,12 @@ class AsyncCoreClient:
         host: str = CORE_HOST,
         port: int = CORE_PORT,
         timeout: float = 15.0,
+        max_message_bytes: int = CORE_MAX_MESSAGE_BYTES,
     ) -> None:
         self._host = host
         self._port = port
         self._timeout = timeout
+        self._max_message_bytes = max(1, int(max_message_bytes))
         self._reader: asyncio.StreamReader | None = None
         self._writer: asyncio.StreamWriter | None = None
 
@@ -76,7 +78,11 @@ class AsyncCoreClient:
         """Open a TCP connection to the Core daemon."""
         try:
             self._reader, self._writer = await asyncio.wait_for(
-                asyncio.open_connection(self._host, self._port),
+                asyncio.open_connection(
+                    self._host,
+                    self._port,
+                    limit=self._max_message_bytes + 1,
+                ),
                 timeout=self._timeout,
             )
         except (ConnectionRefusedError, OSError, asyncio.TimeoutError) as exc:
@@ -145,8 +151,17 @@ class AsyncCoreClient:
                 )
             except asyncio.TimeoutError:
                 raise CoreConnectionInterruptedError("Read timeout") from None
+            except (ValueError, asyncio.LimitOverrunError) as exc:
+                raise CoreProtocolError(
+                    "Core response exceeds the configured NDJSON frame limit."
+                ) from exc
             except OSError as exc:
                 raise CoreConnectionInterruptedError(f"Read failed: {exc}") from exc
+
+            if len(raw_line) > self._max_message_bytes:
+                raise CoreProtocolError(
+                    "Core response exceeds the configured NDJSON frame limit."
+                )
 
             if not raw_line:
                 raise CoreConnectionInterruptedError("Connection closed by server")
