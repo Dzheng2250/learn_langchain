@@ -68,7 +68,7 @@
 ### 工具审批
 
 - `manual` 模式下，Core 确认 Execution 已以 `tool_approval` 暂停后，TUI 才在聊天日志与输入框之间显示内嵌审批条，避免 checkpoint 尚未提交时提前恢复。
-- 审批条不会遮挡历史内容，只提供三个高频动作：`A` 允许一次、`S` 在当前 Session 始终允许、`D` 拒绝一次。`persistable=false` 时隐藏 Session 允许按钮。
+- 审批条不会遮挡历史内容，以紧凑操作项提供三个高频动作：`A` 允许一次、`S` 在当前 Session 始终允许、`D` 拒绝一次。可可靠解析的复合命令可保存只匹配相同完整调用的 Session 规则；`persistable=false` 时隐藏 Session 允许项。
 - Workspace 级授权和持久拒绝等低频高级操作仍可通过 `/approve <request_id> <response>` 完成，不挤占日常审批界面。
 - `Ctrl+Y` 打开审批中心，可查看完整 pending 队列并切换 `inherit/manual/accept_all`。启用 `accept_all` 必须再确认一次；既有 pending 不会自动执行。
 - 状态栏显示 `approval: manual` 或 `approval: auto`。自动模式不会显示新审批条，但拒绝规则和路径、沙箱、网络硬边界仍会生效。

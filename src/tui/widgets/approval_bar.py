@@ -43,23 +43,42 @@ class ApprovalBar(Vertical):
 
     can_focus = True
     BINDINGS = [
-        Binding("a", "choose('allow_once')", "Allow once", priority=True),
-        Binding("s", "choose('allow_session')", "Allow Session", priority=True),
-        Binding("d", "choose('deny_once')", "Deny", priority=True),
+        Binding("a", "choose('allow_once')", "Allow once", show=False, priority=True),
+        Binding("s", "choose('allow_session')", "Allow Session", show=False, priority=True),
+        Binding("d", "choose('deny_once')", "Deny", show=False, priority=True),
     ]
     DEFAULT_CSS = """
     ApprovalBar {
         display: none;
         height: auto;
-        max-height: 9;
+        max-height: 7;
         border-top: solid $warning;
         background: $surface;
         padding: 0 1;
     }
     ApprovalBar .approval-title { text-style: bold; color: $warning; }
-    ApprovalBar .approval-detail { height: auto; max-height: 3; color: $text-muted; }
-    ApprovalBar Horizontal { height: 3; align-horizontal: left; }
-    ApprovalBar Button { min-width: 16; margin-right: 1; }
+    ApprovalBar .approval-detail { height: auto; max-height: 2; color: $text-muted; }
+    ApprovalBar .approval-actions { height: 3; align-horizontal: left; }
+    ApprovalBar Button {
+        width: auto;
+        min-width: 0;
+        height: 3;
+        min-height: 3;
+        border: none;
+        padding: 0 1;
+        margin: 0 1 0 0;
+        background: $panel;
+        color: $text;
+    }
+    ApprovalBar Button:hover, ApprovalBar Button:focus {
+        background: $primary;
+        color: $text;
+        text-style: bold;
+    }
+    ApprovalBar #approval-allow-once { color: $success; }
+    ApprovalBar #approval-allow-session { color: $accent; }
+    ApprovalBar #approval-deny { color: $error; }
+    ApprovalBar #approval-more { width: auto; color: $text-muted; }
     """
 
     class Decision(Message):
@@ -81,11 +100,11 @@ class ApprovalBar(Vertical):
     def compose(self) -> ComposeResult:
         yield Static("", id="approval-title", classes="approval-title", markup=False)
         yield Static("", id="approval-detail", classes="approval-detail", markup=False)
-        with Horizontal():
-            yield Button("A  Allow once", id="approval-allow-once", variant="success")
-            yield Button("S  Allow for Session", id="approval-allow-session", variant="primary")
-            yield Button("D  Deny", id="approval-deny", variant="error")
-            yield Static("Ctrl+Y: queue and mode", id="approval-more")
+        with Horizontal(classes="approval-actions"):
+            yield Button("A  Allow once", id="approval-allow-once")
+            yield Button("S  Allow in Session", id="approval-allow-session")
+            yield Button("D  Deny", id="approval-deny")
+            yield Static("Ctrl+Y more", id="approval-more")
 
     def show_request(self, request: dict[str, Any]) -> None:
         self.request = dict(request)

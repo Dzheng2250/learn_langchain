@@ -76,7 +76,7 @@ Tool 安全模块不再定义私有 Hook。它消费系统级 `PreToolUse`、`Pe
 | `allow_session` / `deny_session` | 为当前 Workspace 和 Session 保存规则。 |
 | `allow_workspace` / `deny_workspace` | 为当前 Workspace 保存跨 Session 规则。 |
 
-只有 `persistable=true` 的请求才能选择 Session 或 Workspace 范围。简单命令可保存解析后的 argv 前缀规则；管道、重定向、命令替换等复合 shell 调用只能单次处理。显式 deny 的优先级高于 allow。
+只有 `persistable=true` 的请求才能选择 Session 或 Workspace 范围。简单命令保存解析后的 argv 前缀规则，因此可覆盖同前缀的后续调用。能够被 Bash parser 完整解析的管道、重定向和命令连接等复合调用保存为 SHA-256 精确规则：规则不包含命令正文，并且只匹配完整内容相同的调用。无法可靠解析的 shell 语法仍只能单次处理。无论采用哪种规则，每次执行都要重新经过 Hook、Policy 与 Capability Enforcer；显式 deny 的优先级高于 allow。
 
 ## 暂停与恢复闭环
 

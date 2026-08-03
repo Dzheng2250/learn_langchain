@@ -256,16 +256,20 @@ class ToolSecurityTest(unittest.TestCase):
         self.assertNotIn(secret, rendered)
         self.assertIn("[REDACTED]", rendered)
 
-    def test_compound_shell_rule_is_not_persistable(self):
-        _key, persistable = command_rule_key("echo ok | grep ok")
-        self.assertFalse(persistable)
+    def test_compound_shell_rule_uses_persistable_exact_hash(self):
+        key, persistable = command_rule_key("echo ok | grep ok")
+
+        self.assertTrue(persistable)
+        self.assertTrue(key.startswith("command-exact-sha256:"))
+        self.assertNotIn("echo ok", key)
 
     def test_quoted_heredoc_parser_failure_is_exact_and_not_persistable(self):
         command = "python3 - <<'EOF'\nprint('ok')\nEOF"
 
         key, persistable = command_rule_key(command)
 
-        self.assertEqual(f"command-exact:{command}", key)
+        self.assertTrue(key.startswith("command-exact-sha256:"))
+        self.assertNotIn(command, key)
         self.assertFalse(persistable)
 
     def test_unexpected_policy_failure_becomes_a_tool_error(self):
@@ -539,6 +543,30 @@ class ToolSecurityTest(unittest.TestCase):
             self.context, rule_key=expanded_key, persistable=expanded_persistable
         )
         self.assertEqual(PolicyAction.ALLOW, allowed.action)
+
+    def test_compound_command_session_rule_matches_only_the_same_command(self):
+        rule_key, persistable = command_rule_key("echo ok | grep ok")
+        self.assertTrue(persistable)
+        decision = DefaultToolPolicyEngine(self.repository).evaluate(
+            self.context, rule_key=rule_key, persistable=persistable
+        )
+        request = ApprovalService(self.repository).request(self.context, decision)
+        self.repository.apply_response(
+            request["request_id"], ApprovalResponse.ALLOW_SESSION,
+            context=self.context, rule_key=rule_key, persistable=persistable,
+        )
+
+        same = DefaultToolPolicyEngine(self.repository).evaluate(
+            self.context, rule_key=command_rule_key("echo ok | grep ok")[0],
+            persistable=True,
+        )
+        different = DefaultToolPolicyEngine(self.repository).evaluate(
+            self.context, rule_key=command_rule_key("echo no | grep no")[0],
+            persistable=True,
+        )
+
+        self.assertEqual(PolicyAction.ALLOW, same.action)
+        self.assertEqual(PolicyAction.ASK, different.action)
 
     def test_pipeline_triggers_tool_hooks_once_when_wrapped_by_observed_node(self):
         calls = []

@@ -270,7 +270,7 @@ checkpoint 删除通过后台维护任务完成，因此返回成功不表示 ch
 {"request_id":"approval-id","response":"allow_once"}
 ```
 
-`response` 可为 `allow_once`、`allow_session`、`allow_workspace`、`deny_once`、`deny_session` 或 `deny_workspace`。该方法通过 LangGraph checkpoint 恢复原工具调用，不会重新开始整个 Turn。复合 shell 命令只允许单次审批。
+`response` 可为 `allow_once`、`allow_session`、`allow_workspace`、`deny_once`、`deny_session` 或 `deny_workspace`。该方法通过 LangGraph checkpoint 恢复原工具调用，不会重新开始整个 Turn。可可靠解析的复合 shell 命令使用完整调用的 SHA-256 精确规则，无法解析的 shell 语法只允许单次审批。
 
 ## `approval.mode.get`
 
