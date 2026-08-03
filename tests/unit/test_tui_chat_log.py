@@ -8,8 +8,8 @@ from rich.markup import render as render_markup
 from rich.text import Text
 
 from src.tui.screens.chat import ChatScreen
-from src.tui.screens.approval import approval_options
 from src.tui.renderer import render_event, render_task_progress
+from src.tui.widgets.approval_bar import ApprovalBar, inline_approval_options
 from src.tui.widgets.chat_log import ChatLog, _LogEntry, _ReasoningState
 
 
@@ -41,16 +41,13 @@ class TuiChatLogTest(unittest.TestCase):
     def test_non_persistable_approval_hides_scoped_responses(self):
         self.assertEqual(
             ("allow_once", "deny_once"),
-            tuple(response for response, _label in approval_options(False)),
+            inline_approval_options(False),
         )
 
-    def test_persistable_approval_exposes_all_scoped_responses(self):
+    def test_persistable_inline_approval_exposes_session_allow_only(self):
         self.assertEqual(
-            {
-                "allow_once", "deny_once", "allow_session", "allow_workspace",
-                "deny_session", "deny_workspace",
-            },
-            {response for response, _label in approval_options(True)},
+            ("allow_once", "allow_session", "deny_once"),
+            inline_approval_options(True),
         )
 
     def test_resource_activity_summary_uses_shared_core_shape(self):
@@ -456,9 +453,10 @@ class TuiChatLogTest(unittest.TestCase):
         screen = ChatScreen.__new__(ChatScreen)
         screen._streamed_response_active = True
         screen._pending_approval_ids = {"approval-1", "approval-2"}
+        approval_bar = SimpleNamespace(clear_request=lambda: None)
 
         def query_one(_self, _widget_type):
-            return log
+            return approval_bar if _widget_type is ApprovalBar else log
 
         screen.query_one = MethodType(query_one, screen)
 
@@ -939,6 +937,7 @@ class TuiChatLogTest(unittest.TestCase):
 
         status = FakeStatusBar()
         log = FakeLog()
+        approval_bar = SimpleNamespace(clear_request=lambda: None)
         screen = ChatScreen.__new__(ChatScreen)
         screen._session_name = "default"
         status_checked = {"value": False}
@@ -946,6 +945,8 @@ class TuiChatLogTest(unittest.TestCase):
         def query_one(_self, widget_type):
             if getattr(widget_type, "__name__", "") == "StatusBar":
                 return status
+            if widget_type is ApprovalBar:
+                return approval_bar
             return log
 
         async def check_status(_self):
@@ -1091,9 +1092,10 @@ class TuiChatLogTest(unittest.TestCase):
         screen._inflight_client = client
         screen._streamed_response_active = True
         screen._pending_approval_ids = {"approval-1", "approval-2"}
+        approval_bar = SimpleNamespace(clear_request=lambda: None)
 
         def query_one(_self, _widget_type):
-            return log
+            return approval_bar if _widget_type is ApprovalBar else log
 
         def run_worker(_self, awaitable, **_kwargs):
             asyncio.run(awaitable)

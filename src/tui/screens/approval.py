@@ -1,8 +1,7 @@
-"""Textual dialogs for tool approvals and approval-mode selection."""
+"""Textual dialogs for approval queue and mode management."""
 
 from __future__ import annotations
 
-import json
 from typing import Any
 
 from textual.app import ComposeResult
@@ -11,97 +10,6 @@ from textual.containers import Horizontal, Vertical
 from textual.screen import ModalScreen
 from textual.widgets import Button, Label, OptionList, RadioButton, RadioSet, Static
 from textual.widgets.option_list import Option
-
-
-def approval_options(persistable: bool) -> tuple[tuple[str, str], ...]:
-    """Return response choices in their stable keyboard/display order."""
-    choices = [
-        ("allow_once", "A  Allow once"),
-        ("deny_once", "D  Deny once"),
-    ]
-    if persistable:
-        choices.extend(
-            (
-                ("allow_session", "S  Allow for this Session"),
-                ("allow_workspace", "W  Allow for this Workspace"),
-                ("deny_session", "Shift+S  Deny for this Session"),
-                ("deny_workspace", "Shift+W  Deny for this Workspace"),
-            )
-        )
-    return tuple(choices)
-
-
-def approval_request_detail(request: dict[str, Any]) -> str:
-    """Build a defensive, content-free summary for one approval dialog."""
-    args = dict(request.get("args") or {})
-    for key in ("content", "old_text", "new_text"):
-        value = args.get(key)
-        if isinstance(value, str):
-            args[key] = f"<{len(value)} chars omitted>"
-    capabilities = ", ".join(
-        str(item) for item in request.get("capabilities") or ()
-    ) or "none"
-    scope = "scoped rules available" if request.get("persistable") else "one-time only"
-    reason = str(request.get("reason") or "Tool execution requires approval.")
-    return (
-        f"{reason}\nCapabilities: {capabilities}\n"
-        f"Arguments: {json.dumps(args, ensure_ascii=False, sort_keys=True)}\n"
-        f"Persistence: {scope}"
-    )
-
-
-class ToolApprovalModal(ModalScreen[str | None]):
-    """Resolve one pending request without requiring a slash command."""
-
-    BINDINGS = [
-        Binding("a", "choose('allow_once')", "Allow once", priority=True),
-        Binding("d", "choose('deny_once')", "Deny once", priority=True),
-        Binding("s", "choose('allow_session')", "Allow Session", priority=True),
-        Binding("w", "choose('allow_workspace')", "Allow Workspace", priority=True),
-        Binding("shift+s", "choose('deny_session')", "Deny Session", priority=True),
-        Binding("shift+w", "choose('deny_workspace')", "Deny Workspace", priority=True),
-        Binding("escape", "dismiss_pending", "Close", priority=True),
-    ]
-
-    CSS = """
-    ToolApprovalModal { align: center middle; }
-    ToolApprovalModal > Vertical {
-        width: 88; max-width: 92%; height: auto; max-height: 90%;
-        border: round $warning; background: $surface; padding: 1 2;
-    }
-    ToolApprovalModal .approval-title { text-style: bold; color: $warning; }
-    ToolApprovalModal .approval-detail { margin: 1 0; }
-    ToolApprovalModal OptionList { height: auto; max-height: 14; }
-    """
-
-    def __init__(self, request: dict[str, Any]) -> None:
-        super().__init__()
-        self.request = request
-
-    def compose(self) -> ComposeResult:
-        tool = str(self.request.get("tool") or "unknown")
-        detail = approval_request_detail(self.request)
-        persistable = bool(self.request.get("persistable", False))
-        options = [Option(label, id=response) for response, label in approval_options(persistable)]
-        with Vertical():
-            yield Label(f"Tool approval: {tool}", classes="approval-title")
-            yield Static(detail, classes="approval-detail", markup=False)
-            yield OptionList(*options, id="approval-options", markup=False)
-
-    def on_mount(self) -> None:
-        # Deliberately require an explicit choice; Enter must never imply approval.
-        self.query_one("#approval-options", OptionList).highlighted = None
-
-    def on_option_list_option_selected(self, event: OptionList.OptionSelected) -> None:
-        self.dismiss(str(event.option.id))
-
-    def action_choose(self, response: str) -> None:
-        allowed = {item[0] for item in approval_options(bool(self.request.get("persistable")))}
-        if response in allowed:
-            self.dismiss(response)
-
-    def action_dismiss_pending(self) -> None:
-        self.dismiss(None)
 
 
 class ApprovalCenterModal(ModalScreen[dict[str, str] | None]):

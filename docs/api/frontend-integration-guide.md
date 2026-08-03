@@ -991,7 +991,7 @@ frontend/
   application/recovery_service
   state/conversation_store
   presentation/event_renderer
-  presentation/approval_dialog
+  presentation/approval_view
 ```
 
 Transport 不决定 UI 文案，renderer 不发送 RPC，状态层不读取 Core 数据库。

@@ -67,10 +67,11 @@
 
 ### 工具审批
 
-- `manual` 模式下，Core 确认 Execution 已以 `tool_approval` 暂停后，TUI 才打开审批弹窗，避免 checkpoint 尚未提交时提前恢复。
-- 弹窗支持 `A`/`D` 单次允许或拒绝；可持久请求还支持 `S`/`W` 与 `Shift+S`/`Shift+W`。没有默认批准项，`Esc` 只关闭弹窗并保留 pending。
-- `Ctrl+Y` 打开审批中心，可查看 pending 数量并切换 `inherit/manual/accept_all`。启用 `accept_all` 必须再确认一次；既有 pending 不会自动执行。
-- 状态栏显示 `approval: manual` 或 `approval: auto`。自动模式不会弹出新审批窗口，但拒绝规则和路径、沙箱、网络硬边界仍会生效。
+- `manual` 模式下，Core 确认 Execution 已以 `tool_approval` 暂停后，TUI 才在聊天日志与输入框之间显示内嵌审批条，避免 checkpoint 尚未提交时提前恢复。
+- 审批条不会遮挡历史内容，只提供三个高频动作：`A` 允许一次、`S` 在当前 Session 始终允许、`D` 拒绝一次。`persistable=false` 时隐藏 Session 允许按钮。
+- Workspace 级授权和持久拒绝等低频高级操作仍可通过 `/approve <request_id> <response>` 完成，不挤占日常审批界面。
+- `Ctrl+Y` 打开审批中心，可查看完整 pending 队列并切换 `inherit/manual/accept_all`。启用 `accept_all` 必须再确认一次；既有 pending 不会自动执行。
+- 状态栏显示 `approval: manual` 或 `approval: auto`。自动模式不会显示新审批条，但拒绝规则和路径、沙箱、网络硬边界仍会生效。
 - `/approve`、`/approvals` 和 `/approval-mode` 保留为无鼠标、脚本调试和 UI 故障恢复入口。
 
 ### Goal 模式

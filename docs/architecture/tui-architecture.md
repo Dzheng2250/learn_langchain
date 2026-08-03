@@ -326,9 +326,11 @@ TUI 的用户命令、快捷键、当前能力和限制统一维护在
 
 ## 工具审批 UI
 
-TUI 使用 Textual 原生 `ModalScreen`、`OptionList` 和 `RadioSet`，不在 ChatLog 中自行实现焦点、键盘导航或选择状态。`tool_approval_required` 到达时只进入本地 pending 队列；必须等同一 RPC 的终态确认 `status=paused`、`stop_reason=tool_approval` 后，才打开单请求弹窗。这样 UI 不会在 LangGraph checkpoint 尚未持久化时调用 `approval.resolve`。
+TUI 使用独立的 `ApprovalBar` widget 展示单个工具审批，并使用 Textual 原生 `OptionList`、`RadioSet` 和 `ModalScreen` 实现用户主动打开的审批中心与模式确认。`ApprovalBar` 位于 ChatLog 与 InputBar 之间，因此审批不会遮挡历史内容。`tool_approval_required` 到达时只进入本地 pending 队列；必须等同一 RPC 的终态确认 `status=paused`、`stop_reason=tool_approval` 后，才显示审批条。这样 UI 不会在 LangGraph checkpoint 尚未持久化时调用 `approval.resolve`。
 
-审批弹窗返回稳定的响应字符串，`ChatScreen` 再调用通用 RPC；弹窗本身不判断 Policy，也不能放宽权限。`persistable=false` 时不会创建 Session/Workspace 选项。审批中心通过 `approval.mode.get/set` 管理 Session override，启用 `accept_all` 使用独立确认弹窗。Session 切换和 daemon 重连后都从 Core 重新读取有效模式，状态栏只显示服务端事实。
+内嵌审批条只暴露 `allow_once`、`allow_session` 和 `deny_once` 三个高频响应；`persistable=false` 时隐藏 `allow_session`。Workspace 级允许及持久拒绝继续由通用 `/approve` 恢复入口提供。Widget 只发送稳定响应字符串，不判断 Policy，也不能放宽权限。审批中心通过 `approval.mode.get/set` 管理 Session override，启用 `accept_all` 使用独立确认弹窗。Session 切换和 daemon 重连后都从 Core 重新读取有效模式，状态栏只显示服务端事实。
+
+连续审批时，正在通过 `approval.resolve` 恢复的 request ID 会进入本地 resolving 集合，并从审批条和审批中心候选队列中排除。Core 在恢复过程中产生下一条 pending 时，界面只能显示新 request，防止旧审批被重复提交。
 
 已有 pending 与模式是两类状态：切换模式不消费本地队列，也不批量恢复 Execution。任何新前端都应复用相同 RPC，而不是读取 SQLite 或复制 TUI 状态机。
 

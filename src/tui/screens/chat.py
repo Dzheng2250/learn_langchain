@@ -24,7 +24,6 @@ from src.tui.config import TuiConfig
 from src.tui.screens.approval import (
     AcceptAllConfirmationModal,
     ApprovalCenterModal,
-    ToolApprovalModal,
 )
 from src.tui.renderer import (
     is_task_tool_step,
@@ -33,6 +32,7 @@ from src.tui.renderer import (
     render_task_progress,
 )
 from src.tui.widgets.chat_log import ChatLog
+from src.tui.widgets.approval_bar import ApprovalBar
 from src.tui.widgets.input_bar import InputBar
 from src.tui.widgets.status_bar import StatusBar
 
@@ -97,12 +97,11 @@ class ChatScreen(Screen):
         self._pending_approval_ids: set[str] = set()
         self._pending_approval_requests: dict[str, dict[str, Any]] = {}
         self._resolving_approval_ids: set[str] = set()
-        self._approval_modal_open = False
-        self._active_approval_request_id: str | None = None
 
     def compose(self):
         yield StatusBar()
         yield ChatLog()
+        yield ApprovalBar()
         yield InputBar()
         yield Footer()
 
@@ -218,6 +217,9 @@ class ChatScreen(Screen):
             self.query_one(StatusBar).set_approval_mode(
                 str(approval.get("effective_mode") or "manual")
             )
+            if pending is not None and pending.get("stop_reason") == "tool_approval":
+                await self._list_approvals()
+                self.call_after_refresh(self._show_next_approval)
         except CoreUnavailableError:
             status_bar = self.query_one(StatusBar)
             status_bar.set_disconnected("daemon not running")
@@ -338,7 +340,7 @@ class ChatScreen(Screen):
                 resolving_ids = getattr(self, "_resolving_approval_ids", None)
                 if resolving_ids is not None:
                     resolving_ids.clear()
-                self._active_approval_request_id = None
+                self.query_one(ApprovalBar).clear_request()
                 bar = self.query_one(StatusBar)
                 bar.set_session(args)
                 self._log_note(f"Switched to session: {args}")
@@ -693,8 +695,11 @@ class ChatScreen(Screen):
             self._clear_inflight(current_task, client)
 
     def _show_next_approval(self, request_id: str | None = None) -> None:
-        """Open one approval dialog only after Core confirmed a paused turn."""
-        if self._approval_modal_open or not self._paused_execution:
+        """Show one approval inline only after Core confirmed a paused turn."""
+        if not self._paused_execution:
+            return
+        approval_bar = self.query_one(ApprovalBar)
+        if approval_bar.active_request_id is not None:
             return
         requests = getattr(self, "_pending_approval_requests", {})
         resolving = getattr(self, "_resolving_approval_ids", set())
@@ -717,20 +722,15 @@ class ChatScreen(Screen):
         request_id = str(request.get("request_id") or "")
         if not request_id:
             return
-        self._approval_modal_open = True
-        self._active_approval_request_id = request_id
-        self.app.push_screen(ToolApprovalModal(request), self._approval_modal_result)
+        approval_bar.show_request(request)
 
-    def _approval_modal_result(self, response: str | None) -> None:
-        self._approval_modal_open = False
-        request_id = self._active_approval_request_id
-        self._active_approval_request_id = None
-        if response is None:
-            return
-        if request_id is None:
-            return
+    def on_approval_bar_decision(self, event: ApprovalBar.Decision) -> None:
+        """Resolve the explicit action selected in the inline approval bar."""
+        request_id = event.request_id
+        self.query_one(ApprovalBar).clear_request(request_id)
+        self.query_one(InputBar).focus()
         self.run_worker(
-            self._resolve_approval(f"{request_id} {response}"),
+            self._resolve_approval(f"{request_id} {event.response}"),
             exclusive=False,
             name="resolve-tool-approval",
         )
@@ -861,7 +861,7 @@ class ChatScreen(Screen):
                 requests[request_id] = dict(data)
             safe_detail = render_event(params) or "[yellow]Tool approval required[/yellow]"
             self.query_one(ChatLog).write_event(
-                f"{safe_detail}\n[dim]Use A/D in the approval dialog or Ctrl+Y to review.[/dim]"
+                f"{safe_detail}\n[dim]Use the inline approval bar or Ctrl+Y to review.[/dim]"
             )
             return
         if event == "reasoning_started":
@@ -1044,7 +1044,7 @@ class ChatScreen(Screen):
         resolving_ids = getattr(self, "_resolving_approval_ids", None)
         if resolving_ids is not None:
             resolving_ids.clear()
-        self._active_approval_request_id = None
+        self.query_one(ApprovalBar).clear_request()
 
         if task is not None and not task.done():
             task.cancel()

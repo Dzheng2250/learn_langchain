@@ -1,7 +1,6 @@
-"""Mounted Textual tests for tool-approval dialogs."""
+"""Mounted Textual tests for inline and modal approval controls."""
 
 import unittest
-from unittest.mock import PropertyMock, patch
 
 from textual.app import App
 from textual.widgets import Button, OptionList
@@ -9,11 +8,12 @@ from textual.widgets import Button, OptionList
 from src.tui.screens.approval import (
     AcceptAllConfirmationModal,
     ApprovalCenterModal,
-    ToolApprovalModal,
-    approval_request_detail,
 )
 from src.tui.client import safe_rpc_error_detail
 from src.tui.screens.chat import ChatScreen
+from src.tui.widgets.approval_bar import ApprovalBar, approval_request_detail
+from src.tui.widgets.chat_log import ChatLog
+from src.tui.widgets.input_bar import InputBar
 
 
 class TuiApprovalModalTest(unittest.IsolatedAsyncioTestCase):
@@ -29,27 +29,60 @@ class TuiApprovalModalTest(unittest.IsolatedAsyncioTestCase):
         self.assertIn("file_write", detail)
         self.assertNotIn("private-body", detail)
 
-    async def test_quick_allow_requires_an_explicit_key(self) -> None:
+    async def test_inline_quick_allow_posts_an_explicit_decision(self) -> None:
         results = []
-        app = App()
+
+        class ApprovalApp(App):
+            def compose(self):
+                yield ApprovalBar()
+
+            def on_approval_bar_decision(self, event: ApprovalBar.Decision) -> None:
+                results.append((event.request_id, event.response))
+
+        app = ApprovalApp()
         async with app.run_test() as pilot:
-            app.push_screen(
-                ToolApprovalModal({
-                    "tool": "write_workspace_file",
-                    "reason": "Write notes.txt",
-                    "persistable": False,
-                }),
-                results.append,
-            )
+            bar = app.query_one(ApprovalBar)
+            bar.show_request({
+                "request_id": "request-inline",
+                "tool": "write_workspace_file",
+                "reason": "Write notes.txt",
+                "persistable": False,
+            })
             await pilot.pause()
-            options = app.screen.query_one("#approval-options", OptionList)
-            self.assertIsNone(options.highlighted)
-            self.assertEqual(2, options.option_count)
+            self.assertTrue(bar.display)
+            self.assertFalse(
+                bar.query_one("#approval-allow-session", Button).display
+            )
 
             await pilot.press("a")
             await pilot.pause()
 
-        self.assertEqual(["allow_once"], results)
+        self.assertEqual([("request-inline", "allow_once")], results)
+
+    async def test_inline_bar_preserves_chat_log_and_input_widgets(self) -> None:
+        class MountedChatScreen(ChatScreen):
+            def on_mount(self) -> None:
+                pass
+
+        app = App()
+        async with app.run_test() as pilot:
+            app.push_screen(MountedChatScreen())
+            await pilot.pause()
+            screen = app.screen
+            bar = screen.query_one(ApprovalBar)
+            bar.show_request({
+                "request_id": "request-inline",
+                "tool": "run_command_in_container",
+                "persistable": True,
+            })
+            await pilot.pause()
+
+            self.assertTrue(bar.display)
+            self.assertTrue(screen.query_one(ChatLog).display)
+            self.assertTrue(screen.query_one(InputBar).display)
+            self.assertTrue(
+                bar.query_one("#approval-allow-session", Button).display
+            )
 
     async def test_all_dialogs_mount_with_textual_css(self) -> None:
         app = App()
@@ -103,31 +136,25 @@ class TuiApprovalModalTest(unittest.IsolatedAsyncioTestCase):
         )
 
     def test_next_dialog_skips_request_currently_being_resolved(self) -> None:
-        pushed = []
+        shown = []
         screen = ChatScreen.__new__(ChatScreen)
-        screen._approval_modal_open = False
         screen._paused_execution = True
         screen._resolving_approval_ids = {"request-old"}
         screen._pending_approval_requests = {
             "request-old": {"request_id": "request-old", "tool": "old"},
             "request-new": {"request_id": "request-new", "tool": "new"},
         }
-        fake_app = type("App", (), {
-            "push_screen": lambda _self, modal, callback: pushed.append(
-                (modal.request["request_id"], callback)
-            )
+        bar = type("Bar", (), {
+            "active_request_id": None,
+            "show_request": lambda _self, request: shown.append(
+                request["request_id"]
+            ),
         })()
+        screen.query_one = lambda widget_type: bar
 
-        with patch.object(
-            ChatScreen,
-            "app",
-            new_callable=PropertyMock,
-            return_value=fake_app,
-        ):
-            ChatScreen._show_next_approval(screen)
+        ChatScreen._show_next_approval(screen)
 
-        self.assertEqual("request-new", screen._active_approval_request_id)
-        self.assertEqual("request-new", pushed[0][0])
+        self.assertEqual(["request-new"], shown)
 
     def test_rpc_error_detail_excludes_rejected_input_values(self) -> None:
         detail = safe_rpc_error_detail([
