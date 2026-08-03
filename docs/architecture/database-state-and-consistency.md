@@ -97,7 +97,7 @@ CompletedTurnCommitter.commit()
 - `SQLiteMemoryRetrievalStore` 负责长期记忆召回。
 - 前台 `ConversationContextLoader` 直接依赖 Session 与 Memory 小端口，`TurnExecutionLoop` 不再为每轮创建 `LocalStateStore` 兼容 facade。
 - `messages.raw` 的序列化、`messages.parent_message_id` 链接、分支头更新和 execution 关联仍由原 SQLite 写入路径保证。
-- `session.history` 通过 `ConversationHistoryReader` 读取已提交消息：活动分支从 head 沿 `parent_message_id` 递归读取完整祖先链；旧 Session 或无效分支头按 `turn_index, message_ordinal` 回退。分页按完整 Turn 选择，不使用 `recent_messages` 缓存，也不返回未提交 checkpoint 草稿。
+- `session.history` 通过 `ConversationHistoryReader` 读取已提交消息：活动分支从 head 沿 `parent_message_id` 递归读取完整祖先链；只有没有 branch 元数据的旧 Session 才按 `turn_index, message_ordinal` 回退，损坏的活动分支会安全返回空历史。分页按完整 Turn 选择，不使用 `recent_messages` 缓存，也不返回未提交 checkpoint 草稿。`session.reset` 使用同一血统重建近期上下文，不能混入兄弟分支。
 
 也就是说，本轮拆分不会改变“成功 turn 必须先完整写入 `state.db` 才返回 done”的耐久性边界。未来如果替换会话历史后端，新后端必须通过同一组 contract tests 证明消息顺序、raw 结构和 turn 原子提交语义没有变化。
 

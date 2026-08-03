@@ -293,6 +293,34 @@ class SessionHistoryQueryServiceTest(unittest.TestCase):
         encoded = json.dumps(result, ensure_ascii=False).encode("utf-8")
         self.assertLess(len(encoded), 800_000)
 
+    def test_single_oversized_turn_is_projected_below_frame_budget(self):
+        content = "界" * 400_000
+        service = SessionHistoryQueryService(
+            lifecycle_store=LifecycleStore((SimpleNamespace(), False)),
+            history_reader=HistoryReader(
+                ConversationHistoryPage(
+                    (record("oversized", 7, 1, "assistant", AIMessage(content=content)),),
+                    None,
+                    False,
+                )
+            ),
+        )
+
+        result = service.list_history(".", "oversized", limit_turns=30)
+
+        self.assertEqual(1, len(result["turns"]))
+        turn = result["turns"][0]
+        block = turn["messages"][0]["blocks"][0]
+        self.assertTrue(turn["truncated"])
+        self.assertTrue(block["truncated"])
+        self.assertEqual(len(content), block["char_count"])
+        self.assertEqual(len(content.encode("utf-8")), block["original_bytes"])
+        self.assertTrue(block["text"].endswith("<History content truncated>"))
+        self.assertLess(
+            len(json.dumps(result, ensure_ascii=False).encode("utf-8")),
+            800_000,
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

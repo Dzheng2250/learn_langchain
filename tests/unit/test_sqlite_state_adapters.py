@@ -203,7 +203,7 @@ class SQLiteStateAdapterTest(unittest.TestCase):
         self.assertEqual("fallback", page.messages[0].content)
         self.assertIsNone(page.messages[0].raw)
 
-    def test_conversation_history_page_falls_back_for_invalid_branch_head(self):
+    def test_conversation_history_page_fails_closed_for_invalid_branch_head(self):
         self.archive_and_save(
             1,
             [HumanMessage(content="legacy-user"), AIMessage(content="legacy-answer")],
@@ -226,10 +226,89 @@ class SQLiteStateAdapterTest(unittest.TestCase):
             limit_turns=30,
         )
 
+        self.assertEqual((), page.messages)
+        self.assertFalse(page.has_more)
+
+    def test_conversation_history_page_uses_legacy_order_without_branch_metadata(self):
+        self.archive_and_save(
+            1,
+            [HumanMessage(content="legacy-user"), AIMessage(content="legacy-answer")],
+            AgentContextState(),
+        )
+        with self.database.transaction() as conn:
+            conn.execute(
+                "UPDATE sessions SET active_branch_id=NULL WHERE session_id=?",
+                (str(self.session.session_id),),
+            )
+            conn.execute(
+                "DELETE FROM branches WHERE session_id=?",
+                (str(self.session.session_id),),
+            )
+
+        page = SQLiteConversationHistoryStore(self.database).list_page(
+            self.session,
+            before_turn=None,
+            limit_turns=30,
+        )
+
         self.assertEqual(
             ["legacy-user", "legacy-answer"],
             [item.content for item in page.messages],
         )
+
+    def test_empty_active_branch_does_not_expose_previous_branch_messages(self):
+        self.archive_and_save(
+            1,
+            [HumanMessage(content="previous-user"), AIMessage(content="previous-answer")],
+            AgentContextState(),
+        )
+        branch_id = "empty-history-test-branch"
+        with self.database.transaction() as conn:
+            conn.execute(
+                """
+                INSERT INTO branches(
+                    branch_id, workspace_id, session_id, branch_name,
+                    head_message_id, created_from_message_id
+                ) VALUES (?, ?, ?, 'empty', NULL, NULL)
+                """,
+                (
+                    branch_id,
+                    str(self.workspace.workspace_id),
+                    str(self.session.session_id),
+                ),
+            )
+            conn.execute(
+                "UPDATE sessions SET active_branch_id=? WHERE session_id=?",
+                (branch_id, str(self.session.session_id)),
+            )
+
+        page = SQLiteConversationHistoryStore(self.database).list_page(
+            self.session,
+            before_turn=None,
+            limit_turns=30,
+        )
+
+        self.assertEqual((), page.messages)
+
+    def test_missing_active_branch_pointer_does_not_scan_existing_branches(self):
+        self.archive_and_save(
+            1,
+            [HumanMessage(content="branch-user"), AIMessage(content="branch-answer")],
+            AgentContextState(),
+        )
+        with self.database.transaction() as conn:
+            conn.execute(
+                "UPDATE sessions SET active_branch_id=NULL WHERE session_id=?",
+                (str(self.session.session_id),),
+            )
+
+        page = SQLiteConversationHistoryStore(self.database).list_page(
+            self.session,
+            before_turn=None,
+            limit_turns=30,
+        )
+
+        self.assertEqual((), page.messages)
 
 
     def test_conversation_history_content_projection_extracts_text_blocks(self):
@@ -384,6 +463,68 @@ class SQLiteStateAdapterTest(unittest.TestCase):
         )
         self.assertEqual("answer-14", state.recent_messages[-1].content)
         self.assertEqual(0, state.context_tokens)
+
+    def test_conversation_history_rebuild_recent_uses_active_branch_lineage(self):
+        self.archive_and_save(
+            1,
+            [HumanMessage(content="root-user"), AIMessage(content="root-answer")],
+            AgentContextState(),
+        )
+        with self.database.connect() as conn:
+            active_branch_id = conn.execute(
+                "SELECT active_branch_id FROM sessions WHERE session_id=?",
+                (str(self.session.session_id),),
+            ).fetchone()["active_branch_id"]
+            root_head = conn.execute(
+                "SELECT head_message_id FROM branches WHERE branch_id=?",
+                (active_branch_id,),
+            ).fetchone()["head_message_id"]
+        self.archive_and_save(
+            2,
+            [HumanMessage(content="old-path"), AIMessage(content="old-answer")],
+            AgentContextState(),
+        )
+        branch_id = "recent-test-branch"
+        with self.database.transaction() as conn:
+            conn.execute(
+                """
+                INSERT INTO branches(
+                    branch_id, workspace_id, session_id, branch_name,
+                    head_message_id, created_from_message_id
+                ) VALUES (?, ?, ?, 'alternate', ?, ?)
+                """,
+                (
+                    branch_id,
+                    str(self.workspace.workspace_id),
+                    str(self.session.session_id),
+                    root_head,
+                    root_head,
+                ),
+            )
+            conn.execute(
+                "UPDATE sessions SET active_branch_id=?, recent_messages='[]' "
+                "WHERE session_id=?",
+                (branch_id, str(self.session.session_id)),
+            )
+            SQLiteConversationHistoryStore(
+                self.database,
+                transaction_conn=conn,
+            ).append_messages(
+                self.session,
+                2,
+                [HumanMessage(content="new-path"), AIMessage(content="new-answer")],
+            )
+
+        recovered = SQLiteConversationHistoryStore(self.database).rebuild_recent(
+            self.session
+        )
+        state, _turn_index = self.store.load_session(self.session)
+
+        self.assertEqual(4, recovered)
+        self.assertEqual(
+            ["root-user", "root-answer", "new-path", "new-answer"],
+            [message.content for message in state.recent_messages],
+        )
 
 
     def test_session_store_loads_legacy_recent_message_cache(self):

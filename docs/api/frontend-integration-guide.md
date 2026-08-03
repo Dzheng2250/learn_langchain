@@ -264,6 +264,10 @@ Core daemon
 - `reasoning`：默认折叠；`redacted=true` 或没有 `content` 时只显示元数据。
 - `tool_call/tool_result`：默认折叠，只显示 Core 返回的安全参数和结果预览。
 
+如果单个 Turn 超过历史响应预算，Core 会保持 Turn/message/block 边界并截断超大正文。
+`truncated=true` 表示当前内容只是安全投影；`char_count` 和 `original_bytes` 表示截断前体积。
+前端应显示明确的截断标记，不应尝试把下一页内容拼接到这个 block。
+
 该接口不包含未提交草稿。不要把断线前缓存的 token 与返回历史直接拼接；应先把草稿标记为
 incomplete，再以 Core 返回的提交历史为准。
 

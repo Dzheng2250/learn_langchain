@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from copy import deepcopy
 from collections import defaultdict
 from collections.abc import Mapping
 from typing import Any
@@ -20,6 +21,7 @@ _CONTENT_KEYS = {"content", "file_content", "old_text", "new_text"}
 _TOOL_RESULT_LIMIT = 600
 _VERBOSE_TOOL_RESULT_LIMIT = 8000
 _HISTORY_PAGE_MAX_BYTES = 786_432
+_HISTORY_TRUNCATION_MARKER = "\n\n<History content truncated>"
 _VERBOSE_RESULT_TOOLS = {
     "delegate_to_subagent", "task_get", "task_list", "task_plan", "task_update",
 }
@@ -181,6 +183,7 @@ class SessionHistoryQueryService:
 
     @staticmethod
     def _tool_result_block(record, message) -> dict[str, Any]:
+        """Project a LangChain ToolMessage whose error state lives in status."""
         name = str(getattr(message, "name", "") or "")
         tool_call_id = str(getattr(message, "tool_call_id", "") or "")
         text = message_content_text(message) if message is not None else record.content
@@ -218,10 +221,9 @@ def _bounded_turn_page(
     """Keep newest complete Turns inside a conservative NDJSON response budget."""
     selected: list[dict[str, Any]] = []
     used_bytes = 0
-    for turn in reversed(turns):
-        turn_bytes = len(
-            json.dumps(turn, ensure_ascii=False, default=str).encode("utf-8")
-        )
+    for original_turn in reversed(turns):
+        turn = _fit_turn_to_budget(original_turn, _HISTORY_PAGE_MAX_BYTES)
+        turn_bytes = _json_bytes(turn)
         if selected and used_bytes + turn_bytes > _HISTORY_PAGE_MAX_BYTES:
             break
         selected.append(turn)
@@ -236,7 +238,122 @@ def _bounded_turn_page(
     return selected, effective_cursor, effective_has_more
 
 
+def _fit_turn_to_budget(
+    turn: dict[str, Any],
+    max_bytes: int,
+) -> dict[str, Any]:
+    """Project one oversized Turn without splitting it across history pages."""
+    if _json_bytes(turn) <= max_bytes:
+        return turn
+    upper = max(_projectable_byte_lengths(turn), default=0)
+    best = _project_turn(turn, 0)
+    if _json_bytes(best) > max_bytes:
+        return _minimal_turn_projection(turn)
+    lower = 0
+    while lower <= upper:
+        candidate_limit = (lower + upper) // 2
+        candidate = _project_turn(turn, candidate_limit)
+        if _json_bytes(candidate) <= max_bytes:
+            best = candidate
+            lower = candidate_limit + 1
+        else:
+            upper = candidate_limit - 1
+    return best
+
+
+def _project_turn(turn: dict[str, Any], content_byte_limit: int) -> dict[str, Any]:
+    projected = deepcopy(turn)
+    projected["truncated"] = True
+    for message in projected.get("messages", []):
+        if not isinstance(message, dict):
+            continue
+        for block in message.get("blocks", []):
+            if not isinstance(block, dict):
+                continue
+            block_type = str(block.get("type") or "")
+            field = {
+                "text": "text",
+                "reasoning": "content",
+                "tool_result": "content",
+            }.get(block_type)
+            if field:
+                _truncate_block_field(block, field, content_byte_limit)
+            if block_type == "tool_call" and "args" in block:
+                args_bytes = _json_bytes(block["args"])
+                if args_bytes > content_byte_limit:
+                    block["args"] = {
+                        "_truncated": True,
+                        "_original_bytes": args_bytes,
+                    }
+    return projected
+
+
+def _truncate_block_field(block: dict[str, Any], field: str, max_bytes: int) -> None:
+    value = block.get(field)
+    if not isinstance(value, str):
+        return
+    encoded = value.encode("utf-8")
+    if len(encoded) <= max_bytes:
+        return
+    marker = _HISTORY_TRUNCATION_MARKER.encode("utf-8")
+    if max_bytes <= len(marker):
+        rendered = marker[:max_bytes].decode("utf-8", errors="ignore")
+    else:
+        prefix = encoded[: max_bytes - len(marker)].decode("utf-8", errors="ignore")
+        rendered = prefix + _HISTORY_TRUNCATION_MARKER
+    block[field] = rendered
+    block["truncated"] = True
+    block["char_count"] = len(value)
+    block["original_bytes"] = len(encoded)
+
+
+def _projectable_byte_lengths(turn: dict[str, Any]) -> list[int]:
+    lengths: list[int] = []
+    for message in turn.get("messages", []):
+        if not isinstance(message, dict):
+            continue
+        for block in message.get("blocks", []):
+            if not isinstance(block, dict):
+                continue
+            block_type = str(block.get("type") or "")
+            field = {
+                "text": "text",
+                "reasoning": "content",
+                "tool_result": "content",
+            }.get(block_type)
+            value = block.get(field) if field else None
+            if isinstance(value, str):
+                lengths.append(len(value.encode("utf-8")))
+            if block_type == "tool_call" and "args" in block:
+                lengths.append(_json_bytes(block["args"]))
+    return lengths
+
+
+def _minimal_turn_projection(turn: dict[str, Any]) -> dict[str, Any]:
+    """Return a bounded diagnostic when even block metadata is pathological."""
+    return {
+        "turn_index": int(turn.get("turn_index") or 0),
+        "truncated": True,
+        "original_message_count": len(turn.get("messages", [])),
+        "messages": [{
+            "message_id": "",
+            "role": "assistant",
+            "message_type": "HistoryProjection",
+            "blocks": [{
+                "type": "text",
+                "text": "<Turn content omitted because it exceeds the history response limit.>",
+                "truncated": True,
+            }],
+        }],
+    }
+
+
+def _json_bytes(value: Any) -> int:
+    return len(json.dumps(value, ensure_ascii=False, default=str).encode("utf-8"))
+
+
 def _tool_result_from_block(value: Mapping) -> dict[str, Any]:
+    """Project a native Anthropic tool_result block with an is_error field."""
     name = str(value.get("name") or "")
     text = message_content_text(value.get("content"))
     if name in _CONTENT_RESULT_TOOLS:

@@ -229,13 +229,18 @@ Session 返回空页，归档 Session 仍可读取。
 工具结果只返回安全预览。响应不包含数据库 `raw`、thinking signature、完整文件正文或密钥。
 
 活动分支存在时，Core 从 branch head 沿 `parent_message_id` 读取祖先链，因此分支历史包含分叉点
-之前的上下文，但不混入其他分支。旧 Session 或无效 branch head 会回退到
-`turn_index, message_ordinal` 顺序。
+之前的上下文，但不混入其他分支。只有没有 `active_branch_id` 的旧 Session 才回退到
+`turn_index, message_ordinal` 顺序。已经进入 branch 模式但 branch/head 为空、丢失或损坏时返回空页，
+避免通过全 Session 扫描泄漏兄弟分支。
 
 `limit_turns` 是数量上限，不保证响应一定包含这么多 Turn。为了让一条 UTF-8 NDJSON 响应保持在
 Core 的消息帧限制内，服务端还会按序列化字节预算减少本页数量，但只会移除完整 Turn。此时
 `has_more=true`，客户端应继续使用 `next_before_turn` 请求更早历史，不能通过增大
 `limit_turns` 假设可以绕过帧限制。
+
+单个 Turn 自身超过历史页预算时不会被拆到两页。Core 会保留 Turn/message/block 结构，对超大
+正文做 UTF-8 安全投影，并在 Turn 或 block 上返回 `truncated=true`；block 同时提供原始
+`char_count` 和 `original_bytes`。前端必须展示截断提示，不能把投影正文当成完整历史。
 
 ## `session.resume`
 
@@ -313,7 +318,7 @@ checkpoint 删除通过后台维护任务完成，因此返回成功不表示 ch
 
 `recovered_messages` 表示从归档消息中恢复了多少条消息到 `recent_messages`。如果 Session 已被归档，返回 `status=archived` 且 `recovered_messages=0`。
 
-**恢复原理**：`recent_messages` 是 `sessions` 行中的历史兼容 JSON 缓存列，当前保存最近 N 个完整 Turn 用于构建 LLM 输入（N 由 `RECENT_TURN_LIMIT` 控制）。一个 Turn 可以包含多条 message，例如用户输入、AI 回复和工具结果。当缓存异常或需要重建时，`session.reset` 会从 `messages.raw` 按完整 Turn 边界恢复近期上下文。
+**恢复原理**：`recent_messages` 是 `sessions` 行中的历史兼容 JSON 缓存列，当前保存最近 N 个完整 Turn 用于构建 LLM 输入（N 由 `RECENT_TURN_LIMIT` 控制）。一个 Turn 可以包含多条 message，例如用户输入、AI 回复和工具结果。当缓存异常或需要重建时，`session.reset` 会从 `messages.raw` 按完整 Turn 边界恢复近期上下文；存在活动分支时只沿当前 branch head 的祖先链重建，不混入兄弟分支。
 
 ## `approval.list`
 
