@@ -888,6 +888,15 @@ class ChatScreen(Screen):
             if progress is not None:
                 self.query_one(ChatLog).write_task_progress(progress)
 
+        if event == "step" and data.get("type") == "agent_message":
+            log = self.query_one(ChatLog)
+            if self._streamed_response_active:
+                log.flush_tokens()
+            else:
+                log.write_message(str(data.get("content") or ""))
+            self._streamed_response_active = False
+            return
+
         markup = render_event(params)
         if markup is None:
             return
@@ -901,14 +910,6 @@ class ChatScreen(Screen):
             self._streamed_response_active = False
             return
 
-        if (
-            event == "step"
-            and data.get("type") == "agent_message"
-            and self._streamed_response_active
-        ):
-            self.query_one(ChatLog).flush_tokens()
-            self._streamed_response_active = False
-            return
         log = self.query_one(ChatLog)
         log.write_event(markup)
         self._streamed_response_active = False

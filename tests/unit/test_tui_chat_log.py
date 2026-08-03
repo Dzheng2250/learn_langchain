@@ -287,6 +287,28 @@ class TuiChatLogTest(unittest.TestCase):
         self.assertEqual(1, len(log.widgets))
         self.assertIn("hidden thought", _rendered_text(log.widgets[0]))
 
+    def test_reasoning_content_cannot_break_rich_markup(self):
+        state = _ReasoningState(
+            content="provider text [/[/dim] remains literal",
+            char_count=40,
+            expanded=True,
+            finished=True,
+            display="collapsed",
+        )
+
+        rendered = ChatLog._reasoning_markup(self._fake_log(), state)
+
+        self.assertIsInstance(rendered, Text)
+        self.assertIn("[/[/dim]", rendered.plain)
+
+    def test_malformed_structural_markup_falls_back_to_literal_text(self):
+        markup = "[dim]broken[/[/dim]"
+
+        rendered = ChatLog._markup_renderable(markup)
+
+        self.assertIsInstance(rendered, Text)
+        self.assertIn("broken", rendered.plain)
+
 
     def test_reasoning_metadata_expand_explains_hidden_content(self):
         log = self._fake_log()
@@ -397,11 +419,11 @@ class TuiChatLogTest(unittest.TestCase):
 
         self.assertEqual(1, len(log.widgets))
         self.assertEqual(1, len(log._entries))
-        rendered = render_markup(log.widgets[0].renderable)
-        self.assertIn("Update Todos", rendered.plain)
-        self.assertIn("outline: Outline", rendered.plain)
-        self.assertIn("write: Write report", rendered.plain)
-        self.assertNotIn("in progress", rendered.plain)
+        rendered = _rendered_text(log.widgets[0])
+        self.assertIn("Update Todos", rendered)
+        self.assertIn("outline: Outline", rendered)
+        self.assertIn("write: Write report", rendered)
+        self.assertNotIn("in progress", rendered)
 
     def test_reset_task_progress_starts_a_new_progress_block(self):
         log = self._fake_log()
@@ -509,6 +531,26 @@ class TuiChatLogTest(unittest.TestCase):
 
         self.assert_widget_texts(log, ["hello"])
         self.assertEqual([_LogEntry("hello", "markdown")], log._entries)
+
+    def test_non_streamed_agent_message_uses_markdown_not_rich_markup(self):
+        log = self._fake_log()
+        screen = ChatScreen.__new__(ChatScreen)
+        screen._streamed_response_active = False
+        screen.query_one = MethodType(lambda _self, _widget_type: log, screen)
+        content = "Model output keeps [/[/dim] and **Markdown** literal."
+
+        asyncio.run(
+            ChatScreen._on_event(
+                screen,
+                {
+                    "event": "step",
+                    "data": {"type": "agent_message", "content": content},
+                },
+            )
+        )
+
+        self.assertEqual([_LogEntry(content, "markdown")], log._entries)
+        self.assertIsInstance(log.widgets[0].renderable, Markdown)
 
     def test_token_events_yield_to_textual_event_loop(self):
         log = self._fake_log()

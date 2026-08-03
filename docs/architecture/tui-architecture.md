@@ -328,11 +328,13 @@ TUI 的用户命令、快捷键、当前能力和限制统一维护在
 
 TUI 使用独立的 `ApprovalBar` widget 展示单个工具审批，并使用 Textual 原生 `OptionList`、`RadioSet` 和 `ModalScreen` 实现用户主动打开的审批中心与模式确认。`ApprovalBar` 位于 ChatLog 与 InputBar 之间，因此审批不会遮挡历史内容。`tool_approval_required` 到达时只进入本地 pending 队列；必须等同一 RPC 的终态确认 `status=paused`、`stop_reason=tool_approval` 后，才显示审批条。这样 UI 不会在 LangGraph checkpoint 尚未持久化时调用 `approval.resolve`。
 
-内嵌审批条只暴露 `allow_once`、`allow_session` 和 `deny_once` 三个高频响应；`persistable=false` 时隐藏 `allow_session`。Workspace 级允许及持久拒绝继续由通用 `/approve` 恢复入口提供。Widget 只发送稳定响应字符串，不判断 Policy，也不能放宽权限。审批中心通过 `approval.mode.get/set` 管理 Session override，启用 `accept_all` 使用独立确认弹窗。Session 切换和 daemon 重连后都从 Core 重新读取有效模式，状态栏只显示服务端事实。
+内嵌审批条以单行低干扰操作项暴露 `allow_once`、`allow_session` 和 `deny_once` 三个高频响应；`persistable=false` 时隐藏 `allow_session`。是否可持久化完全来自 Core：可解析的复合命令使用精确哈希规则，因此也可在当前 Session 复用完全相同的调用。Workspace 级允许及持久拒绝继续由通用 `/approve` 恢复入口提供。Widget 只发送稳定响应字符串，不判断 Policy，也不能放宽权限。审批中心通过 `approval.mode.get/set` 管理 Session override，启用 `accept_all` 使用独立确认弹窗。Session 切换和 daemon 重连后都从 Core 重新读取有效模式，状态栏只显示服务端事实。
 
 连续审批时，正在通过 `approval.resolve` 恢复的 request ID 会进入本地 resolving 集合，并从审批条和审批中心候选队列中排除。Core 在恢复过程中产生下一条 pending 时，界面只能显示新 request，防止旧审批被重复提交。
 
 已有 pending 与模式是两类状态：切换模式不消费本地队列，也不批量恢复 Execution。任何新前端都应复用相同 RPC，而不是读取 SQLite 或复制 TUI 状态机。
+
+ChatLog 将模型内容与结构样式分开处理：流式和非流式完整回答都进入 Markdown/纯文本通道，thinking 内容使用 Rich `Text` 对象追加样式，不能被解释为 Rich markup。只有 TUI renderer 生成的结构事件允许使用 markup 字符串，并且必须在 widget 挂载前转换为 `Text`；解析异常降级为纯文本。不能把 provider、工具输出、错误正文或其他外部字符串直接交给 `Static(markup=True)`，否则异常会延迟到 Textual layout 阶段并终止整个界面。
 
 流式 token 换行、认证参数遗漏和 Schema 迁移防御等历史修复记录已迁移到
 [TUI 实现问题与修复记录](/docs/history/tui-implementation-fixes.md)。
