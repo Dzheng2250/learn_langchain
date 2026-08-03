@@ -14,6 +14,7 @@ from src.core.telemetry import record_error
 from src.core.tracing import bind_trace_context, reset_trace_context
 from src.ipc.models import (
     AgentEventNotification,
+    ApprovalModeSetParams,
     ApprovalResolveParams,
     ChatParams,
     SessionDeleteParams,
@@ -53,6 +54,8 @@ class AgentHandlers:
         if self.approval_service is not None:
             router.register("approval.list", SessionParams, self.approval_list)
             router.register("approval.resolve", ApprovalResolveParams, self.approval_resolve)
+            router.register("approval.mode.get", SessionParams, self.approval_mode_get)
+            router.register("approval.mode.set", ApprovalModeSetParams, self.approval_mode_set)
 
     async def resource_activity_summary(self, params: ResourceActivityScopeParams, _context: RequestContext) -> dict:
         try:
@@ -98,6 +101,30 @@ class AgentHandlers:
             run_id=run_id,
             control=control,
             resume_value=resume_value,
+        )
+
+    async def approval_mode_get(
+        self,
+        params: SessionParams,
+        _context: RequestContext,
+    ) -> dict:
+        return await self._session_call(
+            self.approval_service.get_mode,
+            params.workspace_root,
+            params.session_name,
+        )
+
+    async def approval_mode_set(
+        self,
+        params: ApprovalModeSetParams,
+        _context: RequestContext,
+    ) -> dict:
+        return await self._session_call(
+            self.approval_service.set_mode,
+            params.workspace_root,
+            params.session_name,
+            params.mode,
+            acknowledge_risk=params.acknowledge_risk,
         )
 
     async def chat(self, params: ChatParams, context: RequestContext) -> dict:

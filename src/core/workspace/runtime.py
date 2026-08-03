@@ -34,7 +34,8 @@ class WorkspaceRuntimeFactory:
         task_service: TaskPlanningService | None = None,
         approval_repository=None,
         host_execution_enabled: bool = False,
-        approval_enabled: bool = True,
+        approval_mode_resolver=None,
+        approval_strategy_registry=None,
         default_timeout_seconds: float = 60.0,
         network_policy: str = "deny",
         file_write_enabled: bool = True,
@@ -53,7 +54,8 @@ class WorkspaceRuntimeFactory:
         self.task_service = task_service
         self.approval_repository = approval_repository
         self.host_execution_enabled = host_execution_enabled
-        self.approval_enabled = approval_enabled
+        self.approval_mode_resolver = approval_mode_resolver
+        self.approval_strategy_registry = approval_strategy_registry
         self.default_timeout_seconds = default_timeout_seconds
         self.network_policy = network_policy
         self.file_write_enabled = file_write_enabled
@@ -80,7 +82,8 @@ class WorkspaceRuntimeFactory:
             task_service=self.task_service,
             approval_repository=self.approval_repository,
             host_execution_enabled=self.host_execution_enabled,
-            approval_enabled=self.approval_enabled,
+            approval_mode_resolver=self.approval_mode_resolver,
+            approval_strategy_registry=self.approval_strategy_registry,
             default_timeout_seconds=self.default_timeout_seconds,
             network_policy=self.network_policy,
             file_write_enabled=self.file_write_enabled,

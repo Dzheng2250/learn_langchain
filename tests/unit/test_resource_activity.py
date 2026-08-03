@@ -12,7 +12,11 @@ from src.core.resource_activity import (
 from src.core.adapters.sqlite.resource_activity import SQLiteResourceActivityRepository
 from src.core.resource_activity.observation import command_uri, file_snapshot, workspace_uri
 from src.core.resource_activity.service import ResourceActivityQueryService
-from src.core.state.migrations import apply_local_migrations, downgrade_v11_to_v10
+from src.core.state.migrations import (
+    apply_local_migrations,
+    downgrade_v11_to_v10,
+    downgrade_v12_to_v11,
+)
 from src.core.state import ExecutionRepository, LocalStateDatabase, LocalWorkspaceRepository
 from src.core.state.locking import local_state_operation_lock
 
@@ -216,6 +220,8 @@ class ResourceActivityRepositoryTest(unittest.TestCase):
         database = LocalStateDatabase(directory / "state.db")
         database.initialize()
         self.addCleanup(database.close)
+        with database.transaction() as conn:
+            downgrade_v12_to_v11(conn)
         config = SimpleNamespace(runtime_dir=directory)
         with (
             patch("src.core.main.LocalStateDatabase", return_value=database),
@@ -275,10 +281,10 @@ class ResourceActivityRepositoryTest(unittest.TestCase):
             self.assertRaisesRegex(ValueError, "Unsupported local schema downgrade"),
         ):
             main([
-                "rollback-local-state", "--from-version", "11",
-                "--to-version", "9", "--apply",
+                "rollback-local-state", "--from-version", "12",
+                "--to-version", "10", "--apply",
             ])
-        self.assertEqual([], list(directory.glob("state.db.v11-backup-*")))
+        self.assertEqual([], list(directory.glob("state.db.v12-backup-*")))
 
     def test_v11_repair_adds_event_key_to_an_early_v11_database(self):
         with self.database.transaction() as conn:
@@ -291,6 +297,7 @@ class ResourceActivityRepositoryTest(unittest.TestCase):
         self.assertIn("idx_resource_activities_event_key", indexes)
     def test_v11_downgrade_removes_only_resource_activity_tables(self):
         with self.database.transaction() as conn:
+            downgrade_v12_to_v11(conn)
             downgrade_v11_to_v10(conn)
         with self.database.connect() as conn:
             tables = {row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}

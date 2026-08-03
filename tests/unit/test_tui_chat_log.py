@@ -9,6 +9,7 @@ from rich.text import Text
 
 from src.tui.screens.chat import ChatScreen
 from src.tui.renderer import render_event, render_task_progress
+from src.tui.widgets.approval_bar import ApprovalBar, inline_approval_options
 from src.tui.widgets.chat_log import ChatLog, _LogEntry, _ReasoningState
 
 
@@ -37,6 +38,18 @@ async def _completed_coroutine():
     return None
 
 class TuiChatLogTest(unittest.TestCase):
+    def test_non_persistable_approval_hides_scoped_responses(self):
+        self.assertEqual(
+            ("allow_once", "deny_once"),
+            inline_approval_options(False),
+        )
+
+    def test_persistable_inline_approval_exposes_session_allow_only(self):
+        self.assertEqual(
+            ("allow_once", "allow_session", "deny_once"),
+            inline_approval_options(True),
+        )
+
     def test_resource_activity_summary_uses_shared_core_shape(self):
         rendered = render_event({"event": "resource_activity_summary", "data": {"summary": {
             "reads": {"resource_count": 3, "returned_bytes": 64},
@@ -274,6 +287,28 @@ class TuiChatLogTest(unittest.TestCase):
         self.assertEqual(1, len(log.widgets))
         self.assertIn("hidden thought", _rendered_text(log.widgets[0]))
 
+    def test_reasoning_content_cannot_break_rich_markup(self):
+        state = _ReasoningState(
+            content="provider text [/[/dim] remains literal",
+            char_count=40,
+            expanded=True,
+            finished=True,
+            display="collapsed",
+        )
+
+        rendered = ChatLog._reasoning_markup(self._fake_log(), state)
+
+        self.assertIsInstance(rendered, Text)
+        self.assertIn("[/[/dim]", rendered.plain)
+
+    def test_malformed_structural_markup_falls_back_to_literal_text(self):
+        markup = "[dim]broken[/[/dim]"
+
+        rendered = ChatLog._markup_renderable(markup)
+
+        self.assertIsInstance(rendered, Text)
+        self.assertIn("broken", rendered.plain)
+
 
     def test_reasoning_metadata_expand_explains_hidden_content(self):
         log = self._fake_log()
@@ -384,11 +419,11 @@ class TuiChatLogTest(unittest.TestCase):
 
         self.assertEqual(1, len(log.widgets))
         self.assertEqual(1, len(log._entries))
-        rendered = render_markup(log.widgets[0].renderable)
-        self.assertIn("Update Todos", rendered.plain)
-        self.assertIn("outline: Outline", rendered.plain)
-        self.assertIn("write: Write report", rendered.plain)
-        self.assertNotIn("in progress", rendered.plain)
+        rendered = _rendered_text(log.widgets[0])
+        self.assertIn("Update Todos", rendered)
+        self.assertIn("outline: Outline", rendered)
+        self.assertIn("write: Write report", rendered)
+        self.assertNotIn("in progress", rendered)
 
     def test_reset_task_progress_starts_a_new_progress_block(self):
         log = self._fake_log()
@@ -440,9 +475,10 @@ class TuiChatLogTest(unittest.TestCase):
         screen = ChatScreen.__new__(ChatScreen)
         screen._streamed_response_active = True
         screen._pending_approval_ids = {"approval-1", "approval-2"}
+        approval_bar = SimpleNamespace(clear_request=lambda: None)
 
         def query_one(_self, _widget_type):
-            return log
+            return approval_bar if _widget_type is ApprovalBar else log
 
         screen.query_one = MethodType(query_one, screen)
 
@@ -495,6 +531,26 @@ class TuiChatLogTest(unittest.TestCase):
 
         self.assert_widget_texts(log, ["hello"])
         self.assertEqual([_LogEntry("hello", "markdown")], log._entries)
+
+    def test_non_streamed_agent_message_uses_markdown_not_rich_markup(self):
+        log = self._fake_log()
+        screen = ChatScreen.__new__(ChatScreen)
+        screen._streamed_response_active = False
+        screen.query_one = MethodType(lambda _self, _widget_type: log, screen)
+        content = "Model output keeps [/[/dim] and **Markdown** literal."
+
+        asyncio.run(
+            ChatScreen._on_event(
+                screen,
+                {
+                    "event": "step",
+                    "data": {"type": "agent_message", "content": content},
+                },
+            )
+        )
+
+        self.assertEqual([_LogEntry(content, "markdown")], log._entries)
+        self.assertIsInstance(log.widgets[0].renderable, Markdown)
 
     def test_token_events_yield_to_textual_event_loop(self):
         log = self._fake_log()
@@ -923,6 +979,7 @@ class TuiChatLogTest(unittest.TestCase):
 
         status = FakeStatusBar()
         log = FakeLog()
+        approval_bar = SimpleNamespace(clear_request=lambda: None)
         screen = ChatScreen.__new__(ChatScreen)
         screen._session_name = "default"
         status_checked = {"value": False}
@@ -930,6 +987,8 @@ class TuiChatLogTest(unittest.TestCase):
         def query_one(_self, widget_type):
             if getattr(widget_type, "__name__", "") == "StatusBar":
                 return status
+            if widget_type is ApprovalBar:
+                return approval_bar
             return log
 
         async def check_status(_self):
@@ -1075,9 +1134,10 @@ class TuiChatLogTest(unittest.TestCase):
         screen._inflight_client = client
         screen._streamed_response_active = True
         screen._pending_approval_ids = {"approval-1", "approval-2"}
+        approval_bar = SimpleNamespace(clear_request=lambda: None)
 
         def query_one(_self, _widget_type):
-            return log
+            return approval_bar if _widget_type is ApprovalBar else log
 
         def run_worker(_self, awaitable, **_kwargs):
             asyncio.run(awaitable)

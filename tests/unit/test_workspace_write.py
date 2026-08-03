@@ -191,7 +191,7 @@ class WorkspaceWritePolicyTest(unittest.TestCase):
         root.mkdir(parents=True)
         self.addCleanup(shutil.rmtree, root, True)
         write, _replace, _mkdir, _move, delete = create_workspace_write_tools(root, max_bytes=64)
-        engine = DefaultToolPolicyEngine(self.Rules("allow"), approval_enabled=False)
+        engine = DefaultToolPolicyEngine(self.Rules("allow"))
         overwrite = self.context(write, args={"path": "a.txt", "content": "x", "overwrite": True})
         decision = engine.evaluate(overwrite, rule_key="workspace-write:write_workspace_file:.", persistable=True)
         self.assertEqual(PolicyAction.ASK, decision.action)

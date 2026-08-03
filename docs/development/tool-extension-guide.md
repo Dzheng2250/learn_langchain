@@ -546,4 +546,10 @@ git diff --check
 
 新增写工具必须使用 Workspace 绑定工厂，并在 `ToolSpec` 中声明 `FILE_WRITE`、`WORKSPACE_WRITE` 和明确的审批策略。路径必须通过 `resolve_workspace_target()` 处理，因为写入目标可能尚不存在；工具体仍需再次调用共享敏感路径检查，不能只依赖审批前的 `CapabilityEnforcer`。
 
-写入正文不得进入审批记录、Trace 或 Telemetry。前端只显示路径、大小和操作标志。覆盖、移动、删除等破坏性调用应由策略引擎强制单次审批；不要把 `LEARN_AGENT_TOOL_APPROVAL_ENABLED=false` 当成绕过硬边界的开关。新增写工具至少测试：新目标、原子失败、大小限制、路径逃逸、符号链接、敏感目录、Parent/Subagent audience 和审批恢复。
+写入正文不得进入审批记录、Trace 或 Telemetry。前端只显示路径、大小和操作标志。覆盖、移动、删除等破坏性调用应由策略引擎强制产生不可持久化的 `ASK`；`accept_all` 模式最多自动记录本次 `allow_once`，不能绕过硬边界。新增写工具至少测试：新目标、原子失败、大小限制、路径逃逸、符号链接、敏感目录、Parent/Subagent audience、人工审批恢复和自动模式审计。
+
+## 扩展审批模式
+
+新增审批模式时实现 `ApprovalStrategy.name` 与 `decide(context, policy_decision)`，再在 Composition Root 中注册到 `ApprovalStrategyRegistry`。策略只能返回 `WAIT`、`AUTO_ALLOW` 或 `AUTO_DENY`；自动结果只能生成 `allow_once/deny_once`，不能直接创建持久规则。不要修改 `ToolExecutionPipeline`、RPC 参数枚举或数据库约束来识别具体模式。
+
+至少补充 strategy contract、未知/卸载策略回退、审计 `decision_source/approval_mode`、stored deny、Hook deny、Capability Enforcer 和 daemon 重启后的 Session override 测试。若新模式需要外部 LLM 或远程回调，应把客户端作为构造依赖注入策略实现，并设置独立超时；失败必须回退 `WAIT` 或 `AUTO_DENY`，不能默认允许。

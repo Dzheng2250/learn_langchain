@@ -23,6 +23,7 @@ class StatusBar(Label):
         self._session = "default"
         self._goal_mode = False
         self._paused = False
+        self._approval_mode = "manual"
         self._context_tokens: int = 0
         self._context_limit: int = MODEL_CONTEXT_LIMIT
 
@@ -58,6 +59,10 @@ class StatusBar(Label):
         self._paused = paused
         self._refresh()
 
+    def set_approval_mode(self, mode: str) -> None:
+        self._approval_mode = "accept_all" if mode == "accept_all" else "manual"
+        self._refresh()
+
     def set_usage(self, context_tokens: int) -> None:
         self._context_tokens = context_tokens
         self._refresh()
@@ -84,6 +89,8 @@ class StatusBar(Label):
                 text.append(Text(" goal", style="bold cyan"))
             if self._paused:
                 text.append(Text(" paused", style="bold yellow"))
+            approval_label = "auto" if self._approval_mode == "accept_all" else "manual"
+            text.append(Text(f" approval: {approval_label}", style="dim"))
         elif self._state == "disconnected":
             text.append(f"disconnected {self._host}:{self._port}")
             if extra:

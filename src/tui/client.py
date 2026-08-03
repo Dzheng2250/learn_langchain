@@ -36,6 +36,23 @@ class CoreRequestError(IpcError):
     """JSON-RPC error response."""
 
 
+def safe_rpc_error_detail(data: Any) -> str:
+    """Return useful JSON-RPC error details without echoing rejected input."""
+    if isinstance(data, str):
+        return " ".join(data.split())
+    if not isinstance(data, list):
+        return ""
+    details = []
+    for item in data[:3]:
+        if not isinstance(item, dict):
+            continue
+        location = ".".join(str(part) for part in item.get("loc") or ())
+        message = " ".join(str(item.get("msg") or "").split())
+        if message:
+            details.append(f"{location}: {message}" if location else message)
+    return "; ".join(details)
+
+
 class AsyncCoreClient:
     """Async TCP/NDJSON JSON-RPC client for one request-response cycle.
 
@@ -159,7 +176,9 @@ class AsyncCoreClient:
                     msg = error.get("message", "Unknown error")
                     if code == -32001:
                         raise CoreAuthenticationError(msg)
-                    raise CoreRequestError(f"[{code}] {msg}")
+                    detail = safe_rpc_error_detail(error.get("data"))
+                    suffix = f": {detail}" if detail else ""
+                    raise CoreRequestError(f"[{code}] {msg}{suffix}")
                 return message.get("result", {})
 
             # Unexpected message shape

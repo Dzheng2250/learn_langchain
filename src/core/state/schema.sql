@@ -26,6 +26,7 @@ CREATE TABLE IF NOT EXISTS sessions (
     version INTEGER NOT NULL DEFAULT 0,
     active_branch_id TEXT,
     pending_execution_id TEXT,
+    tool_approval_mode TEXT,
     archived_at TEXT,
     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
@@ -210,6 +211,7 @@ CREATE TABLE IF NOT EXISTS tool_approval_requests (
     rule_key TEXT NOT NULL DEFAULT '',
     persistable INTEGER NOT NULL DEFAULT 0,
     reason TEXT NOT NULL DEFAULT '',
+    approval_mode TEXT NOT NULL DEFAULT 'manual',
     status TEXT NOT NULL DEFAULT 'pending' CHECK(status IN ('pending', 'resolved')),
     response TEXT,
     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
@@ -241,6 +243,8 @@ CREATE TABLE IF NOT EXISTS tool_approval_audit (
     tool_call_id TEXT NOT NULL,
     tool_name TEXT NOT NULL,
     response TEXT NOT NULL,
+    decision_source TEXT NOT NULL DEFAULT 'legacy',
+    approval_mode TEXT NOT NULL DEFAULT 'manual',
     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 

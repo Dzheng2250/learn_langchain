@@ -53,7 +53,20 @@ Tool 安全模块不再定义私有 Hook。它消费系统级 `PreToolUse`、`Pe
 | `ASK` | 创建持久审批请求并暂停 Execution，等待用户明确决定。 |
 | `DENY` | 当前调用立即拒绝，不执行工具。 |
 
-`ToolSpec.approval` 决定默认策略：`NONE` 不要求人工确认，`POLICY` 由全局审批开关和持久规则决定，`ALWAYS` 每次询问，`FORBIDDEN` 永远拒绝。`LEARN_AGENT_TOOL_APPROVAL_ENABLED=false` 只能让 `POLICY` 工具跳过询问，不能放开 `ALWAYS`、`FORBIDDEN` 或其他硬边界。
+`ToolSpec.approval` 决定静态策略：`NONE` 不产生审批请求，`POLICY` 由持久规则和调用参数判断，`ALWAYS` 每次产生 `ASK`，`FORBIDDEN` 永远拒绝。策略引擎只返回 `ALLOW/ASK/DENY`，不再读取 UI 或全局审批开关。
+
+### 可插拔审批模式
+
+`ApprovalStrategyRegistry` 注册审批策略，`ApprovalModeResolver` 按“Session override -> 全局默认”解析有效模式，`ApprovalCoordinator` 统一创建请求、写审计和选择人工等待或自动响应。当前内置：
+
+| 模式 | 对 `ASK` 的行为 | 是否创建长期规则 |
+|---|---|---|
+| `manual` | 持久化请求并通过 LangGraph `interrupt()` 等待用户 | 仅用户明确选择 Session/Workspace 响应时创建 |
+| `accept_all` | 自动提交 `allow_once`，不暂停 Execution | 否 |
+
+`accept_all` 不是“关闭安全”。stored deny、Hook `DENY/REJECT`、`FORBIDDEN`、主机执行禁用、路径/符号链接、沙箱、网络和 `CapabilityEnforcer` 仍优先执行。覆盖、移动、删除及 change set 应用产生的 `ASK` 也只获得本次允许，不会沉淀规则。新增 `deny_all`、`rules_only`、审批 Agent 或远程回调时，应注册新的 `ApprovalStrategy`，不能在 Tool pipeline 中增加模式分支。
+
+全局模式来自 `LEARN_AGENT_TOOL_APPROVAL_MODE=manual|accept_all`；Session 可通过 `approval.mode.set` 持久覆盖或设为 `inherit`。未知持久值安全回退到 `manual` 并记录诊断事件。切换模式只影响之后创建的请求，已有 pending 继续使用请求创建时记录的 `approval_mode`。
 
 审批响应分为六种：
 
@@ -63,7 +76,7 @@ Tool 安全模块不再定义私有 Hook。它消费系统级 `PreToolUse`、`Pe
 | `allow_session` / `deny_session` | 为当前 Workspace 和 Session 保存规则。 |
 | `allow_workspace` / `deny_workspace` | 为当前 Workspace 保存跨 Session 规则。 |
 
-只有 `persistable=true` 的请求才能选择 Session 或 Workspace 范围。简单命令可保存解析后的 argv 前缀规则；管道、重定向、命令替换等复合 shell 调用只能单次处理。显式 deny 的优先级高于 allow。
+只有 `persistable=true` 的请求才能选择 Session 或 Workspace 范围。简单命令保存解析后的 argv 前缀规则，因此可覆盖同前缀的后续调用。能够被 Bash parser 完整解析的管道、重定向和命令连接等复合调用保存为 SHA-256 精确规则：规则不包含命令正文，并且只匹配完整内容相同的调用。无法可靠解析的 shell 语法仍只能单次处理。无论采用哪种规则，每次执行都要重新经过 Hook、Policy 与 Capability Enforcer；显式 deny 的优先级高于 allow。
 
 ## 暂停与恢复闭环
 
@@ -89,7 +102,7 @@ Tool 安全模块不再定义私有 Hook。它消费系统级 `PreToolUse`、`Pe
 
 - `tool_approval_requests`：待处理或已处理的请求事实，只保存脱敏、截断参数摘要。
 - `tool_permission_rules`：Session 或 Workspace 作用域的 allow/deny 规则。
-- `tool_approval_audit`：最终响应审计；重复 resolve 不会生成第二条记录。
+- `tool_approval_audit`：最终响应审计；`decision_source` 区分 `user/automatic/hook/legacy`，`approval_mode` 记录当时模式；重复 resolve 不会生成第二条记录。
 - LangGraph checkpoint：保存 Agent 暂停位置，不能由审批表替代。
 
 Session 归档保留这些记录；hard delete 才会清理 Session 关联请求、规则和审计。Workspace 级规则不属于单个 Session，不应随普通 Session 删除而消失。

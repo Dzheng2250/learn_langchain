@@ -11,7 +11,14 @@ class SQLiteToolApprovalRepository:
     def __init__(self, database) -> None:
         self.database = database
 
-    def create_request(self, context, decision, args_summary: dict) -> dict:
+    def create_request(
+        self,
+        context,
+        decision,
+        args_summary: dict,
+        *,
+        approval_mode: str = "manual",
+    ) -> dict:
         request_id = uuid4().hex
         capabilities = [item.value for item in decision.capabilities]
         with self.database.transaction() as conn:
@@ -26,14 +33,14 @@ class SQLiteToolApprovalRepository:
                 """INSERT INTO tool_approval_requests(
                        request_id, workspace_id, session_id, execution_id,
                        tool_call_id, tool_name, actor, args_summary,
-                       capabilities, rule_key, persistable, reason
-                   ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                       capabilities, rule_key, persistable, reason, approval_mode
+                   ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (
                     request_id, context.workspace_id, context.session_id,
                     context.execution_id, context.tool_call_id, context.tool_name,
                     context.actor, json.dumps(args_summary, ensure_ascii=False),
                     json.dumps(capabilities), decision.rule_key,
-                    int(decision.persistable), decision.reason,
+                    int(decision.persistable), decision.reason, approval_mode,
                 ),
             )
             row = conn.execute(
@@ -42,7 +49,17 @@ class SQLiteToolApprovalRepository:
             ).fetchone()
         return self._request_dict(row)
 
-    def apply_response(self, request_id, response, *, context, rule_key, persistable) -> None:
+    def apply_response(
+        self,
+        request_id,
+        response,
+        *,
+        context,
+        rule_key,
+        persistable,
+        decision_source: str = "user",
+        approval_mode: str = "manual",
+    ) -> None:
         if not isinstance(response, ApprovalResponse):
             response = ApprovalResponse(response)
         with self.database.transaction() as conn:
@@ -94,12 +111,14 @@ class SQLiteToolApprovalRepository:
             conn.execute(
                 """INSERT OR IGNORE INTO tool_approval_audit(
                        audit_id, request_id, workspace_id, session_id,
-                       execution_id, tool_call_id, tool_name, response
-                   ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+                       execution_id, tool_call_id, tool_name, response,
+                       decision_source, approval_mode
+                   ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (
                     uuid4().hex, request_id, context.workspace_id,
                     context.session_id, context.execution_id,
                     context.tool_call_id, context.tool_name, response.value,
+                    decision_source, approval_mode,
                 ),
             )
 
@@ -179,6 +198,31 @@ class SQLiteToolApprovalRepository:
             ).fetchone()
         return self._request_dict(row) if row else None
 
+    def get_session_mode(self, workspace_id: str, session_id: str) -> str | None:
+        with self.database.connect() as conn:
+            row = conn.execute(
+                """SELECT tool_approval_mode FROM sessions
+                   WHERE workspace_id=? AND session_id=?""",
+                (workspace_id, session_id),
+            ).fetchone()
+        return str(row["tool_approval_mode"]) if row and row["tool_approval_mode"] else None
+
+    def set_session_mode(
+        self,
+        workspace_id: str,
+        session_id: str,
+        mode: str | None,
+    ) -> None:
+        with self.database.transaction() as conn:
+            updated = conn.execute(
+                """UPDATE sessions SET tool_approval_mode=?,
+                   updated_at=CURRENT_TIMESTAMP
+                   WHERE workspace_id=? AND session_id=?""",
+                (mode, workspace_id, session_id),
+            )
+            if updated.rowcount != 1:
+                raise ValueError("Session does not exist.")
+
     @staticmethod
     def _request_dict(row) -> dict:
         return {
@@ -193,6 +237,7 @@ class SQLiteToolApprovalRepository:
             "capabilities": json.loads(row["capabilities"]),
             "persistable": bool(row["persistable"]),
             "reason": row["reason"],
+            "approval_mode": row["approval_mode"],
             "status": row["status"],
             "response": row["response"],
             "created_at": row["created_at"],

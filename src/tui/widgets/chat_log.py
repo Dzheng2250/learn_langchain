@@ -6,7 +6,7 @@ import time
 from dataclasses import dataclass
 
 from rich.markdown import Markdown
-from rich.markup import escape
+from rich.errors import MarkupError
 from rich.text import Text
 from textual import events
 from textual.containers import VerticalScroll
@@ -120,6 +120,13 @@ class ChatLog(VerticalScroll):
         self._capture_scroll_follow_state()
         if markup.strip():
             self._append_committed(_LogEntry(markup, "markup"))
+
+    def write_message(self, content: str) -> None:
+        """Commit one complete assistant response through the Markdown path."""
+        self.flush_tokens()
+        self._capture_scroll_follow_state()
+        if content:
+            self._append_committed(_LogEntry(content, "markdown"))
 
     def write_tool_event(self, markup: str) -> None:
         """Store one collapsible tool event and mount it only when expanded."""
@@ -254,29 +261,32 @@ class ChatLog(VerticalScroll):
         if follow:
             self._scroll_to_bottom()
 
-    def _reasoning_markup(self, state: _ReasoningState) -> str:
-        """Render one reasoning block as collapsible Rich markup."""
+    def _reasoning_markup(self, state: _ReasoningState) -> Text:
+        """Render one reasoning block without parsing provider text as markup."""
         count = state.char_count or len(state.content)
         label = "Thought" if state.finished else "Thinking"
         suffix = f" - {count} chars" if count else ""
         if state.redacted:
             suffix += " - redacted"
         toggle = "[-]" if state.expanded else "[+]"
-        header = f"[dim]{toggle} {label}{suffix}[/dim]"
+        rendered = Text(f"{toggle} {label}{suffix}", style="dim")
         if not state.expanded:
-            return header
+            return rendered
         if state.content:
-            return f"{header}\n[dim]{escape(state.content)}[/dim]"
-        if state.redacted:
+            detail = state.content
+        elif state.redacted:
             reason = "Provider returned redacted thinking; raw content is unavailable."
+            detail = reason
         elif state.display in {"metadata", "hidden"}:
-            reason = (
+            detail = (
                 "Thinking text is hidden by LEARN_AGENT_REASONING_DISPLAY="
-                f"{escape(state.display)}."
+                f"{state.display}."
             )
         else:
-            reason = "No reasoning text was provided by the model stream."
-        return f"{header}\n[dim]{reason}[/dim]"
+            detail = "No reasoning text was provided by the model stream."
+        rendered.append("\n")
+        rendered.append(detail, style="dim")
+        return rendered
     def write_task_progress(self, markup: str) -> None:
         """Create or replace the latest visible private-task progress block."""
         self.flush_tokens()
@@ -514,10 +524,14 @@ class ChatLog(VerticalScroll):
         too large for a single safe render pass.
         """
         if entry.mode in {"markup", "tool"}:
-            return Static(entry.content, markup=True, classes=f"chat-log-entry chat-log-{entry.mode}")
+            return Static(
+                self._markup_renderable(entry.content),
+                markup=False,
+                classes=f"chat-log-entry chat-log-{entry.mode}",
+            )
         if entry.mode == "reasoning":
-            markup = self._reasoning_markup(entry.reasoning or _ReasoningState())
-            return Static(markup, markup=True, classes="chat-log-entry chat-log-reasoning")
+            rendered = self._reasoning_markup(entry.reasoning or _ReasoningState())
+            return Static(rendered, markup=False, classes="chat-log-entry chat-log-reasoning")
         return Static(
             self._renderable_for_entry(entry),
             markup=False,
@@ -527,12 +541,20 @@ class ChatLog(VerticalScroll):
     def _update_widget(self, widget: Static, entry: _LogEntry) -> None:
         """Update an existing entry widget in place."""
         if entry.mode in {"markup", "tool"}:
-            widget.update(entry.content)
+            widget.update(self._markup_renderable(entry.content))
             return
         if entry.mode == "reasoning":
             widget.update(self._reasoning_markup(entry.reasoning or _ReasoningState()))
             return
         widget.update(self._renderable_for_entry(entry))
+
+    @staticmethod
+    def _markup_renderable(markup: str) -> Text:
+        """Parse trusted structural markup now, falling back safely on defects."""
+        try:
+            return Text.from_markup(markup)
+        except MarkupError:
+            return Text(markup)
 
     def _renderable_for_entry(self, entry: _LogEntry):
         """Return the Rich renderable for non-markup entries."""
