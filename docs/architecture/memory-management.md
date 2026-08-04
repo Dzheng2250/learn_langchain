@@ -133,11 +133,13 @@ active context window 的 summary_text（如果存在）
 
 ## 短期上下文管理
 
-`AgentContextState` 仍向上层暴露两个核心值：
+`AgentContextState` 向上层暴露窗口血统和未压缩 Turn：
 
 ```python
 summary: str
-recent_messages: list
+recent_turns: list[TurnChunk]
+context_window_id: str
+summary_through_turn: int
 ```
 
 但 `summary` 的权威来源已经不是 `sessions.summary`，而是 `sessions.active_context_window_id`
@@ -146,18 +148,21 @@ recent_messages: list
 
 ### 压缩触发与后台执行
 
-满足任一条件时触发上下文总结：
+窗口规划器在构造模型输入前和后台维护任务中运行。满足任一条件时需要推进摘要：
 
-- 未压缩 Turn 数大于 `SUMMARY_TRIGGER_TURN_LIMIT=40`。
-- 总内容字符数大于 `SUMMARY_TRIGGER_CHAR_LIMIT=24000`。
+- 未压缩 Turn 数超过 `RECENT_TURN_LIMIT=3`，需要把更旧的完整 Turn 推进摘要窗口。
+- 预计输入超过 `min(SUMMARY_TRIGGER_TOKEN_LIMIT, hard_input_limit * 0.85)` 的动态软阈值。
+- 配置了正数 `LEARN_AGENT_SUMMARY_TRIGGER_CHAR_LIMIT`，且总内容字符数超过该值。默认值为 `0`，即关闭字符数触发；Turn 数和 token 数仍是主要压缩条件。
 - 调用方显式要求强制总结。
 
-成功 Turn 会在最小提交中写入一个 `context_summary` 维护任务。后台 handler 达到任一阈值时才调用
-摘要模型：
+成功 Turn 会在最小提交中写入一个 `context_summary` 维护任务。后台 handler 和前台输入 guard
+共用同一规划器：
 
-- 旧消息压缩到最多 `SESSION_SUMMARY_MAX_CHARS=4000` 字符的 `summary_text`。
-- 最近 `RECENT_TURN_LIMIT=12` 个完整 Turn 继续保留原文；一个 Turn 可以包含 user、assistant 和多条 tool message。
-- 发给总结模型的来源文本最多 `SUMMARY_SOURCE_CHAR_LIMIT=12000` 字符。
+- 旧消息压缩到最多 `SESSION_SUMMARY_MAX_CHARS=8000` 字符的 `summary_text`。
+- 最多最近 `RECENT_TURN_LIMIT=3` 个完整 Turn 继续保留原文；一个 Turn 可以包含 user、assistant 和多条 tool message。
+- 原文尾部同时受 `RECENT_TURN_BUDGET_RATIO=0.5` 约束。若 3 个 Turn 超过半个模型窗口，规划器依次尝试 2、1、0 个，所有被移出的 Turn 必须先成功进入新摘要。
+- 完整输入硬上限为模型窗口减去最大输出和安全余量；压缩失败且尚未到硬上限时保留原文，达到硬上限时以 `context_compaction_required` 暂停，禁止静默截断。
+- `SUMMARY_SOURCE_CHAR_LIMIT=12000` 是单个分层摘要块的目标大小，不是总来源截断值。所有被逐出的消息都会进入某个块，再与上一代摘要逐层归并。
 - 摘要结果写入新的 `context_windows` 行，并推进 `sessions.active_context_window_id`。
 
 这里的 CAS 是“比较后再更新”。摘要任务开始时记录旧的 active window；写回时要求
@@ -165,7 +170,18 @@ recent_messages: list
 而不是用完成时间更晚的旧任务覆盖新结果。它比较的是上下文窗口血统，不是时间戳。
 
 如果总结失败，任务会有限重试并保留之前的 active window。完整消息始终保留在 `messages`；在摘要任务
-完成前，模型只会看到旧窗口摘要和近期消息。
+完成前，未压缩 Turn 仍从当前分支的 `messages` 血统动态读取，不会因为 `recent_messages` 兼容投影被裁剪而消失。
+
+### Turn 内压缩
+
+长工具循环会在每次工具节点结束后经过 `context_guard`。Graph 同时维护两份状态：`messages` 是下一次
+模型调用的活动窗口，`turn_journal` 是本 Turn 的完整追加日志。guard 只允许压缩已经形成
+`assistant tool_use -> tool_result` 闭环的旧工具周期，并把结果写入 `working_summary`；正在流式输出、
+等待审批或缺少结果的工具调用不会被移除。最终提交、checkpoint 恢复和历史归档始终使用
+`turn_journal`，因此 Turn 内压缩不会把工作摘要误写成正式对话历史。
+
+单次模型响应开始后无法在生成中途压缩。若输出耗尽 `LEARN_AGENT_LLM_MAX_TOKENS`，仍以
+`model_output_limit` 暂停；Turn 内 guard 只保护下一次模型调用。
 
 ## 长期记忆如何加载
 

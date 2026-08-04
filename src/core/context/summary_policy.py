@@ -46,7 +46,10 @@ class SummaryPolicy:
             return True
         if turn_count is None and len(messages) > self.turn_limit:
             return True
-        return self._message_chars(messages) > self.char_limit
+        return (
+            self.char_limit > 0
+            and self._message_chars(messages) > self.char_limit
+        )
 
     @staticmethod
     def _message_chars(messages: list) -> int:

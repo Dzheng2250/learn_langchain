@@ -36,7 +36,13 @@ def stream_graph_events(
     inputs = (
         input_messages
         if resume_command
-        else ({"messages": input_messages} if input_messages is not None else None)
+        else (
+            {
+                "messages": input_messages,
+                "turn_journal": [input_messages[-1]] if input_messages else [],
+            }
+            if input_messages is not None else None
+        )
     )
     final_state = None
     config = {"recursion_limit": limits.max_graph_steps}
@@ -45,9 +51,14 @@ def stream_graph_events(
     # Values snapshots contain the whole message state. Track the previous
     # length so each completed message emits a step event exactly once.
     if (inputs is None or resume_command) and checkpoint_thread_id:
-        seen_message_count = len(app.get_state(config).values.get("messages", []))
+        snapshot_values = app.get_state(config).values
+        seen_message_count = len(
+            snapshot_values.get("turn_journal", snapshot_values.get("messages", []))
+        )
     else:
-        seen_message_count = len((inputs or {}).get("messages", []))
+        seen_message_count = len(
+            (inputs or {}).get("turn_journal", (inputs or {}).get("messages", []))
+        )
     tool_call_count = 0
     graph_steps_used = 0
     reasoning_display = _reasoning_display()
@@ -133,7 +144,7 @@ def stream_graph_events(
             elif stream_mode == "values":
                 graph_steps_used += 1
                 final_state = chunk
-                state_messages = chunk.get("messages", [])
+                state_messages = chunk.get("turn_journal", chunk.get("messages", []))
                 new_messages = state_messages[seen_message_count:]
                 seen_message_count = len(state_messages)
 
@@ -245,8 +256,12 @@ def stream_graph_events(
 
     yield from finish_reasoning()
 
-    final_messages = final_state.get("messages", []) if final_state is not None else []
-    if final_messages and response_stop_reason(final_messages[-1]) == "max_tokens":
+    active_messages = final_state.get("messages", []) if final_state is not None else []
+    final_messages = (
+        final_state.get("turn_journal", active_messages)
+        if final_state is not None else []
+    )
+    if active_messages and response_stop_reason(active_messages[-1]) == "max_tokens":
         yield graph_failure_event(
             ModelOutputLimitError(
                 "The model exhausted its output token budget before producing a "

@@ -41,6 +41,7 @@ from src.core.tracing import (
     reset_trace_context,
 )
 from src.core.workspace.models import SessionContext
+from src.core.context.compaction import ContextCompactionRequired
 
 
 @dataclass(frozen=True)
@@ -305,6 +306,14 @@ class TurnExecutionLoop:
                 exhausted_reason=exhausted_reason,
                 slice_number=slice_number,
                 total_tool_calls=total_tool_calls,
+            )
+        except ContextCompactionRequired as exc:
+            yield from self.error_handler.stream_context_compaction_required(
+                run_id=run_id,
+                execution=execution,
+                active_slice_id=active_slice_id,
+                budget=budget,
+                exc=exc,
             )
         except HookRejected as exc:
             yield from self.error_handler.stream_rejected_exception(

@@ -9,6 +9,9 @@ from uuid import uuid4
 from langchain_core.messages import messages_from_dict
 
 from src.core.telemetry import emit_event
+from src.core.context.models import ContextWindowSource, TurnChunk
+from src.core.adapters.sqlite.session_store import serialize_recent_turns
+from src.core.adapters.sqlite.message_lineage import active_lineage_rows
 
 if TYPE_CHECKING:
     from src.core.state.database import LocalStateDatabase
@@ -25,46 +28,53 @@ class SQLiteSummaryStore:
         self,
         session: SessionContext,
         target_turn: int,
-    ) -> tuple[str, int, list[tuple[int, object]]]:
+    ) -> ContextWindowSource:
         """Load committed messages newer than the active context window."""
         with self.database.connect() as conn:
             window = self._ensure_active_window(conn, session)
-            rows = conn.execute(
-                """
-                SELECT turn_index, raw FROM messages
-                WHERE workspace_id=? AND session_id=?
-                  AND turn_index > ? AND turn_index <= ?
-                ORDER BY turn_index, message_ordinal
-                """,
-                (
-                    str(session.workspace.workspace_id),
-                    str(session.session_id),
-                    int(window["summary_through_turn"]),
-                    target_turn,
-                ),
-            ).fetchall()
-        return (
-            window["summary_text"] or "",
-            int(window["summary_through_turn"]),
-            [
-                (int(row["turn_index"]), message)
-                for row, message in zip(
-                    rows,
-                    messages_from_dict([json.loads(row["raw"]) for row in rows]),
-                    strict=True,
-                )
-            ],
+            rows = active_lineage_rows(
+                conn,
+                workspace_id=str(session.workspace.workspace_id),
+                session_id=str(session.session_id),
+                after_turn=int(window["summary_through_turn"]),
+                through_turn=target_turn,
+            )
+        turns: list[TurnChunk] = []
+        message_ids: list[str] = []
+        for row, message in zip(
+            rows,
+            messages_from_dict([json.loads(row["raw"]) for row in rows]),
+            strict=True,
+        ):
+            turn_index = int(row["turn_index"])
+            if not turns or turns[-1].turn_index != turn_index:
+                turns.append(TurnChunk(turn_index, [message]))
+            else:
+                turns[-1].messages.append(message)
+            message_ids.append(str(row["message_id"]))
+        return ContextWindowSource(
+            window_id=str(window["window_id"]),
+            summary=window["summary_text"] or "",
+            summary_through_turn=int(window["summary_through_turn"]),
+            turns=tuple(turns),
+            message_ids=tuple(message_ids),
         )
 
     def update_summary_cas(
         self,
         session: SessionContext,
         *,
-        expected_summary_through_turn: int,
+        expected_window_id: str | None = None,
+        expected_summary_through_turn: int | None = None,
         summary_through_turn: int,
         summary: str,
+        input_tokens: int = 0,
+        output_tokens: int = 0,
+        model: str = "",
     ) -> bool:
         """Create a new context window when the active window is still current."""
+        if expected_summary_through_turn is None:
+            expected_summary_through_turn = -1
         if summary_through_turn <= expected_summary_through_turn:
             return True
         with self.database.transaction() as conn:
@@ -73,21 +83,22 @@ class SQLiteSummaryStore:
                 raise RuntimeError(
                     "Session has no active context window before summary maintenance."
                 )
-            if int(current["summary_through_turn"]) != expected_summary_through_turn:
+            if expected_window_id and str(current["window_id"]) != expected_window_id:
                 return False
-            source_count = conn.execute(
-                """
-                SELECT COUNT(*) AS count FROM messages
-                WHERE workspace_id=? AND session_id=?
-                  AND turn_index > ? AND turn_index <= ?
-                """,
-                (
-                    str(session.workspace.workspace_id),
-                    str(session.session_id),
-                    expected_summary_through_turn,
-                    summary_through_turn,
-                ),
-            ).fetchone()["count"]
+            if (
+                not expected_window_id
+                and int(current["summary_through_turn"]) != expected_summary_through_turn
+            ):
+                return False
+            expected_summary_through_turn = int(current["summary_through_turn"])
+            source_rows = active_lineage_rows(
+                conn,
+                workspace_id=str(session.workspace.workspace_id),
+                session_id=str(session.session_id),
+                after_turn=expected_summary_through_turn,
+                through_turn=summary_through_turn,
+            )
+            source_count = len(source_rows)
             session_row = conn.execute(
                 """
                 SELECT turn_index, active_branch_id FROM sessions
@@ -103,8 +114,8 @@ class SQLiteSummaryStore:
                     window_id, workspace_id, session_id, branch_id, first_window_id,
                     previous_window_id, summary_text, summary_through_turn,
                     compacted_from_turn, compacted_through_turn, opened_at_turn,
-                    source_message_count
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    source_message_count, input_tokens, output_tokens, model
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     window_id,
@@ -119,6 +130,9 @@ class SQLiteSummaryStore:
                     summary_through_turn,
                     int(session_row["turn_index"]),
                     int(source_count),
+                    max(0, int(input_tokens)),
+                    max(0, int(output_tokens)),
+                    str(model or ""),
                 ),
             )
             conn.execute(
@@ -129,17 +143,36 @@ class SQLiteSummaryStore:
                 """,
                 (summary_through_turn, current["window_id"]),
             )
+            tail_rows = active_lineage_rows(
+                conn,
+                workspace_id=str(session.workspace.workspace_id),
+                session_id=str(session.session_id),
+                after_turn=summary_through_turn,
+            )
+            retained: list[TurnChunk] = []
+            for row, message in zip(
+                tail_rows,
+                messages_from_dict([json.loads(row["raw"]) for row in tail_rows]),
+                strict=True,
+            ):
+                turn_index = int(row["turn_index"])
+                if not retained or retained[-1].turn_index != turn_index:
+                    retained.append(TurnChunk(turn_index, [message]))
+                else:
+                    retained[-1].messages.append(message)
             cur = conn.execute(
                 """
                 UPDATE sessions
                 SET active_context_window_id=?, summary=?, summary_through_turn=?,
-                    version=version + 1, updated_at=CURRENT_TIMESTAMP
+                    recent_messages=?, version=version + 1,
+                    updated_at=CURRENT_TIMESTAMP
                 WHERE workspace_id=? AND session_id=? AND active_context_window_id=?
                 """,
                 (
                     window_id,
                     summary,
                     summary_through_turn,
+                    serialize_recent_turns(retained),
                     str(session.workspace.workspace_id),
                     str(session.session_id),
                     current["window_id"],

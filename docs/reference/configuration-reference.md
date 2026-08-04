@@ -46,8 +46,13 @@ learn-agent start
 | `LEARN_AGENT_LLM_BASE_URL` | 空 | Anthropic API 地址。留空时使用 `ChatAnthropic` 默认地址。 |
 | `LEARN_AGENT_MODEL` | `required (no default)` | 传给模型服务的模型名称，必须与服务端支持的名称一致。 |
 | `LEARN_AGENT_MODEL_CONTEXT_LIMIT` | `128000` | 模型上下文窗口大小（token），用于 TUI 显示上下文使用百分比。不影响实际提交给模型的 token 数量。 |
-| `LEARN_AGENT_LLM_MAX_TOKENS` | `16384` | 单次模型响应的最大输出 token。thinking/reasoning 与最终文本共享该预算；若耗尽，Turn 会以 `model_output_limit` 失败并保留诊断状态，不会误记为完成。 |
-| `LEARN_AGENT_SUMMARY_TRIGGER_TOKEN_LIMIT` | `5000` | 上下文 token 数超过此值时触发自动压缩。测试阶段默认 5K，生产环境建议设为模型上下文窗口的 80%。 |
+| `LEARN_AGENT_LLM_MAX_TOKENS` | `49152` | 单次模型响应的最大输出 token。thinking/reasoning 与最终文本共享该预算；若耗尽，Turn 会以 `model_output_limit` 失败并保留诊断状态，不会误记为完成。 |
+| `LEARN_AGENT_SUMMARY_TRIGGER_TOKEN_LIMIT` | `90000` | 上下文 token 数超过此值时触发自动压缩。它是默认的主要体积安全阈值。 |
+| `LEARN_AGENT_SUMMARY_TRIGGER_CHAR_LIMIT` | `0` | 字符数压缩兜底阈值；`0` 表示关闭。仅在服务商无法提供可靠 token usage 时建议配置正整数。 |
+| `LEARN_AGENT_RECENT_TURN_LIMIT` | `3` | 压缩成功后最多原样保留的完整 Turn 数，允许设为 `0..3`；不会拆开工具调用周期。 |
+| `LEARN_AGENT_RECENT_TURN_BUDGET_RATIO` | `0.5` | 原样 Turn 尾部最多占模型窗口的比例，取值须大于 `0` 且不超过 `0.5`。超限时从 3 个依次降到 0 个 Turn。 |
+| `LEARN_AGENT_CONTEXT_SAFETY_MARGIN_TOKENS` | `8192` | 为 provider 包装、估算误差和协议开销预留的输入安全空间。它与最大输出之和必须小于模型窗口。 |
+| `LEARN_AGENT_CONTEXT_SOFT_LIMIT_RATIO` | `0.85` | 动态输入硬上限的软压缩比例。低于硬上限时压缩失败保留原文；达到硬上限时暂停等待可恢复压缩。 |
 | `LEARN_AGENT_LLM_RETRY_ENABLED` | `true` | 是否启用 Core 统一 LLM 重试。启用后由 `ResilientModelProvider` 负责重试，SDK 内置重试保持关闭，避免重复重试。 |
 | `LEARN_AGENT_LLM_FOREGROUND_MAX_ATTEMPTS` | `3` | 前台 Agent、子 Agent 和文件总结模型调用的最大尝试次数。内容审查、认证、无效请求等确定性错误不会重试。 |
 | `LEARN_AGENT_LLM_BACKGROUND_MAX_ATTEMPTS` | `2` | 后台摘要和长期记忆提取等维护任务的模型调用最大尝试次数。耗尽后交回维护队列按任务级策略重试。 |

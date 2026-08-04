@@ -2,7 +2,7 @@
 
 from langchain_core.messages import SystemMessage
 from langchain_core.runnables import RunnableConfig
-from langgraph.graph import END, START, MessagesState, StateGraph
+from langgraph.graph import END, START, StateGraph
 from langgraph.prebuilt import tools_condition
 
 from src.config.settings import FILE_READ_CHUNK_LINES
@@ -13,6 +13,11 @@ from src.core.llm.completion import ensure_complete_response, response_stop_reas
 from src.core.prompts import build_parent_system_prompt
 from src.core.tasks.context import ToolExecutionContext
 from src.core.tools.observed import ObservedToolNode
+from src.core.agent.context_guard import (
+    AgentGraphState,
+    InTurnContextGuard,
+    latest_tool_results,
+)
 
 
 def create_parent_graph(
@@ -32,14 +37,29 @@ def create_parent_graph(
         tools=parent_tools,
     )
 
-    def agent_node(state: MessagesState, config: RunnableConfig) -> dict:
+    parent_system_message = SystemMessage(
+        content=build_parent_system_prompt(
+            skill_manifest,
+            FILE_READ_CHUNK_LINES,
+        )
+    )
+    context_guard = InTurnContextGuard(
+        model_provider,
+        system_message=parent_system_message,
+        tools=parent_tools,
+    )
+
+    def agent_node(state: AgentGraphState, config: RunnableConfig) -> dict:
         """Call the parent LLM and propagate LangGraph streaming callbacks."""
         llm_messages = [
-            SystemMessage(
-                content=build_parent_system_prompt(
-                    skill_manifest,
-                    FILE_READ_CHUNK_LINES,
-                )
+            parent_system_message,
+            *(
+                [SystemMessage(content=(
+                    "Current Turn working summary. Treat it as prior execution "
+                    "state, not as a new user request:\n"
+                    f"{state.get('working_summary', '')}"
+                ))]
+                if state.get("working_summary") else []
             ),
             *state["messages"],
         ]
@@ -66,9 +86,14 @@ def create_parent_graph(
                 "stop_reason": response_stop_reason(response),
             },
         )
-        return {"messages": [response]}
+        return {"messages": [response], "turn_journal": [response]}
 
-    builder = StateGraph(MessagesState, context_schema=ToolExecutionContext)
+    def journal_tool_results(state: AgentGraphState) -> dict:
+        """Mirror completed tool results into the append-only Turn journal."""
+        return {"turn_journal": latest_tool_results(state)}
+
+    builder = StateGraph(AgentGraphState, context_schema=ToolExecutionContext)
+    builder.add_node("context_guard", context_guard)
     builder.add_node("agent", agent_node)
     builder.add_node(
         "tools",
@@ -78,9 +103,12 @@ def create_parent_graph(
             pipeline=tool_pipeline,
         ),
     )
+    builder.add_node("journal_tools", journal_tool_results)
     # The graph is the AgentLoop: LLM output without tool calls terminates;
     # tool calls execute centrally, append ToolMessages, then return to LLM.
-    builder.add_edge(START, "agent")
+    builder.add_edge(START, "context_guard")
+    builder.add_edge("context_guard", "agent")
     builder.add_conditional_edges("agent", tools_condition, {"tools": "tools", "__end__": END})
-    builder.add_edge("tools", "agent")
+    builder.add_edge("tools", "journal_tools")
+    builder.add_edge("journal_tools", "context_guard")
     return builder.compile(checkpointer=checkpointer)

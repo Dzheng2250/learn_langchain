@@ -4,10 +4,74 @@ from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 
 from src.core.context.manager import AgentContextManager
 from src.core.context.models import AgentContextState, TurnChunk
+from src.core.context.summary_policy import SummaryPolicy
 from tests.support.model_providers import UnusedModelProvider
 
 
+class RecordingSummaryModel:
+    def __init__(self):
+        self.requests = []
+
+    def invoke(self, messages):
+        self.requests.append(messages)
+        return AIMessage(
+            content=f"summary-{len(self.requests)}",
+            usage_metadata={
+                "input_tokens": 10,
+                "output_tokens": 2,
+                "total_tokens": 12,
+            },
+        )
+
+
+class RecordingSummaryProvider:
+    def __init__(self):
+        self.model = RecordingSummaryModel()
+
+    def create_chat_model(self, *_args, **_kwargs):
+        return self.model
+
+
 class AgentContextManagerTest(unittest.TestCase):
+    def test_hierarchical_summary_sends_every_source_message(self):
+        provider = RecordingSummaryProvider()
+        manager = AgentContextManager(
+            provider,
+            summary_source_char_limit=80,
+        )
+        source = [
+            HumanMessage(content="SOURCE-ALPHA"),
+            AIMessage(content="SOURCE-BETA"),
+            HumanMessage(content="SOURCE-GAMMA"),
+        ]
+
+        summary, input_tokens, output_tokens = manager.summarize_messages_with_usage(
+            "previous",
+            source,
+        )
+
+        rendered_requests = "\n".join(
+            str(message.content)
+            for request in provider.model.requests
+            for message in request
+        )
+        for marker in ("SOURCE-ALPHA", "SOURCE-BETA", "SOURCE-GAMMA"):
+            self.assertIn(marker, rendered_requests)
+        self.assertEqual(f"summary-{len(provider.model.requests)}", summary)
+        self.assertEqual(10 * len(provider.model.requests), input_tokens)
+        self.assertEqual(2 * len(provider.model.requests), output_tokens)
+
+    def test_zero_character_limit_disables_character_trigger(self):
+        policy = SummaryPolicy(turn_limit=20, char_limit=0, token_limit=90_000)
+
+        self.assertFalse(
+            policy.should_summarize_state(
+                context_tokens=1,
+                turns=[TurnChunk(1, [HumanMessage(content="x" * 100_000)])],
+                messages=[HumanMessage(content="x" * 100_000)],
+            )
+        )
+
     def test_workspace_memory_injection_is_not_saved_as_recent_history(self):
         manager = AgentContextManager(UnusedModelProvider())
         result = manager.update_after_turn(
@@ -62,7 +126,7 @@ class AgentContextManagerTest(unittest.TestCase):
 
         self.assertEqual(["new answer"], [message.content for message in extracted])
 
-    def test_recent_limit_keeps_complete_turns_with_tool_messages(self):
+    def test_fast_state_does_not_evict_turns_before_compaction_succeeds(self):
         manager = AgentContextManager(UnusedModelProvider(), recent_turn_limit=2)
         state = AgentContextState(
             recent_turns=[
@@ -77,9 +141,16 @@ class AgentContextManagerTest(unittest.TestCase):
             turn_index=3,
         )
 
-        self.assertEqual([2, 3], [turn.turn_index for turn in result.recent_turns])
+        self.assertEqual([1, 2, 3], [turn.turn_index for turn in result.recent_turns])
         self.assertEqual(
-            ["middle user", "middle answer", "new user", "new answer"],
+            [
+                "old user",
+                "old answer",
+                "middle user",
+                "middle answer",
+                "new user",
+                "new answer",
+            ],
             [message.content for message in result.recent_messages],
         )
 

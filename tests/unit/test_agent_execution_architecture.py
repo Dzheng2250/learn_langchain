@@ -165,7 +165,7 @@ class AgentExecutionArchitectureTest(unittest.TestCase):
             constructor.call_args.kwargs["metadata"],
         )
         self.assertEqual(0, constructor.call_args.kwargs["max_retries"])
-        self.assertEqual(16_384, constructor.call_args.kwargs["max_tokens"])
+        self.assertEqual(49_152, constructor.call_args.kwargs["max_tokens"])
         bound_tools = model.bind_tools.call_args.args[0]
         self.assertEqual("cached_tool", bound_tools[0]["name"])
         self.assertEqual(
