@@ -62,7 +62,7 @@ BASH_PATH = "bash"
 # Shared model configuration. The generic LEARN_AGENT names take precedence;
 # LLM configuration is provider-neutral; the default provider is Anthropic.
 MODEL = env_str("LEARN_AGENT_MODEL", "")
-MODEL_CONTEXT_LIMIT = env_int("LEARN_AGENT_MODEL_CONTEXT_LIMIT", 128_000)
+MODEL_CONTEXT_LIMIT = env_int("LEARN_AGENT_MODEL_CONTEXT_LIMIT", 192_000)
 LLM_MAX_TOKENS = env_int("LEARN_AGENT_LLM_MAX_TOKENS", 49_152)
 LLM_API_KEY = env_str("LEARN_AGENT_LLM_API_KEY", "")
 LLM_BASE_URL = env_str("LEARN_AGENT_LLM_BASE_URL", "")
@@ -107,7 +107,7 @@ SKILL_READ_OUTPUT_LIMIT = 8000
 
 # Short-term context keeps whole conversation Turns. A Turn may contain several
 # LangChain messages, such as user, assistant and tool-result messages.
-RECENT_TURN_LIMIT = env_int("LEARN_AGENT_RECENT_TURN_LIMIT", 3)
+RECENT_TURN_LIMIT = env_int("LEARN_AGENT_RECENT_TURN_LIMIT", 1)
 RECENT_TURN_BUDGET_RATIO = env_float(
     "LEARN_AGENT_RECENT_TURN_BUDGET_RATIO", 0.5
 )
@@ -120,9 +120,11 @@ CONTEXT_SOFT_LIMIT_RATIO = env_float(
 # Backward-compatible alias for older internal callers; new code should use
 # RECENT_TURN_LIMIT so tool-heavy Turns are not sliced in half.
 RECENT_MESSAGE_LIMIT = RECENT_TURN_LIMIT
-# Compression starts when token count, Turn count, or character count crosses
-# its trigger; old Turns are summarized while recent Turns remain verbatim.
-# Token-based compression is the primary safety valve for very large Turns.
+# Compression starts when the dynamic input budget, Turn count, or optional
+# character/fixed-token ceiling is crossed. Old Turns are summarized first.
+SUMMARY_TRIGGER_TOKEN_LIMIT_ENABLED = env_bool(
+    "LEARN_AGENT_SUMMARY_TRIGGER_TOKEN_LIMIT_ENABLED", False
+)
 SUMMARY_TRIGGER_TOKEN_LIMIT = env_int("LEARN_AGENT_SUMMARY_TRIGGER_TOKEN_LIMIT", 90_000)
 SUMMARY_TRIGGER_TURN_LIMIT = RECENT_TURN_LIMIT
 # Backward-compatible alias for older internal callers; new code should use
@@ -131,7 +133,9 @@ SUMMARY_TRIGGER_MESSAGE_LIMIT = SUMMARY_TRIGGER_TURN_LIMIT
 # Optional fallback for providers or execution paths without reliable token
 # usage. Set to 0 to disable character-based compression.
 SUMMARY_TRIGGER_CHAR_LIMIT = env_int("LEARN_AGENT_SUMMARY_TRIGGER_CHAR_LIMIT", 0)
-SESSION_SUMMARY_MAX_CHARS = 8000
+SESSION_SUMMARY_MAX_CHARS = env_int(
+    "LEARN_AGENT_CONTEXT_SUMMARY_MAX_CHARS", 16_384
+)
 SUMMARY_SOURCE_CHAR_LIMIT = 12000
 
 if not 0 <= RECENT_TURN_LIMIT <= 3:
@@ -142,6 +146,12 @@ if not 0 < RECENT_TURN_BUDGET_RATIO <= 0.5:
     )
 if CONTEXT_SAFETY_MARGIN_TOKENS < 0:
     raise ValueError("LEARN_AGENT_CONTEXT_SAFETY_MARGIN_TOKENS cannot be negative")
+if SESSION_SUMMARY_MAX_CHARS <= 0:
+    raise ValueError("LEARN_AGENT_CONTEXT_SUMMARY_MAX_CHARS must be greater than zero")
+if SUMMARY_TRIGGER_TOKEN_LIMIT_ENABLED and SUMMARY_TRIGGER_TOKEN_LIMIT <= 0:
+    raise ValueError(
+        "LEARN_AGENT_SUMMARY_TRIGGER_TOKEN_LIMIT must be greater than zero when enabled"
+    )
 if not 0 < CONTEXT_SOFT_LIMIT_RATIO <= 1:
     raise ValueError(
         "LEARN_AGENT_CONTEXT_SOFT_LIMIT_RATIO must be greater than 0 and at most 1"

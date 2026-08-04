@@ -7,6 +7,7 @@ from src.config.settings import (
     SESSION_SUMMARY_MAX_CHARS,
     SUMMARY_SOURCE_CHAR_LIMIT,
     SUMMARY_TRIGGER_CHAR_LIMIT,
+    SUMMARY_TRIGGER_TOKEN_LIMIT_ENABLED,
     SUMMARY_TRIGGER_TURN_LIMIT,
     SUMMARY_TRIGGER_TOKEN_LIMIT,
 )
@@ -31,6 +32,7 @@ class AgentContextManager:
         recent_turn_limit: int = RECENT_TURN_LIMIT,
         summary_trigger_turn_limit: int = SUMMARY_TRIGGER_TURN_LIMIT,
         summary_trigger_char_limit: int = SUMMARY_TRIGGER_CHAR_LIMIT,
+        summary_trigger_token_limit_enabled: bool = SUMMARY_TRIGGER_TOKEN_LIMIT_ENABLED,
         summary_trigger_token_limit: int = SUMMARY_TRIGGER_TOKEN_LIMIT,
         summary_max_chars: int = SESSION_SUMMARY_MAX_CHARS,
         summary_source_char_limit: int = SUMMARY_SOURCE_CHAR_LIMIT,
@@ -49,6 +51,7 @@ class AgentContextManager:
         self.recent_turn_limit = recent_turn_limit
         self.summary_trigger_turn_limit = summary_trigger_turn_limit
         self.summary_trigger_char_limit = summary_trigger_char_limit
+        self.summary_trigger_token_limit_enabled = summary_trigger_token_limit_enabled
         self.summary_trigger_token_limit = summary_trigger_token_limit
         # Compatibility for tests and older internal callers.
         self.recent_message_limit = recent_turn_limit
@@ -57,6 +60,7 @@ class AgentContextManager:
         self.summary_source_char_limit = summary_source_char_limit
         self.window_planner = window_planner or ContextWindowPlanner(
             recent_turn_limit=recent_turn_limit,
+            summary_trigger_token_limit_enabled=summary_trigger_token_limit_enabled,
             summary_trigger_token_limit=summary_trigger_token_limit,
             summary_max_chars=summary_max_chars,
         )
@@ -68,6 +72,7 @@ class AgentContextManager:
         self.summary_policy = SummaryPolicy(
             turn_limit=summary_trigger_turn_limit,
             char_limit=summary_trigger_char_limit,
+            token_limit_enabled=summary_trigger_token_limit_enabled,
             token_limit=summary_trigger_token_limit,
         )
 

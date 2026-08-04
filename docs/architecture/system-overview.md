@@ -61,7 +61,7 @@ CLI 负责：
 TUI 负责（基于 Textual 框架）：
 
 - 实时流式 token 展示（每个 chunk 到达即显示）。
-- 状态栏展示连接、session 和上下文用量（`ctx: 3K/128K (2%)`）。
+- 状态栏展示连接、session 和上下文用量（默认 `ctx: 3K/192K (2%)`）。
 - 暂停 execution 检测与恢复（`/resume` / `/discard`）。
 - Goal 模式任务规划展示。
 

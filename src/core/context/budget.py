@@ -16,6 +16,7 @@ from src.config.settings import (
     RECENT_TURN_BUDGET_RATIO,
     RECENT_TURN_LIMIT,
     SESSION_SUMMARY_MAX_CHARS,
+    SUMMARY_TRIGGER_TOKEN_LIMIT_ENABLED,
     SUMMARY_TRIGGER_TOKEN_LIMIT,
 )
 from src.core.context.models import TurnChunk
@@ -97,6 +98,7 @@ class ContextWindowPlanner:
         soft_limit_ratio: float = CONTEXT_SOFT_LIMIT_RATIO,
         recent_turn_limit: int = RECENT_TURN_LIMIT,
         recent_turn_budget_ratio: float = RECENT_TURN_BUDGET_RATIO,
+        summary_trigger_token_limit_enabled: bool = SUMMARY_TRIGGER_TOKEN_LIMIT_ENABLED,
         summary_trigger_token_limit: int = SUMMARY_TRIGGER_TOKEN_LIMIT,
         summary_max_chars: int = SESSION_SUMMARY_MAX_CHARS,
     ) -> None:
@@ -117,6 +119,9 @@ class ContextWindowPlanner:
         self.soft_limit_ratio = float(soft_limit_ratio)
         self.recent_turn_limit = int(recent_turn_limit)
         self.recent_turn_budget_ratio = float(recent_turn_budget_ratio)
+        self.summary_trigger_token_limit_enabled = bool(
+            summary_trigger_token_limit_enabled
+        )
         self.summary_trigger_token_limit = int(summary_trigger_token_limit)
         # A CJK-heavy summary can approach one token per Unicode character.
         self.summary_reserve_tokens = int(summary_max_chars) + 8
@@ -133,9 +138,11 @@ class ContextWindowPlanner:
         fixed_tokens = fixed_count.tokens
         current_summary_tokens = summary_count.tokens
         hard = self.model_context_limit - self.output_reserve - self.safety_margin
-        soft = min(
-            self.summary_trigger_token_limit,
-            max(1, int(hard * self.soft_limit_ratio)),
+        dynamic_soft = max(1, int(hard * self.soft_limit_ratio))
+        soft = (
+            min(self.summary_trigger_token_limit, dynamic_soft)
+            if self.summary_trigger_token_limit_enabled
+            else dynamic_soft
         )
         turn_counts = [self.counter.count_messages(turn.messages) for turn in turns]
         current_projected = (

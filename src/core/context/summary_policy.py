@@ -13,11 +13,13 @@ class SummaryPolicy:
         message_limit: int | None = None,
         char_limit: int,
         token_limit: int,
+        token_limit_enabled: bool = True,
     ) -> None:
         # message_limit is accepted for compatibility with older tests and
         # internal callers, but it now means the number of complete Turns.
         self.turn_limit = int(turn_limit if turn_limit is not None else message_limit)
         self.char_limit = char_limit
+        self.token_limit_enabled = bool(token_limit_enabled)
         self.token_limit = token_limit
         self.message_limit = self.turn_limit
 
@@ -31,7 +33,7 @@ class SummaryPolicy:
         """Return whether stored context is large enough to summarize."""
         turn_count = len(turns) if turns is not None else None
         return (
-            context_tokens > self.token_limit
+            (self.token_limit_enabled and context_tokens > self.token_limit)
             or self.should_summarize_messages(messages, turn_count=turn_count)
         )
 

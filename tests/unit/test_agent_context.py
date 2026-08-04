@@ -72,6 +72,22 @@ class AgentContextManagerTest(unittest.TestCase):
             )
         )
 
+    def test_disabled_fixed_token_limit_does_not_trigger_summary(self):
+        policy = SummaryPolicy(
+            turn_limit=20,
+            char_limit=0,
+            token_limit=90_000,
+            token_limit_enabled=False,
+        )
+
+        self.assertFalse(
+            policy.should_summarize_state(
+                context_tokens=100_000,
+                turns=[TurnChunk(1, [HumanMessage(content="small")])],
+                messages=[HumanMessage(content="small")],
+            )
+        )
+
     def test_workspace_memory_injection_is_not_saved_as_recent_history(self):
         manager = AgentContextManager(UnusedModelProvider())
         result = manager.update_after_turn(

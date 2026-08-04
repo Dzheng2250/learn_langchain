@@ -38,6 +38,7 @@ class ContextWindowPlannerTest(unittest.TestCase):
             soft_limit_ratio=0.85,
             recent_turn_limit=3,
             recent_turn_budget_ratio=0.5,
+            summary_trigger_token_limit_enabled=True,
             summary_trigger_token_limit=900,
             summary_max_chars=0,
         )
@@ -69,6 +70,41 @@ class ContextWindowPlannerTest(unittest.TestCase):
 
         self.assertFalse(plan.requires_compaction)
         self.assertTrue(plan.hard_limit_exceeded)
+
+    def test_192k_window_uses_the_configured_90k_soft_limit(self):
+        planner = ContextWindowPlanner(
+            ContentTokenCounter(),
+            model_context_limit=192_000,
+            output_reserve=49_152,
+            safety_margin=8_192,
+            soft_limit_ratio=0.85,
+            summary_trigger_token_limit_enabled=True,
+            summary_trigger_token_limit=90_000,
+            summary_max_chars=16_384,
+        )
+
+        plan = planner.plan([])
+
+        self.assertEqual(134_656, plan.budget.hard_input_limit)
+        self.assertEqual(90_000, plan.budget.soft_input_limit)
+        self.assertEqual(16_392, plan.budget.summary_reserve_tokens)
+
+    def test_disabled_fixed_limit_uses_dynamic_soft_limit(self):
+        planner = ContextWindowPlanner(
+            ContentTokenCounter(),
+            model_context_limit=192_000,
+            output_reserve=49_152,
+            safety_margin=8_192,
+            soft_limit_ratio=0.85,
+            summary_trigger_token_limit_enabled=False,
+            summary_trigger_token_limit=90_000,
+            summary_max_chars=16_384,
+        )
+
+        plan = planner.plan([])
+
+        self.assertEqual(134_656, plan.budget.hard_input_limit)
+        self.assertEqual(114_457, plan.budget.soft_input_limit)
 
 
 class FakeManager:
@@ -189,6 +225,7 @@ class ContextCompactionServiceTest(unittest.TestCase):
             soft_limit_ratio=0.8,
             recent_turn_limit=3,
             recent_turn_budget_ratio=0.5,
+            summary_trigger_token_limit_enabled=True,
             summary_trigger_token_limit=100,
             summary_max_chars=0,
         )
@@ -263,6 +300,7 @@ class InTurnContextGuardTest(unittest.TestCase):
             soft_limit_ratio=0.5,
             recent_turn_limit=3,
             recent_turn_budget_ratio=0.5,
+            summary_trigger_token_limit_enabled=True,
             summary_trigger_token_limit=100,
             summary_max_chars=0,
         )
@@ -304,6 +342,7 @@ class InTurnContextGuardTest(unittest.TestCase):
             soft_limit_ratio=0.5,
             recent_turn_limit=3,
             recent_turn_budget_ratio=0.5,
+            summary_trigger_token_limit_enabled=True,
             summary_trigger_token_limit=100,
             summary_max_chars=0,
         )
@@ -343,6 +382,7 @@ class InTurnContextGuardTest(unittest.TestCase):
             soft_limit_ratio=0.5,
             recent_turn_limit=3,
             recent_turn_budget_ratio=0.5,
+            summary_trigger_token_limit_enabled=True,
             summary_trigger_token_limit=100,
             summary_max_chars=0,
         )

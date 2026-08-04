@@ -150,19 +150,26 @@ summary_through_turn: int
 
 窗口规划器在构造模型输入前和后台维护任务中运行。满足任一条件时需要推进摘要：
 
-- 未压缩 Turn 数超过 `RECENT_TURN_LIMIT=3`，需要把更旧的完整 Turn 推进摘要窗口。
-- 预计输入超过 `min(SUMMARY_TRIGGER_TOKEN_LIMIT, hard_input_limit * 0.85)` 的动态软阈值。
+- 未压缩 Turn 数超过 `RECENT_TURN_LIMIT=1`，需要把更旧的完整 Turn 推进摘要窗口。
+- 预计输入超过 `hard_input_limit × CONTEXT_SOFT_LIMIT_RATIO` 的动态软阈值。若显式启用 `SUMMARY_TRIGGER_TOKEN_LIMIT_ENABLED`，再取该动态值与 `SUMMARY_TRIGGER_TOKEN_LIMIT` 中的较小值。
 - 配置了正数 `LEARN_AGENT_SUMMARY_TRIGGER_CHAR_LIMIT`，且总内容字符数超过该值。默认值为 `0`，即关闭字符数触发；Turn 数和 token 数仍是主要压缩条件。
 - 调用方显式要求强制总结。
 
 成功 Turn 会在最小提交中写入一个 `context_summary` 维护任务。后台 handler 和前台输入 guard
 共用同一规划器：
 
-- 旧消息压缩到最多 `SESSION_SUMMARY_MAX_CHARS=8000` 字符的 `summary_text`。
-- 最多最近 `RECENT_TURN_LIMIT=3` 个完整 Turn 继续保留原文；一个 Turn 可以包含 user、assistant 和多条 tool message。
-- 原文尾部同时受 `RECENT_TURN_BUDGET_RATIO=0.5` 约束。若 3 个 Turn 超过半个模型窗口，规划器依次尝试 2、1、0 个，所有被移出的 Turn 必须先成功进入新摘要。
+- 旧消息压缩到最多 `LEARN_AGENT_CONTEXT_SUMMARY_MAX_CHARS=16384` 字符的 `summary_text`；该上限同时约束 Turn 内 `working_summary`，避免摘要本身无限膨胀。
+- 默认仅最近 `RECENT_TURN_LIMIT=1` 个完整 Turn 继续保留原文；一个 Turn 可以包含 user、assistant 和多条 tool message。若最新 Turn 本身超过动态原始 Turn Token 预算，则允许不保留原始 Turn，但它必须先完整进入摘要。
+- 原文尾部同时受 `RECENT_TURN_BUDGET_RATIO=0.5` 约束。默认只尝试保留最新 1 个 Turn；若它仍超过动态预算则降为 0。显式配置为 2 或 3 时，规划器会从配置值逐步减少，所有被移出的 Turn 必须先成功进入新摘要。
 - 完整输入硬上限为模型窗口减去最大输出和安全余量；压缩失败且尚未到硬上限时保留原文，达到硬上限时以 `context_compaction_required` 暂停，禁止静默截断。
 - `SUMMARY_SOURCE_CHAR_LIMIT=12000` 是单个分层摘要块的目标大小，不是总来源截断值。所有被逐出的消息都会进入某个块，再与上一代摘要逐层归并。
+
+`LEARN_AGENT_RECENT_TURN_LIMIT` 是部署配置，不是写死的算法常量。默认值为 `1`，可在 `0..3` 内修改；修改后重启 Core 生效。固定 `90K` 门槛默认关闭，因此默认 `192K` 模型窗口下的动态软阈值为 `(192000 - 49152 - 8192) × 0.85 = 114457 tokens`。需要更早压缩时，可同时设置：
+
+```text
+LEARN_AGENT_SUMMARY_TRIGGER_TOKEN_LIMIT_ENABLED=true
+LEARN_AGENT_SUMMARY_TRIGGER_TOKEN_LIMIT=90000
+```
 - 摘要结果写入新的 `context_windows` 行，并推进 `sessions.active_context_window_id`。
 
 这里的 CAS 是“比较后再更新”。摘要任务开始时记录旧的 active window；写回时要求

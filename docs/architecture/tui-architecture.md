@@ -199,7 +199,7 @@ src/tui/renderer.py
 Textual `Label` 子类，一行式状态展示：
 
 ```
-● 127.0.0.1:18765 [default] ctx: 3K/128K (2%)  goal  paused
+● 127.0.0.1:18765 [default] ctx: 3K/192K (2%)  goal  paused
 ```
 
 | 区域 | 来源 | 颜色规则 |
