@@ -110,6 +110,8 @@ class TurnExecutionLoop:
         budget = None
         active_slice_id = None
         try:
+            if execution is not None:
+                execution_trace_token = bind_trace_context(execution_id=execution.execution_id)
             # Persisted turn_index identifies the last completed turn. The
             # current turn is assigned only after the Session lock is held.
             prepared = self.turn_coordinator.prepare(
@@ -122,8 +124,6 @@ class TurnExecutionLoop:
             current_turn = prepared.turn_index
             run_context = prepared.run_context
             run_context_token = bind_run_context(run_context)
-            if execution is not None:
-                execution_trace_token = bind_trace_context(execution_id=execution.execution_id)
             self.observer.run_started(session, user_input, run_context, current_turn, resume)
             input_messages = prepared.input_messages
             if model_user_input is not None and model_user_input != user_input:

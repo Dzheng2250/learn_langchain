@@ -9,13 +9,13 @@ from math import ceil
 from langchain_core.messages import messages_to_dict
 
 from src.config.settings import (
+    CONTEXT_SUMMARY_MAX_TOKENS,
     CONTEXT_SAFETY_MARGIN_TOKENS,
     CONTEXT_SOFT_LIMIT_RATIO,
     LLM_MAX_TOKENS,
     MODEL_CONTEXT_LIMIT,
     RECENT_TURN_BUDGET_RATIO,
     RECENT_TURN_LIMIT,
-    SESSION_SUMMARY_MAX_CHARS,
     SUMMARY_TRIGGER_TOKEN_LIMIT_ENABLED,
     SUMMARY_TRIGGER_TOKEN_LIMIT,
 )
@@ -100,7 +100,7 @@ class ContextWindowPlanner:
         recent_turn_budget_ratio: float = RECENT_TURN_BUDGET_RATIO,
         summary_trigger_token_limit_enabled: bool = SUMMARY_TRIGGER_TOKEN_LIMIT_ENABLED,
         summary_trigger_token_limit: int = SUMMARY_TRIGGER_TOKEN_LIMIT,
-        summary_max_chars: int = SESSION_SUMMARY_MAX_CHARS,
+        summary_max_tokens: int = CONTEXT_SUMMARY_MAX_TOKENS,
     ) -> None:
         if model_context_limit <= output_reserve + safety_margin:
             raise ValueError(
@@ -123,8 +123,7 @@ class ContextWindowPlanner:
             summary_trigger_token_limit_enabled
         )
         self.summary_trigger_token_limit = int(summary_trigger_token_limit)
-        # A CJK-heavy summary can approach one token per Unicode character.
-        self.summary_reserve_tokens = int(summary_max_chars) + 8
+        self.summary_reserve_tokens = int(summary_max_tokens)
 
     def plan(
         self,

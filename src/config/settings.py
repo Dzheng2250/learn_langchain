@@ -121,7 +121,7 @@ CONTEXT_SOFT_LIMIT_RATIO = env_float(
 # RECENT_TURN_LIMIT so tool-heavy Turns are not sliced in half.
 RECENT_MESSAGE_LIMIT = RECENT_TURN_LIMIT
 # Compression starts when the dynamic input budget, Turn count, or optional
-# character/fixed-token ceiling is crossed. Old Turns are summarized first.
+# fixed-token ceiling is crossed. Old Turns are summarized first.
 SUMMARY_TRIGGER_TOKEN_LIMIT_ENABLED = env_bool(
     "LEARN_AGENT_SUMMARY_TRIGGER_TOKEN_LIMIT_ENABLED", False
 )
@@ -130,13 +130,15 @@ SUMMARY_TRIGGER_TURN_LIMIT = RECENT_TURN_LIMIT
 # Backward-compatible alias for older internal callers; new code should use
 # SUMMARY_TRIGGER_TURN_LIMIT.
 SUMMARY_TRIGGER_MESSAGE_LIMIT = SUMMARY_TRIGGER_TURN_LIMIT
-# Optional fallback for providers or execution paths without reliable token
-# usage. Set to 0 to disable character-based compression.
-SUMMARY_TRIGGER_CHAR_LIMIT = env_int("LEARN_AGENT_SUMMARY_TRIGGER_CHAR_LIMIT", 0)
-SESSION_SUMMARY_MAX_CHARS = env_int(
-    "LEARN_AGENT_CONTEXT_SUMMARY_MAX_CHARS", 16_384
+CONTEXT_SUMMARY_MAX_TOKENS = env_int(
+    "LEARN_AGENT_CONTEXT_SUMMARY_MAX_TOKENS", 16_384
 )
-SUMMARY_SOURCE_CHAR_LIMIT = 12000
+CONTEXT_SUMMARY_MAP_MAX_TOKENS = env_int(
+    "LEARN_AGENT_CONTEXT_SUMMARY_MAP_MAX_TOKENS", 4_096
+)
+CONTEXT_SUMMARY_MAP_WORKERS = env_int(
+    "LEARN_AGENT_CONTEXT_SUMMARY_MAP_WORKERS", 4
+)
 
 if not 0 <= RECENT_TURN_LIMIT <= 3:
     raise ValueError("LEARN_AGENT_RECENT_TURN_LIMIT must be between 0 and 3")
@@ -146,8 +148,15 @@ if not 0 < RECENT_TURN_BUDGET_RATIO <= 0.5:
     )
 if CONTEXT_SAFETY_MARGIN_TOKENS < 0:
     raise ValueError("LEARN_AGENT_CONTEXT_SAFETY_MARGIN_TOKENS cannot be negative")
-if SESSION_SUMMARY_MAX_CHARS <= 0:
-    raise ValueError("LEARN_AGENT_CONTEXT_SUMMARY_MAX_CHARS must be greater than zero")
+if CONTEXT_SUMMARY_MAX_TOKENS <= 0:
+    raise ValueError("LEARN_AGENT_CONTEXT_SUMMARY_MAX_TOKENS must be greater than zero")
+if not 0 < CONTEXT_SUMMARY_MAP_MAX_TOKENS <= CONTEXT_SUMMARY_MAX_TOKENS:
+    raise ValueError(
+        "LEARN_AGENT_CONTEXT_SUMMARY_MAP_MAX_TOKENS must be greater than zero "
+        "and no greater than LEARN_AGENT_CONTEXT_SUMMARY_MAX_TOKENS"
+    )
+if CONTEXT_SUMMARY_MAP_WORKERS <= 0:
+    raise ValueError("LEARN_AGENT_CONTEXT_SUMMARY_MAP_WORKERS must be greater than zero")
 if SUMMARY_TRIGGER_TOKEN_LIMIT_ENABLED and SUMMARY_TRIGGER_TOKEN_LIMIT <= 0:
     raise ValueError(
         "LEARN_AGENT_SUMMARY_TRIGGER_TOKEN_LIMIT must be greater than zero when enabled"

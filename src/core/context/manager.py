@@ -3,10 +3,10 @@
 from langchain_core.messages import HumanMessage, SystemMessage
 
 from src.config.settings import (
+    CONTEXT_SUMMARY_MAP_MAX_TOKENS,
+    CONTEXT_SUMMARY_MAP_WORKERS,
+    CONTEXT_SUMMARY_MAX_TOKENS,
     RECENT_TURN_LIMIT,
-    SESSION_SUMMARY_MAX_CHARS,
-    SUMMARY_SOURCE_CHAR_LIMIT,
-    SUMMARY_TRIGGER_CHAR_LIMIT,
     SUMMARY_TRIGGER_TOKEN_LIMIT_ENABLED,
     SUMMARY_TRIGGER_TURN_LIMIT,
     SUMMARY_TRIGGER_TOKEN_LIMIT,
@@ -31,11 +31,11 @@ class AgentContextManager:
         model_provider: ModelProvider,
         recent_turn_limit: int = RECENT_TURN_LIMIT,
         summary_trigger_turn_limit: int = SUMMARY_TRIGGER_TURN_LIMIT,
-        summary_trigger_char_limit: int = SUMMARY_TRIGGER_CHAR_LIMIT,
         summary_trigger_token_limit_enabled: bool = SUMMARY_TRIGGER_TOKEN_LIMIT_ENABLED,
         summary_trigger_token_limit: int = SUMMARY_TRIGGER_TOKEN_LIMIT,
-        summary_max_chars: int = SESSION_SUMMARY_MAX_CHARS,
-        summary_source_char_limit: int = SUMMARY_SOURCE_CHAR_LIMIT,
+        summary_max_tokens: int = CONTEXT_SUMMARY_MAX_TOKENS,
+        summary_map_max_tokens: int = CONTEXT_SUMMARY_MAP_MAX_TOKENS,
+        summary_map_workers: int = CONTEXT_SUMMARY_MAP_WORKERS,
         window_planner: ContextWindowPlanner | None = None,
         **legacy_limits,
     ) -> None:
@@ -50,28 +50,26 @@ class AgentContextManager:
             raise TypeError(f"Unknown AgentContextManager limit(s): {unknown}")
         self.recent_turn_limit = recent_turn_limit
         self.summary_trigger_turn_limit = summary_trigger_turn_limit
-        self.summary_trigger_char_limit = summary_trigger_char_limit
         self.summary_trigger_token_limit_enabled = summary_trigger_token_limit_enabled
         self.summary_trigger_token_limit = summary_trigger_token_limit
         # Compatibility for tests and older internal callers.
         self.recent_message_limit = recent_turn_limit
         self.summary_trigger_message_limit = summary_trigger_turn_limit
-        self.summary_max_chars = summary_max_chars
-        self.summary_source_char_limit = summary_source_char_limit
+        self.summary_max_tokens = summary_max_tokens
         self.window_planner = window_planner or ContextWindowPlanner(
             recent_turn_limit=recent_turn_limit,
             summary_trigger_token_limit_enabled=summary_trigger_token_limit_enabled,
             summary_trigger_token_limit=summary_trigger_token_limit,
-            summary_max_chars=summary_max_chars,
+            summary_max_tokens=summary_max_tokens,
         )
         self.summary_executor = ContextSummaryExecutor(
             model_provider=model_provider,
-            summary_max_chars=summary_max_chars,
-            summary_source_char_limit=summary_source_char_limit,
+            summary_max_tokens=summary_max_tokens,
+            map_max_tokens=summary_map_max_tokens,
+            map_workers=summary_map_workers,
         )
         self.summary_policy = SummaryPolicy(
             turn_limit=summary_trigger_turn_limit,
-            char_limit=summary_trigger_char_limit,
             token_limit_enabled=summary_trigger_token_limit_enabled,
             token_limit=summary_trigger_token_limit,
         )
@@ -168,9 +166,15 @@ class AgentContextManager:
         previous_summary: str,
         messages: list,
         memory_context: str = "",
+        source_groups: list[list] | None = None,
     ) -> tuple[str, int, int]:
         """Summarize all source messages and retain aggregate model usage."""
-        return self._summarize_messages(previous_summary, messages, memory_context)
+        return self._summarize_messages(
+            previous_summary,
+            messages,
+            memory_context,
+            source_groups=source_groups,
+        )
 
     def extract_turn_messages(
         self,
@@ -202,7 +206,14 @@ class AgentContextManager:
             offset = loaded_current
         return conversation[offset:]
 
-    def _summarize_messages(self, previous_summary: str, messages: list, memory_context: str = "") -> tuple[str, int, int]:
+    def _summarize_messages(
+        self,
+        previous_summary: str,
+        messages: list,
+        memory_context: str = "",
+        *,
+        source_groups: list[list] | None = None,
+    ) -> tuple[str, int, int]:
         """Compress older messages into a structured session summary.
 
         Returns:
@@ -213,6 +224,7 @@ class AgentContextManager:
             previous_summary,
             messages,
             memory_context,
+            source_groups=source_groups,
         )
 
     def _create_summary_llm(self):

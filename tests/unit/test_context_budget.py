@@ -1,4 +1,7 @@
 import unittest
+from threading import Event, Thread
+from time import sleep
+from types import SimpleNamespace
 
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 
@@ -8,7 +11,7 @@ from src.core.context.compaction import (
     ContextCompactionRequired,
     ContextCompactionService,
 )
-from src.core.context.models import AgentContextState, TurnChunk
+from src.core.context.models import AgentContextState, ContextWindowSource, TurnChunk
 
 
 class ContentTokenCounter:
@@ -40,7 +43,7 @@ class ContextWindowPlannerTest(unittest.TestCase):
             recent_turn_budget_ratio=0.5,
             summary_trigger_token_limit_enabled=True,
             summary_trigger_token_limit=900,
-            summary_max_chars=0,
+            summary_max_tokens=0,
         )
 
     def test_five_small_turns_keep_latest_three(self):
@@ -80,14 +83,14 @@ class ContextWindowPlannerTest(unittest.TestCase):
             soft_limit_ratio=0.85,
             summary_trigger_token_limit_enabled=True,
             summary_trigger_token_limit=90_000,
-            summary_max_chars=16_384,
+            summary_max_tokens=16_384,
         )
 
         plan = planner.plan([])
 
         self.assertEqual(134_656, plan.budget.hard_input_limit)
         self.assertEqual(90_000, plan.budget.soft_input_limit)
-        self.assertEqual(16_392, plan.budget.summary_reserve_tokens)
+        self.assertEqual(16_384, plan.budget.summary_reserve_tokens)
 
     def test_disabled_fixed_limit_uses_dynamic_soft_limit(self):
         planner = ContextWindowPlanner(
@@ -98,7 +101,7 @@ class ContextWindowPlannerTest(unittest.TestCase):
             soft_limit_ratio=0.85,
             summary_trigger_token_limit_enabled=False,
             summary_trigger_token_limit=90_000,
-            summary_max_chars=16_384,
+            summary_max_tokens=16_384,
         )
 
         plan = planner.plan([])
@@ -119,7 +122,7 @@ class FakeManager:
             summary=state.summary,
         )
 
-    def summarize_messages_with_usage(self, previous, messages):
+    def summarize_messages_with_usage(self, previous, messages, **_kwargs):
         if self.fail:
             raise RuntimeError("summary unavailable")
         return f"{previous}|summary:{len(messages)}", 12, 3
@@ -155,8 +158,77 @@ class FakeSummaryStore:
             )
         return True
 
+    def load_summary_source(self, _session, _target_turn):
+        state = self.session_store.state
+        return ContextWindowSource(
+            window_id=state.context_window_id,
+            summary=state.summary,
+            summary_through_turn=state.summary_through_turn,
+            turns=tuple(state.recent_turns),
+        )
+
+
+class BlockingManager(FakeManager):
+    def __init__(self, planner):
+        super().__init__(planner)
+        self.started = Event()
+        self.release = Event()
+        self.summary_calls = 0
+
+    def summarize_messages_with_usage(self, previous, messages, **_kwargs):
+        self.summary_calls += 1
+        self.started.set()
+        self.release.wait(2)
+        return f"{previous}|summary:{len(messages)}", 12, 3
+
 
 class ContextCompactionServiceTest(unittest.TestCase):
+    def test_concurrent_foreground_compaction_uses_single_flight(self):
+        state = AgentContextState(
+            recent_turns=[turn(index, 50) for index in range(1, 5)],
+            context_window_id="window-1",
+        )
+        planner = ContextWindowPlanner(
+            ContentTokenCounter(),
+            model_context_limit=1000,
+            output_reserve=100,
+            safety_margin=100,
+            recent_turn_limit=3,
+            recent_turn_budget_ratio=0.5,
+            summary_max_tokens=0,
+        )
+        manager = BlockingManager(planner)
+        session_store = FakeSessionStore(state)
+        summary_store = FakeSummaryStore(state, session_store)
+        service = ContextCompactionService(manager, session_store, summary_store)
+        session = SimpleNamespace(session_id="session-1")
+        results = []
+        second_started = Event()
+
+        first = Thread(
+            target=lambda: results.append(
+                service.ensure_for_prompt(session, state, user_input="0")
+            )
+        )
+        second = Thread(
+            target=lambda: (
+                second_started.set(),
+                results.append(service.ensure_for_prompt(session, state, user_input="0")),
+            )
+        )
+        first.start()
+        self.assertTrue(manager.started.wait(1))
+        second.start()
+        self.assertTrue(second_started.wait(1))
+        sleep(0.01)
+        manager.release.set()
+        first.join(2)
+        second.join(2)
+
+        self.assertEqual(1, manager.summary_calls)
+        self.assertEqual(2, len(results))
+        self.assertEqual({"window-2"}, {result.context_window_id for result in results})
+
     def test_success_advances_expected_window_and_keeps_planned_suffix(self):
         state = AgentContextState(
             recent_turns=[turn(index, 50) for index in range(1, 5)],
@@ -169,7 +241,7 @@ class ContextCompactionServiceTest(unittest.TestCase):
             safety_margin=100,
             recent_turn_limit=3,
             recent_turn_budget_ratio=0.5,
-            summary_max_chars=0,
+            summary_max_tokens=0,
         )
         session_store = FakeSessionStore(state)
         summary_store = FakeSummaryStore(state, session_store)
@@ -198,7 +270,7 @@ class ContextCompactionServiceTest(unittest.TestCase):
             safety_margin=100,
             recent_turn_limit=3,
             recent_turn_budget_ratio=0.5,
-            summary_max_chars=0,
+            summary_max_tokens=0,
         )
         summary_store = FakeSummaryStore(state)
         service = ContextCompactionService(
@@ -227,7 +299,7 @@ class ContextCompactionServiceTest(unittest.TestCase):
             recent_turn_budget_ratio=0.5,
             summary_trigger_token_limit_enabled=True,
             summary_trigger_token_limit=100,
-            summary_max_chars=0,
+            summary_max_tokens=0,
         )
         summary_store = FakeSummaryStore(state)
         service = ContextCompactionService(
@@ -250,7 +322,7 @@ class FixedCounter:
 
 
 class FakeExecutor:
-    def summarize(self, previous, messages):
+    def summarize(self, previous, messages, **_kwargs):
         return f"{previous}closed:{len(messages)}", 20, 5
 
 
@@ -302,7 +374,7 @@ class InTurnContextGuardTest(unittest.TestCase):
             recent_turn_budget_ratio=0.5,
             summary_trigger_token_limit_enabled=True,
             summary_trigger_token_limit=100,
-            summary_max_chars=0,
+            summary_max_tokens=0,
         )
         journal = self.journal()
         guard = InTurnContextGuard(
@@ -344,7 +416,7 @@ class InTurnContextGuardTest(unittest.TestCase):
             recent_turn_budget_ratio=0.5,
             summary_trigger_token_limit_enabled=True,
             summary_trigger_token_limit=100,
-            summary_max_chars=0,
+            summary_max_tokens=0,
         )
         journal = self.journal()[:3]
         journal[1].usage_metadata = {"input_tokens": 10, "output_tokens": 1}
@@ -384,7 +456,7 @@ class InTurnContextGuardTest(unittest.TestCase):
             recent_turn_budget_ratio=0.5,
             summary_trigger_token_limit_enabled=True,
             summary_trigger_token_limit=100,
-            summary_max_chars=0,
+            summary_max_tokens=0,
         )
         journal = self.journal()
         journal[3].usage_metadata = {"input_tokens": 45, "output_tokens": 5}

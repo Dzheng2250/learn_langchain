@@ -3,12 +3,14 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from threading import Lock, RLock
 
 from langchain_core.messages import HumanMessage
 
 from src.config.settings import MODEL
 from src.core.context.models import AgentContextState
 from src.core.telemetry import emit_event, record_error
+from src.core.llm.retry_context import emit_foreground_event
 
 
 class ContextCompactionRequired(RuntimeError):
@@ -30,6 +32,8 @@ class ContextCompactionService:
         self.context_manager = context_manager
         self.session_store = session_store
         self.summary_store = summary_store
+        self._lock_guard = Lock()
+        self._session_locks: dict[str, RLock] = {}
 
     def ensure_for_prompt(
         self,
@@ -39,11 +43,35 @@ class ContextCompactionService:
         user_input: str,
         extra_system_messages: list | None = None,
     ) -> AgentContextState:
-        if not state.context_window_id:
-            target_turn = max(
-                (turn.turn_index for turn in state.recent_turns),
-                default=state.summary_through_turn,
+        lock = self._session_lock(session)
+        contended = not lock.acquire(blocking=False)
+        if contended:
+            lock.acquire()
+        try:
+            return self._ensure_for_prompt_locked(
+                session,
+                state,
+                user_input=user_input,
+                extra_system_messages=extra_system_messages,
+                refresh_authoritative=contended,
             )
+        finally:
+            lock.release()
+
+    def _ensure_for_prompt_locked(
+        self,
+        session,
+        state: AgentContextState,
+        *,
+        user_input: str,
+        extra_system_messages: list | None = None,
+        refresh_authoritative: bool = False,
+    ) -> AgentContextState:
+        target_turn = max(
+            (turn.turn_index for turn in state.recent_turns),
+            default=state.summary_through_turn,
+        )
+        if refresh_authoritative or not state.context_window_id:
             source = self.summary_store.load_summary_source(session, target_turn)
             state = AgentContextState(
                 summary=source.summary,
@@ -67,6 +95,14 @@ class ContextCompactionService:
         try:
             outcome = self._apply_plan(session, state, plan)
         except Exception as exc:
+            emit_foreground_event(
+                "context_compaction_failed",
+                {
+                    "mode": "unknown",
+                    "error_type": type(exc).__name__,
+                    "source_turn_count": len(plan.compacted_turns),
+                },
+            )
             record_error(
                 "context_compaction",
                 "foreground_compaction",
@@ -100,11 +136,12 @@ class ContextCompactionService:
             # A concurrent commit may have extended the tail after our CAS.
             # Re-enter once through the authoritative state instead of sending
             # an input that no longer matches the completed plan.
-            return self.ensure_for_prompt(
+            return self._ensure_for_prompt_locked(
                 session,
                 refreshed,
                 user_input=user_input,
                 extra_system_messages=extra_system_messages,
+                refresh_authoritative=True,
             )
         if refreshed_plan.hard_limit_exceeded or refreshed_plan.planned_hard_limit_exceeded:
             raise ContextCompactionRequired(
@@ -114,17 +151,18 @@ class ContextCompactionService:
         return refreshed
 
     def compact_committed(self, session, target_turn: int) -> CompactionOutcome:
-        source = self.summary_store.load_summary_source(session, target_turn)
-        state = AgentContextState(
-            summary=source.summary,
-            recent_turns=list(source.turns),
-            context_window_id=source.window_id,
-            summary_through_turn=source.summary_through_turn,
-        )
-        plan = self.context_manager.plan_window(state)
-        if not plan.requires_compaction:
-            return CompactionOutcome(state, False, False, plan)
-        return self._apply_plan(session, state, plan)
+        with self._session_lock(session):
+            source = self.summary_store.load_summary_source(session, target_turn)
+            state = AgentContextState(
+                summary=source.summary,
+                recent_turns=list(source.turns),
+                context_window_id=source.window_id,
+                summary_through_turn=source.summary_through_turn,
+            )
+            plan = self.context_manager.plan_window(state)
+            if not plan.requires_compaction:
+                return CompactionOutcome(state, False, False, plan)
+            return self._apply_plan(session, state, plan)
 
     def _apply_plan(self, session, state, plan) -> CompactionOutcome:
         messages = [
@@ -132,12 +170,12 @@ class ContextCompactionService:
             for turn in plan.compacted_turns
             for message in turn.messages
         ]
-        summary, input_tokens, output_tokens = (
-            self.context_manager.summarize_messages_with_usage(
-                state.summary,
-                messages,
-            )
+        summary_result = self.context_manager.summarize_messages_with_usage(
+            state.summary,
+            messages,
+            source_groups=[turn.messages for turn in plan.compacted_turns],
         )
+        summary, input_tokens, output_tokens = summary_result
         through_turn = plan.compacted_turns[-1].turn_index
         updated = self.summary_store.update_summary_cas(
             session,
@@ -161,7 +199,22 @@ class ContextCompactionService:
                 "raw_turn_limit": plan.budget.raw_turn_limit,
             },
         )
+        emit_foreground_event(
+            "context_compaction_completed",
+            {
+                **getattr(summary_result, "event_data", {}),
+                "cas_applied": updated,
+                "summary_through_turn": through_turn,
+                "compacted_turn_count": len(plan.compacted_turns),
+                "retained_turn_count": len(plan.retained_turns),
+            },
+        )
         if not updated:
             return CompactionOutcome(state, True, False, plan)
         refreshed = self.session_store.load_context(session)[0]
         return CompactionOutcome(refreshed, True, True, plan)
+
+    def _session_lock(self, session) -> RLock:
+        key = str(getattr(session, "session_id", "") or getattr(session, "name", ""))
+        with self._lock_guard:
+            return self._session_locks.setdefault(key, RLock())

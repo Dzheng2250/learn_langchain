@@ -12,6 +12,7 @@ from src.core.context.budget import ContextWindowPlanner, ModelTokenCounter
 from src.core.context.compaction import ContextCompactionRequired
 from src.core.context.summary_executor import ContextSummaryExecutor
 from src.core.llm.usage import context_tokens, has_context_usage, message_usage
+from src.core.llm.retry_context import emit_foreground_event
 from src.core.telemetry import emit_event, record_error
 
 
@@ -108,11 +109,21 @@ class InTurnContextGuard:
             for message in cycle_messages
         ]
         try:
-            summary, input_tokens, output_tokens = self.executor.summarize(
+            summary_result = self.executor.summarize(
                 working_summary,
                 source_messages,
+                source_groups=[cycle_messages for _start, _end, cycle_messages in selected],
             )
+            summary, input_tokens, output_tokens = summary_result
         except Exception as exc:
+            emit_foreground_event(
+                "context_compaction_failed",
+                {
+                    "mode": "in_turn",
+                    "error_type": type(exc).__name__,
+                    "source_message_count": len(source_messages),
+                },
+            )
             record_error(
                 "context_guard",
                 "in_turn_compaction",
@@ -184,6 +195,16 @@ class InTurnContextGuard:
                 "output_tokens": output_tokens,
                 "projected_input_tokens": projected,
                 "post_compaction_tokens": post_compaction_tokens,
+            },
+        )
+        emit_foreground_event(
+            "context_compaction_completed",
+            {
+                **getattr(summary_result, "event_data", {}),
+                "mode": "in_turn",
+                "generation": generation,
+                "compacted_cycle_count": len(selected),
+                "compacted_message_count": len(source_messages),
             },
         )
         return {

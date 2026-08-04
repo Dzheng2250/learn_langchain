@@ -140,6 +140,34 @@ def render_event(params: dict[str, Any]) -> str | None:
     if event == "goal_continuation_started":
         return "[yellow]Goal continues: checking unfinished tasks.[/yellow]"
 
+    if event == "context_compaction_started":
+        mode = data.get("mode", "single")
+        return (
+            "[yellow]Compressing conversation context"
+            f" ({escape(str(mode))}, ~{int(data.get('estimated_source_tokens', 0))} tokens)...[/yellow]"
+        )
+
+    if event == "context_compaction_progress":
+        return (
+            "[yellow]Context compression: "
+            f"{int(data.get('completed_groups', 0))}/{int(data.get('group_count', 0))} "
+            f"{escape(str(data.get('stage', 'map')))} groups complete.[/yellow]"
+        )
+
+    if event == "context_compaction_completed":
+        return (
+            "[green]Context compressed: "
+            f"{int(data.get('llm_call_count', 0))} model call(s), "
+            f"{int(data.get('input_tokens', 0))} input / "
+            f"{int(data.get('output_tokens', 0))} output tokens.[/green]"
+        )
+
+    if event == "context_compaction_failed":
+        return (
+            "[red]Context compression failed; original Turns were preserved "
+            f"({escape(str(data.get('error_type', 'unknown')))}).[/red]"
+        )
+
     if event == "model_retry_scheduled":
         return (
             "[yellow]Model request will retry: "

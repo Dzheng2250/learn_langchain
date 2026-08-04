@@ -186,6 +186,16 @@ class AgentExecutionArchitectureTest(unittest.TestCase):
         self.assertFalse(constructor.call_args.kwargs["streaming"])
         model.bind_tools.assert_not_called()
 
+    def test_anthropic_provider_accepts_purpose_specific_output_budget(self):
+        model = Mock()
+        with patch("src.core.llm.provider.ChatAnthropic", return_value=model) as constructor:
+            AnthropicProvider(model="test-model", api_key="key").create_chat_model(
+                LlmPurpose.CONTEXT_SUMMARY,
+                max_tokens=16_384,
+            )
+
+        self.assertEqual(16_384, constructor.call_args.kwargs["max_tokens"])
+
     def test_prompt_cache_policy_marks_system_and_completed_history(self):
         policy = PromptCachePolicy(PromptCacheSettings(enabled=True, ttl="5m"))
         messages = [

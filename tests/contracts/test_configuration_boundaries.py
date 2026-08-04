@@ -160,11 +160,12 @@ class PromptBoundaryTest(unittest.TestCase):
             source="conversation",
             previous_summary="old",
             memory_context="memory",
-            summary_max_chars=4000,
+            summary_max_tokens=4000,
         )
         self.assertEqual(2, len(messages))
-        self.assertIn("Previous summary:\nold", messages[0].content)
-        self.assertIn("under 4000 characters", messages[1].content)
+        self.assertNotIn("Previous summary:\nold", messages[0].content)
+        self.assertIn("Previous summary:\nold", messages[1].content)
+        self.assertIn("Maximum output budget: 4000 tokens", messages[1].content)
 
     def test_subagent_policy_explicitly_forbids_recursive_delegation(self):
         self.assertIn("cannot delegate", SUBAGENT_SYSTEM_PROMPT)

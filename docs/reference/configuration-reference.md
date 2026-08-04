@@ -49,12 +49,13 @@ learn-agent start
 | `LEARN_AGENT_LLM_MAX_TOKENS` | `49152` | 单次模型响应的最大输出 token。thinking/reasoning 与最终文本共享该预算；若耗尽，Turn 会以 `model_output_limit` 失败并保留诊断状态，不会误记为完成。 |
 | `LEARN_AGENT_SUMMARY_TRIGGER_TOKEN_LIMIT_ENABLED` | `false` | 是否启用固定 Token 压缩门槛。关闭时不使用 `90000` 上限，只按输入硬上限和软比例动态计算；开启后固定门槛作为动态阈值的额外上限。 |
 | `LEARN_AGENT_SUMMARY_TRIGGER_TOKEN_LIMIT` | `90000` | 可选的固定 Token 压缩门槛，仅在对应开关启用时生效；实际阈值为 `min(该值, 输入硬上限 × LEARN_AGENT_CONTEXT_SOFT_LIMIT_RATIO)`。 |
-| `LEARN_AGENT_SUMMARY_TRIGGER_CHAR_LIMIT` | `0` | 字符数压缩兜底阈值；`0` 表示关闭。仅在服务商无法提供可靠 token usage 时建议配置正整数。 |
 | `LEARN_AGENT_RECENT_TURN_LIMIT` | `1` | 压缩成功后默认只原样保留最新 1 个完整 Turn，允许设为 `0..3`；若最新 Turn 超出动态 Token 预算则可降为 0，且不会拆开工具调用周期。 |
 | `LEARN_AGENT_RECENT_TURN_BUDGET_RATIO` | `0.5` | 原样 Turn 尾部最多占模型窗口的比例，取值须大于 `0` 且不超过 `0.5`。默认最多保留 1 个，超限时降为 0；显式提高 Turn 上限后会从配置值逐步减少。 |
 | `LEARN_AGENT_CONTEXT_SAFETY_MARGIN_TOKENS` | `8192` | 为 provider 包装、估算误差和协议开销预留的输入安全空间。它与最大输出之和必须小于模型窗口。 |
 | `LEARN_AGENT_CONTEXT_SOFT_LIMIT_RATIO` | `0.85` | 动态输入硬上限的软压缩比例。低于硬上限时压缩失败保留原文；达到硬上限时暂停等待可恢复压缩。 |
-| `LEARN_AGENT_CONTEXT_SUMMARY_MAX_CHARS` | `16384` | Session 历史摘要和 Turn 内工作摘要的最大字符数。限制摘要自身持续膨胀；修改后需重启 Core，仅影响后续摘要。 |
+| `LEARN_AGENT_CONTEXT_SUMMARY_MAX_TOKENS` | `16384` | Session 历史摘要和 Turn 内工作摘要的最终模型输出预算（token）。摘要不会再由 Core 按字符截断；模型耗尽该预算时整次压缩失败并保留原始 Turn。 |
+| `LEARN_AGENT_CONTEXT_SUMMARY_MAP_MAX_TOKENS` | `4096` | 超大历史进入 Map/Reduce 后，每个中间摘要的最大输出 token。完整来源能放入单次请求时不会使用该预算。 |
+| `LEARN_AGENT_CONTEXT_SUMMARY_MAP_WORKERS` | `4` | Map/Reduce 摘要的最大并行模型调用数。同一 Session 仍只有一个压缩流程。 |
 | `LEARN_AGENT_LLM_RETRY_ENABLED` | `true` | 是否启用 Core 统一 LLM 重试。启用后由 `ResilientModelProvider` 负责重试，SDK 内置重试保持关闭，避免重复重试。 |
 | `LEARN_AGENT_LLM_FOREGROUND_MAX_ATTEMPTS` | `3` | 前台 Agent、子 Agent 和文件总结模型调用的最大尝试次数。内容审查、认证、无效请求等确定性错误不会重试。 |
 | `LEARN_AGENT_LLM_BACKGROUND_MAX_ATTEMPTS` | `2` | 后台摘要和长期记忆提取等维护任务的模型调用最大尝试次数。耗尽后交回维护队列按任务级策略重试。 |
@@ -216,7 +217,7 @@ PostgreSQL Schema。若只是需要本地结构化观测记录，应保持该选
 - 工具与 Docker：镜像、超时、内存、CPU、输出截断长度。
 - 文件读取与大文件总结：分块行数、最大块数、并行 Map Worker 数。
 - 子 Agent：最大步骤、继承的上下文消息数、结果长度。
-- 上下文：近期 Turn 数量、摘要长度；message 内容仍用于衡量 token 和字符体积。
+- 上下文：近期 Turn 数量；摘要输入、分块和输出均使用 Token 预算。
 - 长期记忆：bootstrap/relevant 数量、提取周期、重要度下限。
 - Skill：目录名、文件名和内容读取上限。
 

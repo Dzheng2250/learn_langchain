@@ -38,6 +38,18 @@ async def _completed_coroutine():
     return None
 
 class TuiChatLogTest(unittest.TestCase):
+    def test_context_compaction_progress_is_visible(self):
+        rendered = render_event({
+            "event": "context_compaction_progress",
+            "data": {
+                "stage": "map",
+                "completed_groups": 2,
+                "group_count": 4,
+            },
+        })
+        self.assertIn("2/4", rendered)
+        self.assertIn("map", rendered)
+
     def test_non_persistable_approval_hides_scoped_responses(self):
         self.assertEqual(
             ("allow_once", "deny_once"),

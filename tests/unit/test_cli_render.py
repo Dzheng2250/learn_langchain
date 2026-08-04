@@ -6,6 +6,19 @@ from src.cli.render import AgentEventRenderer
 
 
 class AgentEventRendererTest(unittest.TestCase):
+    def test_context_compaction_progress_is_visible(self):
+        output = io.StringIO()
+        with redirect_stdout(output):
+            AgentEventRenderer().render({
+                "event": "context_compaction_progress",
+                "data": {
+                    "stage": "map",
+                    "completed_groups": 2,
+                    "group_count": 4,
+                },
+            })
+        self.assertIn("2/4 map groups", output.getvalue())
+
     def test_goal_continuation_is_visible(self):
         output = io.StringIO()
         with redirect_stdout(output):
