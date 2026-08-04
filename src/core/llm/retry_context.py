@@ -32,6 +32,12 @@ def reset_retry_event_callback(token: Token) -> None:
 
 
 def emit_retry_event(event: str, data: dict) -> None:
+    """Compatibility name for emitting any request-local foreground event."""
+    emit_foreground_event(event, data)
+
+
+def emit_foreground_event(event: str, data: dict) -> None:
+    """Deliver one Core event to the active request without coupling its producer."""
     callback = _event_callback.get()
     if callback is not None:
         callback({"event": event, "data": data})

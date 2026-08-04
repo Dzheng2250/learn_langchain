@@ -47,6 +47,7 @@ def graph_failure_event(exc: Exception, *, graph_steps_used: int, provider_error
         }
     resolution = (provider_error_handler or ProviderErrorHandler()).resolve(exc)
     failure_context = {
+        "cause_type": type(exc).__name__,
         "failure_source": "agent_turn",
         "failure_stage": provider_failure_stage(resolution),
         "failure_scope": "current_turn",

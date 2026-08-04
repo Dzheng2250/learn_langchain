@@ -6,6 +6,7 @@ from typing import Any
 
 from src.core.agent.budget import ExecutionBudget
 from src.core.agent.models import AgentRunContext, StopReason
+from src.core.context.compaction import ContextCompactionRequired
 from src.core.errors import ProviderErrorHandler
 from src.core.ports import ExecutionSliceStore
 from src.core.state.types import ExecutionStatus
@@ -157,6 +158,25 @@ class SliceExecutionService:
                 slice_id=slice_id,
                 tool_call_count=tool_call_count,
             )
+        except ContextCompactionRequired:
+            self._finish_slice(
+                slice_id,
+                execution,
+                status=ExecutionStatus.PAUSED_RECOVERY,
+                stop_reason=StopReason.CONTEXT_COMPACTION_REQUIRED.value,
+                usage=budget.snapshot(),
+            )
+            record_trace(
+                TraceDirection.INTERNAL,
+                TraceLayer.AGENT,
+                "agent.slice_finished",
+                slice_id=slice_id,
+                data={
+                    "status": "paused_recovery",
+                    "stop_reason": StopReason.CONTEXT_COMPACTION_REQUIRED.value,
+                },
+            )
+            raise
         except Exception:
             self._finish_slice(
                 slice_id,

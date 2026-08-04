@@ -3,7 +3,6 @@ from pathlib import Path
 
 from langchain_core.messages import AIMessage, HumanMessage
 
-from src.config.settings import RECENT_TURN_LIMIT
 
 from src.core.adapters.sqlite import (
     SQLiteConversationHistoryStore,
@@ -433,17 +432,17 @@ class SQLiteStateAdapterTest(unittest.TestCase):
     def test_conversation_history_rebuild_recent_uses_latest_committed_turns(self):
         total_turns = 15
         messages_per_turn = 2
-        expected_turns = min(RECENT_TURN_LIMIT, total_turns)
+        expected_turns = total_turns
         expected_messages = expected_turns * messages_per_turn
-        expected_first_turn = total_turns - expected_turns + 1
+        expected_first_turn = 1
         for index in range(total_turns):
-            self.store.archive_turn_messages(
-                self.session,
+            self.archive_and_save(
                 index + 1,
                 [
                     HumanMessage(content=f"user-{index}"),
                     AIMessage(content=f"answer-{index}"),
                 ],
+                AgentContextState(),
             )
         with self.database.transaction() as conn:
             conn.execute(
@@ -811,6 +810,55 @@ class SQLiteStateAdapterTest(unittest.TestCase):
         self.assertEqual("fresh", active_window["summary_text"])
         self.assertEqual(2, active_window["summary_through_turn"])
         self.assertEqual(2, root["closed_at_turn"])
+
+    def test_summary_store_cas_uses_context_window_identity(self):
+        self.archive_and_save(
+            1,
+            [HumanMessage(content="one"), AIMessage(content="answer-one")],
+            AgentContextState(),
+        )
+        self.archive_and_save(
+            2,
+            [HumanMessage(content="two"), AIMessage(content="answer-two")],
+            AgentContextState(),
+        )
+        adapter = SQLiteSummaryStore(self.database)
+        root = adapter.load_summary_source(self.session, 2)
+
+        self.assertTrue(
+            adapter.update_summary_cas(
+                self.session,
+                expected_window_id=root.window_id,
+                summary_through_turn=1,
+                summary="first generation",
+                input_tokens=20,
+                output_tokens=5,
+                model="test-model",
+            )
+        )
+        self.assertFalse(
+            adapter.update_summary_cas(
+                self.session,
+                expected_window_id=root.window_id,
+                summary_through_turn=2,
+                summary="stale generation",
+            )
+        )
+
+        with self.database.connect() as conn:
+            windows = conn.execute(
+                """
+                SELECT summary_text, input_tokens, output_tokens, model
+                FROM context_windows WHERE session_id=? ORDER BY created_at, rowid
+                """,
+                (str(self.session.session_id),),
+            ).fetchall()
+
+        self.assertEqual(2, len(windows))
+        self.assertEqual("first generation", windows[-1]["summary_text"])
+        self.assertEqual(20, windows[-1]["input_tokens"])
+        self.assertEqual(5, windows[-1]["output_tokens"])
+        self.assertEqual("test-model", windows[-1]["model"])
 
     def test_memory_write_store_saves_sources_and_emits_after_commit(self):
         sink = RecordingSink()

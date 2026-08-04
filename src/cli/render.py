@@ -198,6 +198,35 @@ class AgentEventRenderer:
             )
         elif event == "goal_continuation_started":
             print("\n[goal_continuation: checking unfinished tasks]", flush=True)
+        elif event == "context_compaction_started":
+            print(
+                "\n[context_compaction: "
+                f"{data.get('mode', 'single')}, "
+                f"~{int(data.get('estimated_source_tokens', 0))} source tokens]",
+                flush=True,
+            )
+        elif event == "context_compaction_progress":
+            print(
+                "\n[context_compaction: "
+                f"{int(data.get('completed_groups', 0))}/"
+                f"{int(data.get('group_count', 0))} "
+                f"{data.get('stage', 'map')} groups]",
+                flush=True,
+            )
+        elif event == "context_compaction_completed":
+            print(
+                "\n[context_compaction: completed, "
+                f"{int(data.get('llm_call_count', 0))} calls, "
+                f"{int(data.get('input_tokens', 0))} input / "
+                f"{int(data.get('output_tokens', 0))} output tokens]",
+                flush=True,
+            )
+        elif event == "context_compaction_failed":
+            print(
+                "\n[context_compaction_failed: original Turns preserved, "
+                f"{data.get('error_type', 'unknown')}]",
+                flush=True,
+            )
         elif event == "step":
             step_type = data.get("type", "step")
             if step_type == "agent_message" and not self.received_token:

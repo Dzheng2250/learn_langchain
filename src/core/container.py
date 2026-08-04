@@ -61,6 +61,7 @@ from src.core.container_factories import (
 )
 from src.core.context.loader import ConversationContextLoader
 from src.core.context.manager import AgentContextManager
+from src.core.context.compaction import ContextCompactionService
 from src.core.diagnostics import DiagnosticTurnService
 from src.core.errors import ProviderErrorHandler
 from src.core.errors.provider_failure import ProviderFailureService
@@ -221,12 +222,19 @@ class CoreContainer(containers.DeclarativeContainer):
         SQLiteSummaryStore,
         database=state_database,
     )
+    context_compaction_service = providers.Factory(
+        ContextCompactionService,
+        context_manager=context_manager,
+        session_store=session_context_store,
+        summary_store=summary_store,
+    )
     context_loader = providers.Factory(
         ConversationContextLoader,
         context_manager=context_manager,
         session_store=session_context_store,
         memory_store=memory_retrieval_store,
         memory_enabled=memory_enabled,
+        compaction_service=context_compaction_service,
     )
     session_lifecycle_store = providers.Factory(
         SQLiteSessionLifecycleStore,
@@ -247,6 +255,7 @@ class CoreContainer(containers.DeclarativeContainer):
         summary_store=summary_store,
         context_manager=context_manager,
         hook_runtime=hook_runtime,
+        compaction_service=context_compaction_service,
     )
     memory_extraction_handler = providers.Factory(
         MemoryExtractionHandler,

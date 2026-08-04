@@ -142,7 +142,7 @@ class LocalStateStore:
         self,
         session: SessionContext,
         target_turn: int,
-    ) -> tuple[str, int, list[tuple[int, object]]]:
+    ):
         """Load unsummarized committed messages up to a target Turn."""
         return self.summaries.load_summary_source(session, target_turn)
 
@@ -150,16 +150,24 @@ class LocalStateStore:
         self,
         session: SessionContext,
         *,
-        expected_summary_through_turn: int,
+        expected_window_id: str | None = None,
+        expected_summary_through_turn: int | None = None,
         summary_through_turn: int,
         summary: str,
+        input_tokens: int = 0,
+        output_tokens: int = 0,
+        model: str = "",
     ) -> bool:
         """Write a derived summary only when no newer summary won the race."""
         return self.summaries.update_summary_cas(
             session,
+            expected_window_id=expected_window_id,
             expected_summary_through_turn=expected_summary_through_turn,
             summary_through_turn=summary_through_turn,
             summary=summary,
+            input_tokens=input_tokens,
+            output_tokens=output_tokens,
+            model=model,
         )
 
     def retrieve_relevant(self, workspace_id: UUID, query: str, limit: int | None = None) -> list[RetrievedMemory]:

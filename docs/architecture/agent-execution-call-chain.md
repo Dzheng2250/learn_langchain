@@ -200,15 +200,19 @@ Graph 错误和正常完成分别交给 PauseHandler、ErrorHandler 或 Finalize
 
 ```text
 START
+  -> context_guard
   -> agent_node
        -> LLM 无 tool_calls -> END
        -> LLM 有 tool_calls -> tools
   -> ObservedToolNode
        -> 追加 ToolMessage
+  -> journal_tools
+  -> context_guard
   -> agent_node
 ```
 
-`agent_node(state)` 接收 LangGraph `MessagesState`，把系统提示词放在最前面，然后调用：
+`agent_node(state)` 接收扩展的 `AgentGraphState`。`messages` 是下一次模型调用的活动窗口，
+`turn_journal` 是当前 Turn 的完整追加日志；系统提示词和可选的 `working_summary` 只在调用边界注入：
 
 ```python
 llm_with_tools.invoke(llm_messages)
@@ -217,10 +221,11 @@ llm_with_tools.invoke(llm_messages)
 返回值必须是：
 
 ```python
-{"messages": [response]}
+{"messages": [response], "turn_journal": [response]}
 ```
 
-LangGraph 的 messages reducer 会把新响应追加到状态，而不是替换整个历史。
+两个字段都使用 LangGraph 的 messages reducer。`context_guard` 只从活动 `messages` 移除已经闭合的旧工具周期，
+不会修改 `turn_journal`；checkpoint 恢复和最终归档因此仍保留本 Turn 的完整记录。
 
 `ObservedToolNode` 继承 LangGraph `ToolNode`。模型输出的每个 `tool_call` 会按名称匹配
 Workspace 工具，执行前后统一记录：
@@ -529,4 +534,3 @@ flowchart LR
 - worker 通过 `on_event` 回调和 `asyncio.run_coroutine_threadsafe()` 将流式通知送回事件循环。
 - 完整消息和最小 Session 状态原子写入 `state.db`；摘要、长期记忆和 checkpoint 清理通过持久化维护任务完成。
 - 客户端断线后停止通知；当前 Slice 可结束，若已完成则提交，若仍需后续 Slice 则保存为可恢复暂停。
-

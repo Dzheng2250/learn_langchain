@@ -32,6 +32,28 @@ tools
 
 `cache_control` 表示“允许服务商把截至此处的前缀作为缓存边界”。下一次请求只有在该前缀内容和顺序保持一致时，才可能命中。仅添加 marker 不等于已经创建或命中缓存，最终必须查看服务商返回的 cache usage。
 
+<a id="prompt-cache-marker-map"></a>
+
+### 缓存断点如何随 Execution 推进
+
+```mermaid
+flowchart TB
+    subgraph First["新 Turn：第一次 LLM 调用"]
+        T1["tools marker"] --> S1["system marker"] --> H1["上一个已完成历史<br/>messages marker"] --> U1["当前 user<br/>不设 marker"]
+    end
+    subgraph ToolLoop["同一 Execution：工具完成后再次调用 LLM"]
+        T2["tools marker"] --> S2["system marker"] --> H2["旧历史"] --> U2["当前 user"] --> TU["assistant tool_use"] --> TR["tool_result<br/>messages marker"]
+    end
+    subgraph Next["下一个 Turn"]
+        Stable["上一 Turn 的完整历史<br/>最终 assistant 或末尾 tool_result<br/>messages marker"] --> U3["新的当前 user<br/>不设 marker"]
+    end
+    First --> ToolLoop --> Next
+```
+
+marker 标记的是“从请求开头到这里”的完整前缀，不是只缓存 marker 所在 block。因此工具循环中
+断点落到最新 `tool_result` 后，当前 user、`tool_use` 和 `tool_result` 都包含在缓存前缀内。
+Execution 暂停后恢复时，消息从 checkpoint 还原，策略会基于恢复后的完整消息重新计算最深稳定断点。
+
 ## 实现调用链
 
 ```text
@@ -50,6 +72,11 @@ Agent / Summary / Memory
 ```
 
 `PromptCachePolicy` 只改写本次请求的副本，不修改数据库消息、LangGraph checkpoint 或 Session 历史。
+
+上下文摘要使用同一缓存注入边界，但采用独立的静态 summary system prompt。上一代摘要、Memory 和
+待压缩来源位于 user content，因此一次超大历史的并行 Map 请求可以共享 system 前缀缓存，不能
+复用 Parent Agent 的完整消息缓存。压缩成功会使正常 Agent 的旧历史前缀失效一次；新摘要随后成为
+新的稳定前缀。完整来源可放入摘要模型窗口时只发起一次摘要请求，不会为了缓存而人为拆块。
 
 ## 配置
 

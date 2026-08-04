@@ -58,6 +58,7 @@ class AnthropicProvider:
         streaming: bool = False,
         temperature: float = 0,
         tools: list | None = None,
+        max_tokens: int | None = None,
     ):
         """Create a ChatAnthropic client and optionally bind the supplied tools."""
         status = self.configuration_status()
@@ -72,7 +73,7 @@ class AnthropicProvider:
             temperature=temperature,
             streaming=streaming,
             metadata={"purpose": purpose.value},
-            max_tokens=LLM_MAX_TOKENS,
+            max_tokens=LLM_MAX_TOKENS if max_tokens is None else int(max_tokens),
             max_retries=0,
         )
         policy = PromptCachePolicy(

@@ -8,10 +8,10 @@ from uuid import uuid4
 
 from langchain_core.messages import messages_from_dict, messages_to_dict
 
-from src.config.settings import RECENT_TURN_LIMIT
 from src.core.common.content import message_content_text
 from src.core.telemetry import emit_event
 from src.core.adapters.sqlite.session_store import serialize_recent_turns
+from src.core.adapters.sqlite.message_lineage import active_branch_head
 from src.core.context.models import TurnChunk
 from src.core.history_models import ConversationHistoryPage, HistoryMessageRecord
 
@@ -181,42 +181,11 @@ class SQLiteConversationHistoryStore:
     @staticmethod
     def _active_branch_head(conn, *, workspace_id, session_id):
         """Return whether branch metadata exists and its trustworthy head."""
-        session_row = conn.execute(
-            """
-            SELECT active_branch_id FROM sessions
-            WHERE workspace_id=? AND session_id=?
-            """,
-            (workspace_id, session_id),
-        ).fetchone()
-        branch_id = session_row["active_branch_id"] if session_row else None
-        if not branch_id:
-            branch_exists = conn.execute(
-                """
-                SELECT EXISTS(
-                    SELECT 1 FROM branches
-                    WHERE workspace_id=? AND session_id=?
-                ) AS present
-                """,
-                (workspace_id, session_id),
-            ).fetchone()
-            return bool(branch_exists and branch_exists["present"]), None
-        branch = conn.execute(
-            """
-            SELECT b.head_message_id,
-                   EXISTS(
-                       SELECT 1 FROM messages AS m
-                       WHERE m.message_id=b.head_message_id
-                         AND m.workspace_id=b.workspace_id
-                         AND m.session_id=b.session_id
-                   ) AS head_valid
-            FROM branches AS b
-            WHERE b.branch_id=? AND b.workspace_id=? AND b.session_id=?
-            """,
-            (branch_id, workspace_id, session_id),
-        ).fetchone()
-        if branch and bool(branch["head_valid"]):
-            return True, branch["head_message_id"]
-        return True, None
+        return active_branch_head(
+            conn,
+            workspace_id=workspace_id,
+            session_id=session_id,
+        )
 
     @staticmethod
     def _branch_page_rows(
@@ -305,10 +274,27 @@ class SQLiteConversationHistoryStore:
         )
 
     def rebuild_recent(self, session) -> int:
-        """Rebuild compact recent context from complete durable Turns."""
+        """Rebuild every unsummarized complete Turn from durable history."""
         workspace_id = str(session.workspace.workspace_id)
         session_id = str(session.session_id)
         with self.database.connect() as conn:
+            session_row = conn.execute(
+                """
+                SELECT s.turn_index,
+                       COALESCE(cw.summary_through_turn, s.summary_through_turn, 0)
+                           AS summary_through_turn
+                FROM sessions s
+                LEFT JOIN context_windows cw
+                  ON cw.window_id=s.active_context_window_id
+                WHERE s.workspace_id=? AND s.session_id=?
+                """,
+                (workspace_id, session_id),
+            ).fetchone()
+            summary_through_turn = int(session_row["summary_through_turn"] or 0)
+            unsummarized_count = max(
+                1,
+                int(session_row["turn_index"] or 0) - summary_through_turn,
+            )
             branch_managed, head_message_id = self._active_branch_head(
                 conn,
                 workspace_id=workspace_id,
@@ -321,7 +307,7 @@ class SQLiteConversationHistoryStore:
                     workspace_id=workspace_id,
                     session_id=session_id,
                     before_turn=None,
-                    limit_turns=RECENT_TURN_LIMIT,
+                    limit_turns=unsummarized_count,
                 )
             elif branch_managed:
                 candidates = []
@@ -330,12 +316,15 @@ class SQLiteConversationHistoryStore:
                     conn,
                     session,
                     before_turn=None,
-                    limit_turns=RECENT_TURN_LIMIT,
+                    limit_turns=unsummarized_count,
                 )
             rows = [
                 row
                 for row in candidates
-                if int(row["turn_rank"]) <= RECENT_TURN_LIMIT
+                if (
+                    int(row["turn_rank"]) <= unsummarized_count
+                    and int(row["turn_index"]) > summary_through_turn
+                )
             ]
             turn_indexes = sorted({int(row["turn_index"]) for row in rows})
         messages_by_turn: dict[int, list] = {turn_index: [] for turn_index in turn_indexes}

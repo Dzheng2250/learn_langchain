@@ -102,6 +102,7 @@ def paused_turn_event(
     tool_call_count: int,
     slices_used: int,
     message: str,
+    context_tokens: int = 0,
 ) -> dict:
     """Build the terminal event for a paused recoverable execution."""
     return {
@@ -118,6 +119,7 @@ def paused_turn_event(
             "slices_used": slices_used,
             "goal_mode": bool(getattr(execution, "goal_mode", False)),
             "message": message,
+            "context_tokens": context_tokens,
         },
     }
 

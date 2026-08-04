@@ -9,6 +9,7 @@ from __future__ import annotations
 from typing import Protocol
 
 from src.core.workspace.models import SessionContext
+from src.core.context.models import ContextWindowSource
 
 
 class SummaryMaintenanceStore(Protocol):
@@ -18,15 +19,18 @@ class SummaryMaintenanceStore(Protocol):
         self,
         session: SessionContext,
         target_turn: int,
-    ) -> tuple[str, int, list[tuple[int, object]]]: ...
+    ) -> ContextWindowSource: ...
 
     def update_summary_cas(
         self,
         session: SessionContext,
         *,
-        expected_summary_through_turn: int,
+        expected_window_id: str,
         summary_through_turn: int,
         summary: str,
+        input_tokens: int = 0,
+        output_tokens: int = 0,
+        model: str = "",
     ) -> bool: ...
 
 

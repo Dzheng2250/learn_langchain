@@ -43,12 +43,24 @@
 ## 事件顺序
 
 ```text
-0..N 个 token / step / model_retry_*
+0..N 个 context_compaction_* / token / step / context_usage_updated / model_retry_*
   -> done 或 error
   -> 最终 JSON-RPC success response
 ```
 
 `done` 和 `error` 是终止事件。最终 JSON-RPC 响应用于确认 handler 已结束，并携带聚合后的最终结果。
+
+## 上下文压缩事件
+
+输入准备或 Turn 内工具循环需要压缩上下文时，Core 发送：
+
+- `context_compaction_started`：包含 `mode=single|map_reduce`、估算来源 Token 和消息数。
+- `context_compaction_progress`：Map/Reduce 模式下报告阶段、层级、完成组数及累计 usage。
+- `context_compaction_completed`：报告模型调用数、输入/输出/cache tokens 和 Reduce 层数。
+- `context_compaction_failed`：报告错误类型；原始 Turn 仍然保留，随后 Core 决定继续原文或进入可恢复暂停。
+
+这些事件可能出现在 `step.agent_start` 之前，因为前台压缩属于模型输入准备阶段。前端应显示轻量进度，
+不能把它当作新的 Turn、工具步骤或终止事件。
 
 ## `token`
 
@@ -296,3 +308,25 @@ Core 先发送 `done`、`paused` 或终止 `error`，再查询并发送一次
 
 该事件只提供聚合快照；断线恢复和历史详情统一调用 `resource_activity.summary` 与
 `resource_activity.list`。所有前端共享此协议，不存在 CLI/TUI 专用资源活动字段。
+
+## 上下文额度更新
+
+每次 Parent LLM 调用完成后，Core 都会发送一次确定的额度快照：
+
+```json
+{
+  "event": "context_usage_updated",
+  "data": {
+    "context_tokens": 36125,
+    "input_tokens": 35000,
+    "output_tokens": 1125,
+    "source": "provider",
+    "estimated": false
+  }
+}
+```
+
+`context_tokens` 严格等于最近一次 Parent LLM 调用由服务商返回的
+`input_tokens + output_tokens`。它不是整个 Turn 的累计消耗，也不包含工具结果增量、
+本地 token 估算、摘要模型或记忆模型的调用消耗。前端应在收到该事件时立即更新额度；
+`done.data.context_tokens` 和 `session.status.context_tokens` 使用相同口径。

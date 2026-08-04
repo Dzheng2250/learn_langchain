@@ -14,6 +14,7 @@ from src.core.streaming.failures import graph_failure_event
 from src.core.streaming.message_events import step_events_from_message, tool_calls_from_message
 from src.core.telemetry import emit_event
 from src.core.agent.budget import ToolBudgetExceeded
+from src.core.context.compaction import ContextCompactionRequired
 from src.core.llm.retry_context import (
     current_attempt_id,
     mark_attempt_output_emitted,
@@ -36,7 +37,13 @@ def stream_graph_events(
     inputs = (
         input_messages
         if resume_command
-        else ({"messages": input_messages} if input_messages is not None else None)
+        else (
+            {
+                "messages": input_messages,
+                "turn_journal": [input_messages[-1]] if input_messages else [],
+            }
+            if input_messages is not None else None
+        )
     )
     final_state = None
     config = {"recursion_limit": limits.max_graph_steps}
@@ -45,9 +52,18 @@ def stream_graph_events(
     # Values snapshots contain the whole message state. Track the previous
     # length so each completed message emits a step event exactly once.
     if (inputs is None or resume_command) and checkpoint_thread_id:
-        seen_message_count = len(app.get_state(config).values.get("messages", []))
+        snapshot_values = app.get_state(config).values
+        seen_message_count = len(
+            snapshot_values.get("turn_journal", snapshot_values.get("messages", []))
+        )
     else:
-        seen_message_count = len((inputs or {}).get("messages", []))
+        seen_message_count = len(
+            (inputs or {}).get("turn_journal", (inputs or {}).get("messages", []))
+        )
+    if (inputs is None or resume_command) and checkpoint_thread_id:
+        seen_usage_generation = int(snapshot_values.get("llm_usage_generation") or 0)
+    else:
+        seen_usage_generation = int((inputs or {}).get("llm_usage_generation") or 0)
     tool_call_count = 0
     graph_steps_used = 0
     reasoning_display = _reasoning_display()
@@ -133,7 +149,21 @@ def stream_graph_events(
             elif stream_mode == "values":
                 graph_steps_used += 1
                 final_state = chunk
-                state_messages = chunk.get("messages", [])
+                usage_generation = int(chunk.get("llm_usage_generation") or 0)
+                if usage_generation > seen_usage_generation:
+                    seen_usage_generation = usage_generation
+                    if chunk.get("context_usage_available"):
+                        yield {
+                            "event": "context_usage_updated",
+                            "data": {
+                                "context_tokens": int(chunk.get("context_tokens") or 0),
+                                "input_tokens": int(chunk.get("context_input_tokens") or 0),
+                                "output_tokens": int(chunk.get("context_output_tokens") or 0),
+                                "source": "provider",
+                                "estimated": False,
+                            },
+                        }
+                state_messages = chunk.get("turn_journal", chunk.get("messages", []))
                 new_messages = state_messages[seen_message_count:]
                 seen_message_count = len(state_messages)
 
@@ -215,6 +245,12 @@ def stream_graph_events(
         }
         yield from finish_reasoning()
         return
+    except ContextCompactionRequired:
+        # This is a recoverable execution control signal. The outer execution
+        # loop persists a context_compaction_required pause and must see the
+        # original exception instead of a generic graph_error event.
+        yield from finish_reasoning()
+        raise
     except ToolBudgetExceeded as exc:
         emit_event(
             "execution_budget_exhausted",
@@ -245,8 +281,12 @@ def stream_graph_events(
 
     yield from finish_reasoning()
 
-    final_messages = final_state.get("messages", []) if final_state is not None else []
-    if final_messages and response_stop_reason(final_messages[-1]) == "max_tokens":
+    active_messages = final_state.get("messages", []) if final_state is not None else []
+    final_messages = (
+        final_state.get("turn_journal", active_messages)
+        if final_state is not None else []
+    )
+    if active_messages and response_stop_reason(active_messages[-1]) == "max_tokens":
         yield graph_failure_event(
             ModelOutputLimitError(
                 "The model exhausted its output token budget before producing a "
@@ -257,6 +297,7 @@ def stream_graph_events(
         )
         return
 
+    usage_state = final_state or {}
     yield {
         "event": "done",
         "data": {
@@ -264,6 +305,9 @@ def stream_graph_events(
             "stop_reason": StopReason.COMPLETED.value,
             "tool_call_count": tool_call_count,
             "graph_steps_used": graph_steps_used,
+            "context_tokens": int(usage_state.get("context_tokens") or 0),
+            "input_tokens": int(usage_state.get("context_input_tokens") or 0),
+            "output_tokens": int(usage_state.get("context_output_tokens") or 0),
         },
     }
 

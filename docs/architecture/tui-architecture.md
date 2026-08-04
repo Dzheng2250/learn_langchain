@@ -199,7 +199,7 @@ src/tui/renderer.py
 Textual `Label` 子类，一行式状态展示：
 
 ```
-● 127.0.0.1:18765 [default] ctx: 3K/128K (2%)  goal  paused
+● 127.0.0.1:18765 [default] ctx: 3K/192K (2%)  goal  paused
 ```
 
 | 区域 | 来源 | 颜色规则 |
@@ -208,6 +208,11 @@ Textual `Label` 子类，一行式状态展示：
 | 地址端口 | TuiConfig | — |
 | Session 名称 | 默认或 `/session <name>` | 灰色 dim |
 | 上下文额度 `ctx: XK/Y (Z%)` | `set_usage(context_tokens)` | 灰色 dim，Y=MODEL_CONTEXT_LIMIT |
+
+额度由 Core 的 `context_usage_updated` 事件实时驱动。`context_tokens` 是最近一次
+Parent LLM 调用的服务商实测 `input_tokens + output_tokens`；TUI 不自行估算工具结果
+或累加整个 Turn 的调用量。重新进入 Session 时，`session.status` 恢复最近一次已提交
+Turn 的同口径数值。
 | Goal 标记 | `set_goal_mode(enabled)` | 青色 bold |
 | Paused 标记 | `set_paused(paused)` | 黄色 bold |
 

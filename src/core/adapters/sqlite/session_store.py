@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING
 from langchain_core.messages import messages_from_dict, messages_to_dict
 
 from src.core.context.models import AgentContextState, TurnChunk
+from src.core.adapters.sqlite.message_lineage import active_lineage_rows
 from src.core.telemetry import emit_event
 
 if TYPE_CHECKING:
@@ -28,27 +29,47 @@ class SQLiteSessionStore:
         self._transaction_conn = transaction_conn
 
     def load_context(self, session) -> tuple[AgentContextState, int]:
-        """Return compact context and latest committed Turn index."""
+        """Return the active summary plus every not-yet-summarized Turn."""
         with self.database.connect() as conn:
             row = conn.execute(
                 """
                 SELECT s.summary, s.recent_messages, s.context_tokens, s.turn_index,
-                       cw.summary_text AS window_summary
+                       s.active_context_window_id,
+                       cw.summary_text AS window_summary,
+                       cw.summary_through_turn AS window_summary_through_turn
                 FROM sessions s
                 LEFT JOIN context_windows cw ON cw.window_id = s.active_context_window_id
                 WHERE s.workspace_id = ? AND s.session_id = ?
                 """,
                 (str(session.workspace.workspace_id), str(session.session_id)),
             ).fetchone()
+            if row:
+                summary_through_turn = int(
+                    row["window_summary_through_turn"]
+                    if row["window_summary_through_turn"] is not None
+                    else 0
+                )
+                message_rows = active_lineage_rows(
+                    conn,
+                    workspace_id=str(session.workspace.workspace_id),
+                    session_id=str(session.session_id),
+                    after_turn=summary_through_turn,
+                )
         if not row:
             raise RuntimeError("Resolved session disappeared before it could be loaded.")
-        recent_turns = deserialize_recent_turns(row["recent_messages"] or "[]")
+        recent_turns = _turns_from_message_rows(message_rows)
+        if not recent_turns and int(row["turn_index"] or 0) > summary_through_turn:
+            # Compatibility fallback for stores created before the durable
+            # message archive became authoritative.
+            recent_turns = deserialize_recent_turns(row["recent_messages"] or "[]")
         summary = row["window_summary"] if row["window_summary"] is not None else (row["summary"] or "")
         return (
             AgentContextState(
                 summary,
                 recent_turns=recent_turns,
                 context_tokens=int(row["context_tokens"] or 0),
+                context_window_id=str(row["active_context_window_id"] or ""),
+                summary_through_turn=summary_through_turn,
             ),
             int(row["turn_index"]),
         )
@@ -226,3 +247,26 @@ def _looks_like_turn_chunks(payload) -> bool:
         and all(isinstance(item, dict) for item in payload)
         and all("turn_index" in item and "messages" in item for item in payload)
     )
+
+
+def _turns_from_message_rows(rows) -> list[TurnChunk]:
+    """Group durable message rows into complete ordered Turn chunks."""
+    turns: list[TurnChunk] = []
+    for row in rows:
+        try:
+            message = messages_from_dict([json.loads(row["raw"])])[0]
+        except (json.JSONDecodeError, KeyError, TypeError, ValueError):
+            emit_event(
+                "recent_context_message_decode_failed",
+                "sqlite_session_store",
+                "Could not decode one archived context message; skipping it.",
+                {"turn_index": int(row["turn_index"])},
+                level="warning",
+            )
+            continue
+        turn_index = int(row["turn_index"])
+        if not turns or turns[-1].turn_index != turn_index:
+            turns.append(TurnChunk(turn_index, [message]))
+        else:
+            turns[-1].messages.append(message)
+    return turns

@@ -25,17 +25,17 @@ class RuntimeGraphResolver:
         if instruction.strip():
             # This is the deliberate LangGraph adapter boundary: application
             # text becomes a framework message only when graph state is updated.
+            resume_message = HumanMessage(
+                content=(
+                    "Additional resume instruction: "
+                    f"{instruction.strip()}"
+                )
+            )
             graph.update_state(
                 config,
                 {
-                    "messages": [
-                        HumanMessage(
-                            content=(
-                                "Additional resume instruction: "
-                                f"{instruction.strip()}"
-                            )
-                        )
-                    ]
+                    "messages": [resume_message],
+                    "turn_journal": [resume_message],
                 },
                 as_node="agent",
             )

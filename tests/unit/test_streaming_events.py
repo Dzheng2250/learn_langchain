@@ -3,6 +3,7 @@ import unittest
 from langchain_core.messages import AIMessage, AIMessageChunk, ToolMessage
 
 from src.core.common.content import content_text, reasoning_content_text
+from src.core.context.compaction import ContextCompactionRequired
 from src.core.streaming.events import stream_graph_events
 from src.core.streaming.message_events import step_events_from_message, tool_calls_from_message
 class FakeGraph:
@@ -19,7 +20,85 @@ class FailingGraph(FakeGraph):
         raise RuntimeError("boom")
 
 
+class CompactionRequiredGraph(FakeGraph):
+    def stream(self, _inputs, **_kwargs):
+        raise ContextCompactionRequired("compact before continuing")
+        yield
+
+
 class StreamingEventsTest(unittest.TestCase):
+    def test_context_compaction_control_signal_is_not_wrapped_as_graph_error(self):
+        with self.assertRaises(ContextCompactionRequired):
+            list(stream_graph_events(CompactionRequiredGraph([]), []))
+
+    def test_stream_reports_each_exact_parent_usage_snapshot(self):
+        graph = FakeGraph(
+            [
+                (
+                    "values",
+                    {
+                        "messages": [],
+                        "llm_usage_generation": 1,
+                        "context_input_tokens": 100,
+                        "context_output_tokens": 25,
+                        "context_tokens": 125,
+                        "context_usage_available": True,
+                    },
+                ),
+                (
+                    "values",
+                    {
+                        "messages": [],
+                        "llm_usage_generation": 2,
+                        "context_input_tokens": 100,
+                        "context_output_tokens": 25,
+                        "context_tokens": 125,
+                        "context_usage_available": True,
+                    },
+                ),
+            ]
+        )
+
+        events = list(stream_graph_events(graph, []))
+        updates = [event for event in events if event["event"] == "context_usage_updated"]
+
+        self.assertEqual(2, len(updates))
+        self.assertEqual(
+            {
+                "context_tokens": 125,
+                "input_tokens": 100,
+                "output_tokens": 25,
+                "source": "provider",
+                "estimated": False,
+            },
+            updates[-1]["data"],
+        )
+        self.assertEqual(125, events[-1]["data"]["context_tokens"])
+
+    def test_stream_does_not_publish_unknown_usage_as_zero(self):
+        events = list(
+            stream_graph_events(
+                FakeGraph(
+                    [
+                        (
+                            "values",
+                            {
+                                "messages": [],
+                                "llm_usage_generation": 1,
+                                "context_usage_available": False,
+                            },
+                        )
+                    ]
+                ),
+                [],
+            )
+        )
+
+        self.assertNotIn(
+            "context_usage_updated",
+            [event["event"] for event in events],
+        )
+
     def test_agent_message_fallback_keeps_full_content(self):
         content = "answer-" + ("x" * 1200)
         events = step_events_from_message(AIMessage(content=content))

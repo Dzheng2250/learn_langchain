@@ -31,11 +31,13 @@ class ConversationContextLoader:
         memory_store: MemoryRetrievalStore,
         *,
         memory_enabled: bool = True,
+        compaction_service=None,
     ) -> None:
         self.context_manager = context_manager
         self.session_store = session_store
         self.memory_store = memory_store
         self.memory_enabled = memory_enabled
+        self.compaction_service = compaction_service
 
     def prepare(
         self,
@@ -64,9 +66,17 @@ class ConversationContextLoader:
             else []
         )
         memory_message = self.memory_store.build_memory_message(memories)
+        extra_system_messages = [memory_message] if memory_message else []
+        if self.compaction_service is not None:
+            state = self.compaction_service.ensure_for_prompt(
+                session,
+                state,
+                user_input=user_input,
+                extra_system_messages=extra_system_messages,
+            )
         input_messages = self.context_manager.build_input_messages(
             state,
             user_input,
-            extra_system_messages=[memory_message] if memory_message else [],
+            extra_system_messages=extra_system_messages,
         )
         return PreparedTurn(state, current_turn, run_context, input_messages)

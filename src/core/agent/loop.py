@@ -41,6 +41,8 @@ from src.core.tracing import (
     reset_trace_context,
 )
 from src.core.workspace.models import SessionContext
+from src.core.context.compaction import ContextCompactionRequired
+from src.core.llm.usage import context_tokens
 
 
 @dataclass(frozen=True)
@@ -108,6 +110,8 @@ class TurnExecutionLoop:
         budget = None
         active_slice_id = None
         try:
+            if execution is not None:
+                execution_trace_token = bind_trace_context(execution_id=execution.execution_id)
             # Persisted turn_index identifies the last completed turn. The
             # current turn is assigned only after the Session lock is held.
             prepared = self.turn_coordinator.prepare(
@@ -120,8 +124,6 @@ class TurnExecutionLoop:
             current_turn = prepared.turn_index
             run_context = prepared.run_context
             run_context_token = bind_run_context(run_context)
-            if execution is not None:
-                execution_trace_token = bind_trace_context(execution_id=execution.execution_id)
             self.observer.run_started(session, user_input, run_context, current_turn, resume)
             input_messages = prepared.input_messages
             if model_user_input is not None and model_user_input != user_input:
@@ -198,6 +200,10 @@ class TurnExecutionLoop:
                     return
                 elif slice_result.done_item is not None:
                     item = slice_result.done_item
+                    # The Slice remains open until finalization or goal
+                    # continuation. Bind it before STOP hooks so rejection and
+                    # other control failures can close the correct record.
+                    active_slice_id = slice_id
                     final_messages = item["data"]["messages"]
                     hooks = (
                         self.hook_runtime.get(session.workspace.root)
@@ -237,6 +243,7 @@ class TurnExecutionLoop:
                             usage=budget.snapshot(),
                         )
                         self.observer.slice_finished(slice_id)
+                        active_slice_id = None
                         emit_event(
                             "goal_continuation_started",
                             "agent_loop",
@@ -251,7 +258,6 @@ class TurnExecutionLoop:
                         resume = False
                         continue
                     final_messages = sanitize_goal_messages(final_messages, user_input)
-                    active_slice_id = slice_id
                     finalization = self.turn_coordinator.finalize(
                         session=session,
                         turn_index=current_turn,
@@ -274,7 +280,7 @@ class TurnExecutionLoop:
                         tool_call_count=total_tool_calls,
                         slices_used=slice_number,
                         finalization=finalization,
-                        context_tokens=snapshot.get("input_tokens", 0),
+                        context_tokens=context_tokens(snapshot),
                     )
                     return
                 if not paused_for_budget:
@@ -305,6 +311,14 @@ class TurnExecutionLoop:
                 exhausted_reason=exhausted_reason,
                 slice_number=slice_number,
                 total_tool_calls=total_tool_calls,
+            )
+        except ContextCompactionRequired as exc:
+            yield from self.error_handler.stream_context_compaction_required(
+                run_id=run_id,
+                execution=execution,
+                active_slice_id=active_slice_id,
+                budget=budget,
+                exc=exc,
             )
         except HookRejected as exc:
             yield from self.error_handler.stream_rejected_exception(

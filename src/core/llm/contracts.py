@@ -40,5 +40,6 @@ class ModelProvider(Protocol):
         streaming: bool = False,
         temperature: float = 0,
         tools: list | None = None,
+        max_tokens: int | None = None,
     ):
         """Return a configured model, optionally bound to tools."""

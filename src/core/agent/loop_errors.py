@@ -100,6 +100,46 @@ class TurnLoopErrorHandler:
                 pass
         yield failed_turn_event(run_id, str(exc))
 
+    def stream_context_compaction_required(
+        self,
+        *,
+        run_id: str,
+        execution,
+        active_slice_id: str | None,
+        budget: ExecutionBudget | None,
+        exc: Exception,
+    ) -> Iterator[dict]:
+        """Pause recoverably when no safe model input can be assembled."""
+        if execution is not None and self.execution_store is not None:
+            usage = budget.snapshot() if budget is not None else None
+            if active_slice_id is not None:
+                self.execution_store.finish_slice(
+                    active_slice_id,
+                    execution.execution_id,
+                    status=ExecutionStatus.PAUSED_RECOVERY,
+                    stop_reason=StopReason.CONTEXT_COMPACTION_REQUIRED.value,
+                    usage=usage,
+                )
+            self.execution_store.pause(
+                execution.execution_id,
+                ExecutionStatus.PAUSED_RECOVERY,
+                StopReason.CONTEXT_COMPACTION_REQUIRED.value,
+                str(exc),
+                usage=usage,
+            )
+        yield {
+            "event": "paused",
+            "data": {
+                "type": StopReason.CONTEXT_COMPACTION_REQUIRED.value,
+                "stop_reason": StopReason.CONTEXT_COMPACTION_REQUIRED.value,
+                "message": str(exc),
+                "run_id": run_id,
+                "recoverable": True,
+                "tool_call_count": 0,
+                "graph_steps_used": 0,
+            },
+        }
+
     def stream_unexpected_exception(
         self,
         *,
@@ -132,4 +172,3 @@ class TurnLoopErrorHandler:
                 pass
         self.observer.unexpected_exception(exc)
         yield failed_turn_event(run_id, str(exc))
-

@@ -113,6 +113,24 @@ class FinalizationTest(unittest.TestCase):
         self.assertTrue(result.memory_request_explicit)
         self.assertEqual(1, self.scheduler.wakes)
 
+    def test_finalizer_persists_latest_llm_input_plus_output_tokens(self):
+        execution = self.executions.begin(self.session, "task")
+        slice_id = self.executions.start_slice(execution.execution_id, 1, 1)
+
+        self.finalizer.finalize(
+            session=self.session,
+            turn_index=1,
+            previous_state=AgentContextState(),
+            final_messages=[HumanMessage(content="task"), AIMessage(content="done")],
+            user_input="task",
+            execution=execution,
+            slice_id=slice_id,
+            usage={"input_tokens": 100, "output_tokens": 25},
+        )
+
+        loaded, _turn_index = self.store.load_session(self.session)
+        self.assertEqual(125, loaded.context_tokens)
+
     def test_job_enqueue_failure_rolls_back_entire_completed_turn(self):
         execution = self.executions.begin(self.session, "task")
         slice_id = self.executions.start_slice(execution.execution_id, 1, 1)

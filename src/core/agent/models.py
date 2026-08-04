@@ -22,6 +22,7 @@ class StopReason(StrEnum):
     CLIENT_DISCONNECTED = "client_disconnected"
     TOOL_APPROVAL = "tool_approval"
     MODEL_OUTPUT_LIMIT = "model_output_limit"
+    CONTEXT_COMPACTION_REQUIRED = "context_compaction_required"
     GRAPH_ERROR = "graph_error"
     TURN_ERROR = "turn_error"
 

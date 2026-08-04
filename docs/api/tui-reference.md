@@ -86,7 +86,7 @@
 ### 状态展示
 
 - 连接状态、daemon 地址、session 名称。
-- 上下文使用额度 `ctx: XK/128K (X%)`。
+- 上下文使用额度 `ctx: XK/192K (X%)`；分母来自 `LEARN_AGENT_MODEL_CONTEXT_LIMIT`。
 - 有效工具审批模式 `approval: manual/auto`。
 
 ## 6. 当前不支持

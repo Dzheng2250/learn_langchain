@@ -22,14 +22,54 @@ class ContextSummaryHandler:
         summary_store: SummaryMaintenanceStore,
         context_manager,
         hook_runtime=None,
+        compaction_service=None,
     ) -> None:
         self.workspace_repository = workspace_repository
         self.summary_store = summary_store
         self.context_manager = context_manager
         self.hook_runtime = hook_runtime
+        self.compaction_service = compaction_service
 
     def __call__(self, job: MaintenanceJob) -> None:
         session = self.workspace_repository.get_session(job.workspace_id, job.session_id)
+        if self.compaction_service is not None:
+            hooks = (
+                self.hook_runtime.get(session.workspace.root)
+                if self.hook_runtime is not None else NOOP_HOOK_DISPATCHER
+            )
+            compact_context, compact_decision = hooks.dispatch(HookContext(
+                point=HookPoint.PRE_COMPACT,
+                subject=str(job.payload.get("trigger", "auto")),
+                workspace_id=job.workspace_id,
+                session_id=job.session_id,
+                execution_id=job.execution_id or "",
+                workspace_root=str(session.workspace.root),
+                payload={"trigger": str(job.payload.get("trigger", "auto"))},
+            ))
+            if compact_decision.action in {HookAction.REJECT, HookAction.DENY}:
+                return
+            outcome = self.compaction_service.compact_committed(
+                session,
+                int(job.payload["target_turn"]),
+            )
+            through_turn = (
+                outcome.plan.compacted_turns[-1].turn_index
+                if outcome.plan.compacted_turns else 0
+            )
+            hooks.dispatch(HookContext(
+                point=HookPoint.POST_COMPACT,
+                subject=str(job.payload.get("trigger", "auto")),
+                workspace_id=job.workspace_id,
+                session_id=job.session_id,
+                execution_id=job.execution_id or "",
+                workspace_root=str(session.workspace.root),
+                payload={
+                    "updated": outcome.cas_applied,
+                    "summary_through_turn": through_turn,
+                    "compacted": outcome.compacted,
+                },
+            ))
+            return
         previous_summary, summary_through, indexed_messages = (
             self.summary_store.load_summary_source(
                 session,

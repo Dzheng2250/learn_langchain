@@ -197,7 +197,7 @@ Core daemon
 }
 ```
 
-`execution_id` 在未创建 Execution 的诊断路径中可能为 `null` 或缺省。`context_tokens` 是本轮最后记录的模型输入上下文量，不是本轮输入与输出 token 总和。
+`execution_id` 在未创建 Execution 的诊断路径中可能为 `null` 或缺省。`context_tokens` 是最近一次 Parent LLM 调用由服务商返回的 `input_tokens + output_tokens`，不是整个 Turn 的累计消耗，也不包含工具增量估算。
 
 ### 5.4 `session.status`
 
@@ -574,6 +574,7 @@ last_error
 | `reasoning_started` | 创建独立 reasoning 区块，不混入回答。 |
 | `reasoning_delta` | 更新 reasoning 区块；可能只有计数而没有正文。 |
 | `reasoning_finished` | 标记 reasoning 完成并允许折叠。 |
+| `context_usage_updated` | 使用服务商实测的最近一次 Parent LLM 输入与输出总额刷新上下文额度。 |
 | `step` | 按 `data.type` 展示 Agent/工具进度。 |
 | `model_retry_scheduled` | 显示自动重试状态，不要求用户 resume。 |
 | `model_attempt_invalidated` | 把当前 attempt 草稿标记为 stale。 |
@@ -854,7 +855,7 @@ Reasoning 不加入回答 Markdown，也不写入用户可见历史。`metadata`
 {"event":"done","data":{"context_tokens":11487}}
 ```
 
-`context_tokens` 表示最近一次成功 Turn 记录的模型输入上下文量。以下详细字段目前只写入 Trace/Telemetry，**不会作为统一 `agent.event` 发送给前端**：
+`context_tokens` 表示最近一次 Parent LLM 调用的输入与输出 token 总和。Core 还会在每次 Parent LLM 调用完成后发送 `context_usage_updated`，其中包含 `input_tokens`、`output_tokens`、`context_tokens`、`source="provider"` 和 `estimated=false`，前端应据此即时刷新状态栏。缓存 token 等其他详细字段仍只写入 Trace/Telemetry：
 
 ```text
 input_tokens
