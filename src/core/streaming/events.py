@@ -14,6 +14,7 @@ from src.core.streaming.failures import graph_failure_event
 from src.core.streaming.message_events import step_events_from_message, tool_calls_from_message
 from src.core.telemetry import emit_event
 from src.core.agent.budget import ToolBudgetExceeded
+from src.core.context.compaction import ContextCompactionRequired
 from src.core.llm.retry_context import (
     current_attempt_id,
     mark_attempt_output_emitted,
@@ -244,6 +245,12 @@ def stream_graph_events(
         }
         yield from finish_reasoning()
         return
+    except ContextCompactionRequired:
+        # This is a recoverable execution control signal. The outer execution
+        # loop persists a context_compaction_required pause and must see the
+        # original exception instead of a generic graph_error event.
+        yield from finish_reasoning()
+        raise
     except ToolBudgetExceeded as exc:
         emit_event(
             "execution_budget_exhausted",

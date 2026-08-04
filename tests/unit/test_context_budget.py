@@ -217,6 +217,15 @@ class FakeExecutor:
         return f"{previous}closed:{len(messages)}", 20, 5
 
 
+class FullCheckpointOvercountingCounter(FixedCounter):
+    """Simulate metadata overhead when a complete checkpoint is recounted."""
+
+    def count_messages(self, messages):
+        if len(messages) > 3:
+            return TokenCount(100, estimated=False)
+        return super().count_messages(messages)
+
+
 class InTurnContextGuardTest(unittest.TestCase):
     @staticmethod
     def journal():
@@ -323,6 +332,43 @@ class InTurnContextGuardTest(unittest.TestCase):
         )
 
         self.assertEqual({}, update)
+
+    def test_guard_keeps_provider_projection_after_successful_compaction(self):
+        counter = FullCheckpointOvercountingCounter()
+        planner = ContextWindowPlanner(
+            counter,
+            model_context_limit=100,
+            output_reserve=10,
+            safety_margin=10,
+            soft_limit_ratio=0.5,
+            recent_turn_limit=3,
+            recent_turn_budget_ratio=0.5,
+            summary_trigger_token_limit=100,
+            summary_max_chars=0,
+        )
+        journal = self.journal()
+        journal[3].usage_metadata = {"input_tokens": 45, "output_tokens": 5}
+        guard = InTurnContextGuard(
+            object(),
+            system_message=HumanMessage(content="system"),
+            tools=[],
+            counter=counter,
+            planner=planner,
+            executor=FakeExecutor(),
+        )
+
+        update = guard(
+            {
+                "messages": journal,
+                "turn_journal": journal,
+                "working_summary": "",
+                "compacted_journal_count": 1,
+                "compaction_generation": 0,
+            }
+        )
+
+        self.assertEqual(["assistant-1", "tool-1"], [m.id for m in update["messages"]])
+        self.assertEqual(1, update["compaction_generation"])
 
 
 if __name__ == "__main__":

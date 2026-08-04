@@ -3,6 +3,7 @@ import unittest
 from langchain_core.messages import AIMessage, AIMessageChunk, ToolMessage
 
 from src.core.common.content import content_text, reasoning_content_text
+from src.core.context.compaction import ContextCompactionRequired
 from src.core.streaming.events import stream_graph_events
 from src.core.streaming.message_events import step_events_from_message, tool_calls_from_message
 class FakeGraph:
@@ -19,7 +20,17 @@ class FailingGraph(FakeGraph):
         raise RuntimeError("boom")
 
 
+class CompactionRequiredGraph(FakeGraph):
+    def stream(self, _inputs, **_kwargs):
+        raise ContextCompactionRequired("compact before continuing")
+        yield
+
+
 class StreamingEventsTest(unittest.TestCase):
+    def test_context_compaction_control_signal_is_not_wrapped_as_graph_error(self):
+        with self.assertRaises(ContextCompactionRequired):
+            list(stream_graph_events(CompactionRequiredGraph([]), []))
+
     def test_stream_reports_each_exact_parent_usage_snapshot(self):
         graph = FakeGraph(
             [

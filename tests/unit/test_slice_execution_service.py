@@ -7,6 +7,7 @@ from src.core.agent.budget import ExecutionBudget
 from src.core.agent.models import AgentRunContext, RunLimits, StopReason
 from src.core.agent.slices import SliceExecutionService
 from src.core.errors import ProviderErrorHandler
+from src.core.context.compaction import ContextCompactionRequired
 from src.core.state.types import ExecutionStatus
 from src.core.tasks.context import ToolExecutionContext
 from src.core.workspace.models import SessionContext, WorkspaceContext
@@ -153,6 +154,37 @@ class SliceExecutionServiceTest(unittest.TestCase):
         self.assertIs(done_item, result.done_item)
         self.assertEqual(1, result.tool_call_count)
         self.assertEqual([], repository.finished)
+
+    def test_context_compaction_pause_preserves_recoverable_slice_status(self):
+        repository = FakeExecutionRepository()
+        service = SliceExecutionService(
+            execution_store=repository,
+            provider_error_handler=ProviderErrorHandler(),
+        )
+
+        def failing_events():
+            raise ContextCompactionRequired("compact before continuing")
+            yield
+
+        with patch("src.core.agent.slices.stream_graph_events", return_value=failing_events()):
+            with self.assertRaises(ContextCompactionRequired):
+                _consume(service.stream_slice(
+                    graph=object(),
+                    slice_input=["input"],
+                    run_context=self._run_context(),
+                    execution=FakeExecution(),
+                    slice_number=1,
+                    checkpoint_thread_id="thread-1",
+                    budget=ExecutionBudget(),
+                    tool_context=self._tool_context(),
+                ))
+
+        finished = repository.finished[0][2]
+        self.assertEqual(ExecutionStatus.PAUSED_RECOVERY, finished["status"])
+        self.assertEqual(
+            StopReason.CONTEXT_COMPACTION_REQUIRED.value,
+            finished["stop_reason"],
+        )
 
 
 if __name__ == "__main__":

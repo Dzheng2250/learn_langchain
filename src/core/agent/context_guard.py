@@ -66,12 +66,7 @@ class InTurnContextGuard:
         active = list(state.get("messages") or [])
         prefix = [self.system_message]
         if working_summary:
-            prefix.append(SystemMessage(
-                content=(
-                    "Current Turn working summary. Treat it as prior execution "
-                    f"state, not as a new user request:\n{working_summary}"
-                )
-            ))
+            prefix.append(_working_summary_message(working_summary))
         projected = self._projected_input_tokens(
             prefix=prefix,
             active=active,
@@ -145,25 +140,32 @@ class InTurnContextGuard:
                     "be compacted safely."
                 )
             return {}
-        removed_ids = {message.id for message in source_messages}
-        remaining = [
-            message
-            for message in active
-            if getattr(message, "id", None) not in removed_ids
-        ]
-        post_prefix = [
-            self.system_message,
-            SystemMessage(
-                content=(
-                    "Current Turn working summary. Treat it as prior execution "
-                    f"state, not as a new user request:\n{summary}"
-                )
-            ),
-        ]
-        post_compaction_tokens = (
-            self.counter.count_messages([*post_prefix, *remaining]).tokens
-            + self.tool_tokens
+        source_tokens = self.counter.count_messages(source_messages).tokens
+        previous_summary_tokens = (
+            self.counter.count_messages(
+                [_working_summary_message(working_summary)]
+            ).tokens
+            if working_summary
+            else 0
         )
+        new_summary_tokens = self.counter.count_messages(
+            [_working_summary_message(summary)]
+        ).tokens
+        # Keep the same projection basis used before compaction. Recounting the
+        # complete LangChain checkpoint here includes response metadata that is
+        # not sent to the provider and can turn a successful compaction into a
+        # false hard-limit failure.
+        post_compaction_tokens = max(
+            0,
+            projected - source_tokens - previous_summary_tokens + new_summary_tokens,
+        )
+        if post_compaction_tokens >= projected:
+            if projected > hard:
+                raise ContextCompactionRequired(
+                    "Turn-local compaction did not reduce the active model input "
+                    "below its hard limit."
+                )
+            return {}
         if post_compaction_tokens > hard:
             raise ContextCompactionRequired(
                 "Turn-local compaction completed, but the remaining active input "
@@ -242,6 +244,16 @@ def _closed_tool_cycles(journal: list, start: int) -> list[tuple[int, int, list]
             continue
         break
     return cycles
+
+
+def _working_summary_message(summary: str) -> SystemMessage:
+    """Build the exact synthetic message used for a Turn-local summary."""
+    return SystemMessage(
+        content=(
+            "Current Turn working summary. Treat it as prior execution state, "
+            f"not as a new user request:\n{summary}"
+        )
+    )
 
 
 def latest_tool_results(state: AgentGraphState) -> list[ToolMessage]:

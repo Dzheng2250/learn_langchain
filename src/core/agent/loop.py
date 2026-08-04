@@ -200,6 +200,10 @@ class TurnExecutionLoop:
                     return
                 elif slice_result.done_item is not None:
                     item = slice_result.done_item
+                    # The Slice remains open until finalization or goal
+                    # continuation. Bind it before STOP hooks so rejection and
+                    # other control failures can close the correct record.
+                    active_slice_id = slice_id
                     final_messages = item["data"]["messages"]
                     hooks = (
                         self.hook_runtime.get(session.workspace.root)
@@ -239,6 +243,7 @@ class TurnExecutionLoop:
                             usage=budget.snapshot(),
                         )
                         self.observer.slice_finished(slice_id)
+                        active_slice_id = None
                         emit_event(
                             "goal_continuation_started",
                             "agent_loop",
@@ -253,7 +258,6 @@ class TurnExecutionLoop:
                         resume = False
                         continue
                     final_messages = sanitize_goal_messages(final_messages, user_input)
-                    active_slice_id = slice_id
                     finalization = self.turn_coordinator.finalize(
                         session=session,
                         turn_index=current_turn,
