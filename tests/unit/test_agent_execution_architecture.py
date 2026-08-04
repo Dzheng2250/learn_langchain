@@ -567,6 +567,36 @@ class AgentExecutionArchitectureTest(unittest.TestCase):
         self.assertTrue(provider.models)
         self.assertIsNotNone(provider.models[0].received_configs[0])
 
+    def test_parent_graph_streams_exact_input_plus_output_usage(self):
+        class UsageModel(FakeModel):
+            def invoke(self, _messages, config=None):
+                self.received_configs.append(config)
+                return AIMessage(
+                    content="done",
+                    usage_metadata={
+                        "input_tokens": 100,
+                        "output_tokens": 25,
+                        "total_tokens": 125,
+                    },
+                )
+
+        class UsageProvider(RecordingProvider):
+            def create_chat_model(self, purpose, **kwargs):
+                self.calls.append((purpose, kwargs))
+                model = UsageModel()
+                self.models.append(model)
+                return model
+
+        graph = create_parent_graph([], "", UsageProvider())
+
+        events = list(stream_graph_events(graph, [HumanMessage(content="hello")]))
+
+        update = next(event for event in events if event["event"] == "context_usage_updated")
+        self.assertEqual(100, update["data"]["input_tokens"])
+        self.assertEqual(25, update["data"]["output_tokens"])
+        self.assertEqual(125, update["data"]["context_tokens"])
+        self.assertEqual(125, events[-1]["data"]["context_tokens"])
+
     def test_parent_graph_rejects_output_limit_response(self):
         class TruncatedModel(FakeModel):
             def invoke(self, _messages, config=None):

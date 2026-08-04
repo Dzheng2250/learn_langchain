@@ -285,6 +285,45 @@ class InTurnContextGuardTest(unittest.TestCase):
         self.assertEqual(1, update["compaction_generation"])
         self.assertEqual(5, len(journal))
 
+    def test_guard_uses_current_turn_provider_usage_instead_of_full_state_estimate(self):
+        counter = FixedCounter()
+        planner = ContextWindowPlanner(
+            counter,
+            model_context_limit=100,
+            output_reserve=10,
+            safety_margin=10,
+            soft_limit_ratio=0.5,
+            recent_turn_limit=3,
+            recent_turn_budget_ratio=0.5,
+            summary_trigger_token_limit=100,
+            summary_max_chars=0,
+        )
+        journal = self.journal()[:3]
+        journal[1].usage_metadata = {"input_tokens": 10, "output_tokens": 1}
+        # Extra historical messages make full-state serialization exceed the
+        # hard limit even though the provider reported a small current input.
+        active = [HumanMessage(content="history") for _ in range(10)] + journal
+        guard = InTurnContextGuard(
+            object(),
+            system_message=HumanMessage(content="system"),
+            tools=[],
+            counter=counter,
+            planner=planner,
+            executor=FakeExecutor(),
+        )
+
+        update = guard(
+            {
+                "messages": active,
+                "turn_journal": journal,
+                "working_summary": "",
+                "compacted_journal_count": 1,
+                "compaction_generation": 0,
+            }
+        )
+
+        self.assertEqual({}, update)
+
 
 if __name__ == "__main__":
     unittest.main()

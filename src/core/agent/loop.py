@@ -42,6 +42,7 @@ from src.core.tracing import (
 )
 from src.core.workspace.models import SessionContext
 from src.core.context.compaction import ContextCompactionRequired
+from src.core.llm.usage import context_tokens
 
 
 @dataclass(frozen=True)
@@ -275,7 +276,7 @@ class TurnExecutionLoop:
                         tool_call_count=total_tool_calls,
                         slices_used=slice_number,
                         finalization=finalization,
-                        context_tokens=snapshot.get("input_tokens", 0),
+                        context_tokens=context_tokens(snapshot),
                     )
                     return
                 if not paused_for_budget:

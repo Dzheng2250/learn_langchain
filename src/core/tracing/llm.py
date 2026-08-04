@@ -4,7 +4,8 @@ import time
 from threading import Lock
 from langchain_core.callbacks import BaseCallbackHandler
 
-from src.core.llm.contracts import ModelProvider
+from src.core.llm.contracts import LlmPurpose, ModelProvider
+from src.core.llm.usage import has_context_usage, response_usage
 from src.core.tracing.models import TraceDirection, TraceLayer
 from src.core.tracing.recorder import record_trace
 
@@ -56,12 +57,17 @@ class LlmTraceCallback(BaseCallbackHandler):
             from src.core.agent.budget import current_execution_budget
 
             budget = current_execution_budget()
-            if budget is not None:
+            if (
+                budget is not None
+                and self.purpose == LlmPurpose.PARENT_AGENT.value
+                and has_context_usage(usage)
+            ):
                 input_tokens = usage.get("input_tokens") or 0
                 output_tokens = usage.get("output_tokens") or 0
                 with budget._lock:
                     budget.input_tokens = input_tokens
                     budget.output_tokens = output_tokens
+                    budget.usage_reported = True
         except Exception:
             pass
 
@@ -98,41 +104,11 @@ class TracingModelProvider:
 
 
 def _response_summary(response) -> tuple[dict, str | None]:
-    usage = {
-        "input_tokens": None,
-        "output_tokens": None,
-        "total_tokens": None,
-        "cache_creation_input_tokens": None,
-        "cache_read_input_tokens": None,
-    }
+    usage = response_usage(response)
     stop_reason = None
     generations = getattr(response, "generations", None) or []
     if generations and generations[0]:
         message = getattr(generations[0][0], "message", None)
-        usage_metadata = getattr(message, "usage_metadata", None) or {}
         metadata = getattr(message, "response_metadata", None) or {}
-
-        usage["input_tokens"] = usage_metadata.get("input_tokens")
-        usage["output_tokens"] = usage_metadata.get("output_tokens")
-        usage["total_tokens"] = usage_metadata.get("total_tokens")
-        usage["cache_creation_input_tokens"] = usage_metadata.get("cache_creation_input_tokens")
-        usage["cache_read_input_tokens"] = usage_metadata.get("cache_read_input_tokens")
-
-        if not any(
-            usage.get(key) is not None
-            for key in ("input_tokens", "output_tokens", "total_tokens")
-        ):
-            raw_usage = metadata.get("usage") or {}
-            usage["input_tokens"] = raw_usage.get("input_tokens")
-            usage["output_tokens"] = raw_usage.get("output_tokens")
-            usage["total_tokens"] = raw_usage.get("total_tokens")
-            usage["cache_creation_input_tokens"] = raw_usage.get("cache_creation_input_tokens")
-            usage["cache_read_input_tokens"] = raw_usage.get("cache_read_input_tokens")
-            if usage["total_tokens"] is None:
-                input_tokens = usage["input_tokens"]
-                output_tokens = usage["output_tokens"]
-                if input_tokens is not None and output_tokens is not None:
-                    usage["total_tokens"] = input_tokens + output_tokens
-
         stop_reason = metadata.get("stop_reason") or metadata.get("finish_reason")
     return usage, stop_reason

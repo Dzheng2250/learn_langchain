@@ -11,6 +11,7 @@ from langgraph.graph.message import add_messages
 from src.core.context.budget import ContextWindowPlanner, ModelTokenCounter
 from src.core.context.compaction import ContextCompactionRequired
 from src.core.context.summary_executor import ContextSummaryExecutor
+from src.core.llm.usage import context_tokens, has_context_usage, message_usage
 from src.core.telemetry import emit_event, record_error
 
 
@@ -21,6 +22,11 @@ class AgentGraphState(MessagesState):
     working_summary: str
     compacted_journal_count: int
     compaction_generation: int
+    context_input_tokens: int
+    context_output_tokens: int
+    context_tokens: int
+    context_usage_available: bool
+    llm_usage_generation: int
 
 
 class InTurnContextGuard:
@@ -66,7 +72,11 @@ class InTurnContextGuard:
                     f"state, not as a new user request:\n{working_summary}"
                 )
             ))
-        projected = self.counter.count_messages([*prefix, *active]).tokens + self.tool_tokens
+        projected = self._projected_input_tokens(
+            prefix=prefix,
+            active=active,
+            journal=list(state.get("turn_journal") or []),
+        )
         empty_plan = self.planner.plan([], fixed_messages=[*prefix, *active])
         soft = empty_plan.budget.soft_input_limit
         hard = empty_plan.budget.hard_input_limit
@@ -180,6 +190,33 @@ class InTurnContextGuard:
             "compacted_journal_count": selected[-1][1],
             "compaction_generation": generation,
         }
+
+    def _projected_input_tokens(self, *, prefix: list, active: list, journal: list) -> int:
+        """Prefer provider usage for the stable prefix of the current Turn.
+
+        Serializing complete LangChain messages includes response metadata that is
+        not sent back to the provider and can substantially overestimate a long
+        checkpoint. Once the current Turn has one model response, its reported
+        input usage is a better baseline; only that response and later tool results
+        need to be estimated before the next request.
+        """
+        current_turn_ids = {
+            getattr(message, "id", None)
+            for message in journal
+            if getattr(message, "id", None)
+        }
+        for index in range(len(active) - 1, -1, -1):
+            message = active[index]
+            if not isinstance(message, AIMessage):
+                continue
+            if getattr(message, "id", None) not in current_turn_ids:
+                continue
+            usage = message_usage(message)
+            input_tokens = usage.get("input_tokens")
+            if input_tokens is not None and has_context_usage(usage):
+                delta = self.counter.count_messages(active[index + 1:]).tokens
+                return context_tokens(usage) + delta
+        return self.counter.count_messages([*prefix, *active]).tokens + self.tool_tokens
 
 
 def _closed_tool_cycles(journal: list, start: int) -> list[tuple[int, int, list]]:

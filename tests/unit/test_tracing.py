@@ -24,6 +24,7 @@ from src.core.tracing import (
 )
 from src.core.tracing.sanitization import MAX_DEPTH_MARKER, sanitize_trace_data
 from src.core.tracing.llm import LlmTraceCallback, _response_summary
+from src.core.agent.budget import ExecutionBudget, bind_execution_budget, reset_execution_budget
 
 
 class MemoryWriter:
@@ -290,6 +291,39 @@ class TracingTest(unittest.TestCase):
         self.assertEqual(10, writer.records[1].data["input_tokens"])
         self.assertEqual("end_turn", writer.records[1].data["stop_reason"])
         self.assertEqual(writer.records[0].trace_id, writer.records[1].trace_id)
+
+    def test_only_parent_callback_updates_latest_context_usage(self):
+        message = SimpleNamespace(
+            usage_metadata={"input_tokens": 100, "output_tokens": 25},
+            response_metadata={},
+        )
+        response = SimpleNamespace(
+            llm_output={},
+            generations=[[SimpleNamespace(message=message)]],
+        )
+        budget = ExecutionBudget()
+        token = bind_execution_budget(budget)
+        try:
+            LlmTraceCallback(purpose="parent_agent").on_llm_end(
+                response, run_id="parent"
+            )
+            LlmTraceCallback(purpose="context_summary").on_llm_end(
+                SimpleNamespace(
+                    llm_output={},
+                    generations=[[
+                        SimpleNamespace(message=SimpleNamespace(
+                            usage_metadata={"input_tokens": 5, "output_tokens": 2},
+                            response_metadata={},
+                        ))
+                    ]],
+                ),
+                run_id="summary",
+            )
+        finally:
+            reset_execution_budget(token)
+
+        self.assertEqual(100, budget.input_tokens)
+        self.assertEqual(25, budget.output_tokens)
 
 
 if __name__ == "__main__":

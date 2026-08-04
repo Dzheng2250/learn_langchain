@@ -7,6 +7,7 @@ from src.core.agent.run_observer import TurnRunObserver
 from src.core.ports import ExecutionPauseStore
 from src.core.state.types import ExecutionStatus
 from src.core.workspace.models import SessionContext
+from src.core.llm.usage import context_tokens
 
 
 class TurnLoopPauseHandler:
@@ -57,4 +58,5 @@ class TurnLoopPauseHandler:
             tool_call_count=total_tool_calls,
             slices_used=slice_number,
             message=summary,
+            context_tokens=context_tokens(snapshot),
         )

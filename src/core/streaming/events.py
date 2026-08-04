@@ -59,6 +59,10 @@ def stream_graph_events(
         seen_message_count = len(
             (inputs or {}).get("turn_journal", (inputs or {}).get("messages", []))
         )
+    if (inputs is None or resume_command) and checkpoint_thread_id:
+        seen_usage_generation = int(snapshot_values.get("llm_usage_generation") or 0)
+    else:
+        seen_usage_generation = int((inputs or {}).get("llm_usage_generation") or 0)
     tool_call_count = 0
     graph_steps_used = 0
     reasoning_display = _reasoning_display()
@@ -144,6 +148,20 @@ def stream_graph_events(
             elif stream_mode == "values":
                 graph_steps_used += 1
                 final_state = chunk
+                usage_generation = int(chunk.get("llm_usage_generation") or 0)
+                if usage_generation > seen_usage_generation:
+                    seen_usage_generation = usage_generation
+                    if chunk.get("context_usage_available"):
+                        yield {
+                            "event": "context_usage_updated",
+                            "data": {
+                                "context_tokens": int(chunk.get("context_tokens") or 0),
+                                "input_tokens": int(chunk.get("context_input_tokens") or 0),
+                                "output_tokens": int(chunk.get("context_output_tokens") or 0),
+                                "source": "provider",
+                                "estimated": False,
+                            },
+                        }
                 state_messages = chunk.get("turn_journal", chunk.get("messages", []))
                 new_messages = state_messages[seen_message_count:]
                 seen_message_count = len(state_messages)
@@ -272,6 +290,7 @@ def stream_graph_events(
         )
         return
 
+    usage_state = final_state or {}
     yield {
         "event": "done",
         "data": {
@@ -279,6 +298,9 @@ def stream_graph_events(
             "stop_reason": StopReason.COMPLETED.value,
             "tool_call_count": tool_call_count,
             "graph_steps_used": graph_steps_used,
+            "context_tokens": int(usage_state.get("context_tokens") or 0),
+            "input_tokens": int(usage_state.get("context_input_tokens") or 0),
+            "output_tokens": int(usage_state.get("context_output_tokens") or 0),
         },
     }
 

@@ -20,6 +20,74 @@ class FailingGraph(FakeGraph):
 
 
 class StreamingEventsTest(unittest.TestCase):
+    def test_stream_reports_each_exact_parent_usage_snapshot(self):
+        graph = FakeGraph(
+            [
+                (
+                    "values",
+                    {
+                        "messages": [],
+                        "llm_usage_generation": 1,
+                        "context_input_tokens": 100,
+                        "context_output_tokens": 25,
+                        "context_tokens": 125,
+                        "context_usage_available": True,
+                    },
+                ),
+                (
+                    "values",
+                    {
+                        "messages": [],
+                        "llm_usage_generation": 2,
+                        "context_input_tokens": 100,
+                        "context_output_tokens": 25,
+                        "context_tokens": 125,
+                        "context_usage_available": True,
+                    },
+                ),
+            ]
+        )
+
+        events = list(stream_graph_events(graph, []))
+        updates = [event for event in events if event["event"] == "context_usage_updated"]
+
+        self.assertEqual(2, len(updates))
+        self.assertEqual(
+            {
+                "context_tokens": 125,
+                "input_tokens": 100,
+                "output_tokens": 25,
+                "source": "provider",
+                "estimated": False,
+            },
+            updates[-1]["data"],
+        )
+        self.assertEqual(125, events[-1]["data"]["context_tokens"])
+
+    def test_stream_does_not_publish_unknown_usage_as_zero(self):
+        events = list(
+            stream_graph_events(
+                FakeGraph(
+                    [
+                        (
+                            "values",
+                            {
+                                "messages": [],
+                                "llm_usage_generation": 1,
+                                "context_usage_available": False,
+                            },
+                        )
+                    ]
+                ),
+                [],
+            )
+        )
+
+        self.assertNotIn(
+            "context_usage_updated",
+            [event["event"] for event in events],
+        )
+
     def test_agent_message_fallback_keeps_full_content(self):
         content = "answer-" + ("x" * 1200)
         events = step_events_from_message(AIMessage(content=content))
