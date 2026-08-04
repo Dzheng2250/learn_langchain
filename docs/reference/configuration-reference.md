@@ -53,7 +53,7 @@ learn-agent start
 | `LEARN_AGENT_RECENT_TURN_BUDGET_RATIO` | `0.5` | 原样 Turn 尾部最多占模型窗口的比例，取值须大于 `0` 且不超过 `0.5`。默认最多保留 1 个，超限时降为 0；显式提高 Turn 上限后会从配置值逐步减少。 |
 | `LEARN_AGENT_CONTEXT_SAFETY_MARGIN_TOKENS` | `8192` | 为 provider 包装、估算误差和协议开销预留的输入安全空间。它与最大输出之和必须小于模型窗口。 |
 | `LEARN_AGENT_CONTEXT_SOFT_LIMIT_RATIO` | `0.85` | 动态输入硬上限的软压缩比例。低于硬上限时压缩失败保留原文；达到硬上限时暂停等待可恢复压缩。 |
-| `LEARN_AGENT_CONTEXT_SUMMARY_MAX_TOKENS` | `16384` | Session 历史摘要和 Turn 内工作摘要的最终模型输出预算（token）。摘要不会再由 Core 按字符截断；模型耗尽该预算时整次压缩失败并保留原始 Turn。 |
+| `LEARN_AGENT_CONTEXT_SUMMARY_MAX_TOKENS` | `16384` | Session 历史摘要和 Turn 内工作摘要的最终模型输出预算（token）。摘要来源消息和摘要输出均不再由 Core 按字符截断；模型耗尽该预算时整次压缩失败并保留原始 Turn。 |
 | `LEARN_AGENT_CONTEXT_SUMMARY_MAP_MAX_TOKENS` | `4096` | 超大历史进入 Map/Reduce 后，每个中间摘要的最大输出 token。完整来源能放入单次请求时不会使用该预算。 |
 | `LEARN_AGENT_CONTEXT_SUMMARY_MAP_WORKERS` | `4` | Map/Reduce 摘要的最大并行模型调用数。同一 Session 仍只有一个压缩流程。 |
 | `LEARN_AGENT_LLM_RETRY_ENABLED` | `true` | 是否启用 Core 统一 LLM 重试。启用后由 `ResilientModelProvider` 负责重试，SDK 内置重试保持关闭，避免重复重试。 |

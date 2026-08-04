@@ -62,6 +62,21 @@ class AgentContextManagerTest(unittest.TestCase):
         self.assertEqual(10, input_tokens)
         self.assertEqual(2, output_tokens)
 
+    def test_summary_source_keeps_complete_long_message_content(self):
+        provider = RecordingSummaryProvider()
+        executor = ContextSummaryExecutor(model_provider=provider)
+        tail_marker = "SOURCE-CONTENT-TAIL"
+        source = HumanMessage(content="x" * 5_000 + tail_marker)
+
+        executor.summarize("", [source])
+
+        rendered_request = "\n".join(
+            str(message.content)
+            for message in provider.model.requests[0]
+        )
+        self.assertIn(tail_marker, rendered_request)
+        self.assertNotIn("message truncated", rendered_request)
+
     def test_message_volume_does_not_trigger_character_compression(self):
         policy = SummaryPolicy(turn_limit=20, token_limit=90_000)
 
@@ -132,8 +147,31 @@ class AgentContextManagerTest(unittest.TestCase):
         )
         executor = ContextSummaryExecutor(model_provider=provider)
 
-        with self.assertRaisesRegex(RuntimeError, "output token budget"):
+        with self.assertRaisesRegex(
+            RuntimeError,
+            "LEARN_AGENT_CONTEXT_SUMMARY_MAX_TOKENS",
+        ):
             executor.summarize("", [HumanMessage(content="source")])
+
+    def test_map_output_limit_error_names_the_map_budget(self):
+        provider = RecordingSummaryProvider()
+        provider.model.invoke = lambda _messages: AIMessage(
+            content="partial",
+            response_metadata={"stop_reason": "max_tokens"},
+        )
+        executor = ContextSummaryExecutor(
+            model_provider=provider,
+            model_context_limit=2_000,
+            safety_margin_tokens=100,
+            summary_max_tokens=400,
+            map_max_tokens=100,
+        )
+
+        with self.assertRaisesRegex(
+            RuntimeError,
+            "LEARN_AGENT_CONTEXT_SUMMARY_MAP_MAX_TOKENS",
+        ):
+            executor.summarize("", [HumanMessage(content="x" * 5_000)])
 
     def test_disabled_fixed_token_limit_does_not_trigger_summary(self):
         policy = SummaryPolicy(

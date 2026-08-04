@@ -14,10 +14,14 @@ def response_stop_reason(message) -> str:
     return str(value or "").strip().lower()
 
 
-def ensure_complete_response(message) -> None:
+def ensure_complete_response(
+    message,
+    *,
+    output_budget_setting: str = "LEARN_AGENT_LLM_MAX_TOKENS",
+) -> None:
     """Reject output-budget truncation before it enters graph state/history."""
     if response_stop_reason(message) == "max_tokens":
         raise ModelOutputLimitError(
             "The model exhausted its output token budget before producing a "
-            "complete response. Increase LEARN_AGENT_LLM_MAX_TOKENS and resume."
+            f"complete response. Increase {output_budget_setting} and resume."
         )

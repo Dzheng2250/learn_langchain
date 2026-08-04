@@ -345,7 +345,14 @@ class ContextSummaryExecutor:
             },
         ):
             response = self._create_summary_llm(max_tokens=max_tokens).invoke(prompt)
-        ensure_complete_response(response)
+        ensure_complete_response(
+            response,
+            output_budget_setting=(
+                "LEARN_AGENT_CONTEXT_SUMMARY_MAP_MAX_TOKENS"
+                if phase == "map"
+                else "LEARN_AGENT_CONTEXT_SUMMARY_MAX_TOKENS"
+            ),
+        )
         text = message_content_text(response).strip()
         if not text:
             raise RuntimeError(f"Context summary model returned empty output during {stage}")

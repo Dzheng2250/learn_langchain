@@ -191,7 +191,7 @@ summary_through_turn: int
 成功 Turn 会在最小提交中写入一个 `context_summary` 维护任务。后台 handler 和前台输入 guard
 共用同一规划器：
 
-- 最终摘要模型使用独立的 `LEARN_AGENT_CONTEXT_SUMMARY_MAX_TOKENS=16384` 输出预算；Core 不再按字符截断摘要。模型以 `max_tokens` 停止时压缩失败，原始 Turn 保持活动状态。
+- 最终摘要模型使用独立的 `LEARN_AGENT_CONTEXT_SUMMARY_MAX_TOKENS=16384` 输出预算；Core 不再按字符截断摘要输出，也不会对进入摘要的单条来源消息设置字符预览上限。模型以 `max_tokens` 停止时压缩失败，错误会指向对应的 Summary 或 Map 输出预算配置，原始 Turn 保持活动状态。
 - 默认仅最近 `RECENT_TURN_LIMIT=1` 个完整 Turn 继续保留原文；一个 Turn 可以包含 user、assistant 和多条 tool message。若最新 Turn 本身超过动态原始 Turn Token 预算，则允许不保留原始 Turn，但它必须先完整进入摘要。
 - 原文尾部同时受 `RECENT_TURN_BUDGET_RATIO=0.5` 约束。默认只尝试保留最新 1 个 Turn；若它仍超过动态预算则降为 0。显式配置为 2 或 3 时，规划器会从配置值逐步减少，所有被移出的 Turn 必须先成功进入新摘要。
 - 完整输入硬上限为模型窗口减去最大输出和安全余量；压缩失败且尚未到硬上限时保留原文，达到硬上限时以 `context_compaction_required` 暂停，禁止静默截断。

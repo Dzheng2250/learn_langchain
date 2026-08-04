@@ -10,7 +10,6 @@ MEMORY_MESSAGE_PREFIXES = (
     "Relevant long-term memory:",
     "Relevant long-term memory for this workspace:",
 )
-SUMMARY_SOURCE_MESSAGE_PREVIEW_CHARS = 1200
 
 
 def is_synthetic_context_message(message) -> bool:
@@ -30,17 +29,9 @@ def strip_context_messages(messages: list) -> list:
     return [message for message in messages if not is_synthetic_context_message(message)]
 
 
-def format_messages_for_summary(
-    messages: list,
-    *,
-    preview_chars: int = SUMMARY_SOURCE_MESSAGE_PREVIEW_CHARS,
-) -> str:
-    """Format messages for summarization with bounded per-message content."""
-    formatted = []
-    for index, message in enumerate(messages, start=1):
-        text = format_message(message)
-        if len(text) > preview_chars:
-            text = text[:preview_chars] + "\n... message truncated ..."
-        formatted.append(f"[{index}]\n{text}")
-    return "\n\n".join(formatted)
-
+def format_messages_for_summary(messages: list) -> str:
+    """Format complete source messages for token-budgeted summarization."""
+    return "\n\n".join(
+        f"[{index}]\n{format_message(message)}"
+        for index, message in enumerate(messages, start=1)
+    )
