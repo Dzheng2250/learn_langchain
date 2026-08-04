@@ -13,6 +13,7 @@ from src.core.common.content import message_content_text
 from src.core.telemetry import emit_event
 from src.core.adapters.sqlite.session_store import serialize_recent_turns
 from src.core.context.models import TurnChunk
+from src.core.history_models import ConversationHistoryPage, HistoryMessageRecord
 
 if TYPE_CHECKING:
     from src.core.finalization.models import CompletedTurn
@@ -130,34 +131,213 @@ class SQLiteConversationHistoryStore:
         raw = [json.loads(row["raw"]) for row in rows]
         return messages_from_dict(raw), [row["message_id"] for row in rows]
 
+    def list_page(
+        self,
+        session,
+        *,
+        before_turn: int | None,
+        limit_turns: int,
+    ) -> ConversationHistoryPage:
+        """Read one complete-Turn page from the active branch lineage."""
+        limit = max(1, min(int(limit_turns), 100))
+        with self.database.read_transaction() as conn:
+            workspace_id = str(session.workspace.workspace_id)
+            session_id = str(session.session_id)
+            branch_managed, head_message_id = self._active_branch_head(
+                conn,
+                workspace_id=workspace_id,
+                session_id=session_id,
+            )
+            if head_message_id:
+                rows = self._branch_page_rows(
+                    conn,
+                    head_message_id,
+                    workspace_id=workspace_id,
+                    session_id=session_id,
+                    before_turn=before_turn,
+                    limit_turns=limit,
+                )
+            elif branch_managed:
+                # A managed branch with no valid head has no trustworthy lineage.
+                # Falling back to a Session scan would mix sibling branches.
+                rows = []
+            else:
+                rows = self._legacy_page_rows(
+                    conn,
+                    session,
+                    before_turn=before_turn,
+                    limit_turns=limit,
+                )
+        has_more = any(int(row["turn_rank"]) > limit for row in rows)
+        visible = [row for row in rows if int(row["turn_rank"]) <= limit]
+        records = tuple(self._history_record(row) for row in visible)
+        next_before_turn = (
+            min(record.turn_index for record in records)
+            if has_more and records
+            else None
+        )
+        return ConversationHistoryPage(records, next_before_turn, has_more)
+
+    @staticmethod
+    def _active_branch_head(conn, *, workspace_id, session_id):
+        """Return whether branch metadata exists and its trustworthy head."""
+        session_row = conn.execute(
+            """
+            SELECT active_branch_id FROM sessions
+            WHERE workspace_id=? AND session_id=?
+            """,
+            (workspace_id, session_id),
+        ).fetchone()
+        branch_id = session_row["active_branch_id"] if session_row else None
+        if not branch_id:
+            branch_exists = conn.execute(
+                """
+                SELECT EXISTS(
+                    SELECT 1 FROM branches
+                    WHERE workspace_id=? AND session_id=?
+                ) AS present
+                """,
+                (workspace_id, session_id),
+            ).fetchone()
+            return bool(branch_exists and branch_exists["present"]), None
+        branch = conn.execute(
+            """
+            SELECT b.head_message_id,
+                   EXISTS(
+                       SELECT 1 FROM messages AS m
+                       WHERE m.message_id=b.head_message_id
+                         AND m.workspace_id=b.workspace_id
+                         AND m.session_id=b.session_id
+                   ) AS head_valid
+            FROM branches AS b
+            WHERE b.branch_id=? AND b.workspace_id=? AND b.session_id=?
+            """,
+            (branch_id, workspace_id, session_id),
+        ).fetchone()
+        if branch and bool(branch["head_valid"]):
+            return True, branch["head_message_id"]
+        return True, None
+
+    @staticmethod
+    def _branch_page_rows(
+        conn,
+        head_message_id,
+        *,
+        workspace_id,
+        session_id,
+        before_turn,
+        limit_turns,
+    ):
+        return conn.execute(
+            """
+            WITH RECURSIVE lineage AS (
+                SELECT message_id, parent_message_id, turn_index, message_ordinal,
+                       role, message_type, content, raw
+                FROM messages
+                WHERE message_id=? AND workspace_id=? AND session_id=?
+                UNION
+                SELECT parent.message_id, parent.parent_message_id,
+                       parent.turn_index, parent.message_ordinal, parent.role,
+                       parent.message_type, parent.content, parent.raw
+                FROM messages AS parent
+                JOIN lineage AS child ON parent.message_id=child.parent_message_id
+                WHERE parent.workspace_id=? AND parent.session_id=?
+            ), ranked AS (
+                SELECT *, DENSE_RANK() OVER (ORDER BY turn_index DESC) AS turn_rank
+                FROM lineage
+                WHERE (? IS NULL OR turn_index < ?)
+            )
+            SELECT * FROM ranked WHERE turn_rank <= ?
+            ORDER BY turn_index, message_ordinal
+            """,
+            (
+                head_message_id,
+                workspace_id,
+                session_id,
+                workspace_id,
+                session_id,
+                before_turn,
+                before_turn,
+                limit_turns + 1,
+            ),
+        ).fetchall()
+
+    @staticmethod
+    def _legacy_page_rows(conn, session, *, before_turn, limit_turns):
+        return conn.execute(
+            """
+            WITH ranked AS (
+                SELECT message_id, parent_message_id, turn_index, message_ordinal,
+                       role, message_type, content, raw,
+                       DENSE_RANK() OVER (ORDER BY turn_index DESC) AS turn_rank
+                FROM messages
+                WHERE workspace_id=? AND session_id=?
+                  AND (? IS NULL OR turn_index < ?)
+            )
+            SELECT * FROM ranked WHERE turn_rank <= ?
+            ORDER BY turn_index, message_ordinal
+            """,
+            (
+                str(session.workspace.workspace_id),
+                str(session.session_id),
+                before_turn,
+                before_turn,
+                limit_turns + 1,
+            ),
+        ).fetchall()
+
+    @staticmethod
+    def _history_record(row) -> HistoryMessageRecord:
+        try:
+            raw = json.loads(row["raw"])
+            if not isinstance(raw, dict):
+                raw = None
+        except (TypeError, ValueError, json.JSONDecodeError):
+            raw = None
+        return HistoryMessageRecord(
+            message_id=str(row["message_id"]),
+            turn_index=int(row["turn_index"]),
+            message_ordinal=int(row["message_ordinal"]),
+            role=str(row["role"]),
+            message_type=str(row["message_type"]),
+            content=str(row["content"] or ""),
+            raw=raw,
+        )
+
     def rebuild_recent(self, session) -> int:
         """Rebuild compact recent context from complete durable Turns."""
         workspace_id = str(session.workspace.workspace_id)
         session_id = str(session.session_id)
         with self.database.connect() as conn:
-            turn_rows = conn.execute(
-                """
-                SELECT DISTINCT turn_index FROM messages
-                WHERE workspace_id=? AND session_id=?
-                ORDER BY turn_index DESC
-                LIMIT ?
-                """,
-                (workspace_id, session_id, RECENT_TURN_LIMIT),
-            ).fetchall()
-            turn_indexes = sorted(int(row["turn_index"]) for row in turn_rows)
-            if turn_indexes:
-                placeholders = ",".join("?" for _ in turn_indexes)
-                rows = conn.execute(
-                    f"""
-                    SELECT turn_index, raw FROM messages
-                    WHERE workspace_id=? AND session_id=?
-                      AND turn_index IN ({placeholders})
-                    ORDER BY turn_index, message_ordinal
-                    """,
-                    (workspace_id, session_id, *turn_indexes),
-                ).fetchall()
+            branch_managed, head_message_id = self._active_branch_head(
+                conn,
+                workspace_id=workspace_id,
+                session_id=session_id,
+            )
+            if head_message_id:
+                candidates = self._branch_page_rows(
+                    conn,
+                    head_message_id,
+                    workspace_id=workspace_id,
+                    session_id=session_id,
+                    before_turn=None,
+                    limit_turns=RECENT_TURN_LIMIT,
+                )
+            elif branch_managed:
+                candidates = []
             else:
-                rows = []
+                candidates = self._legacy_page_rows(
+                    conn,
+                    session,
+                    before_turn=None,
+                    limit_turns=RECENT_TURN_LIMIT,
+                )
+            rows = [
+                row
+                for row in candidates
+                if int(row["turn_rank"]) <= RECENT_TURN_LIMIT
+            ]
+            turn_indexes = sorted({int(row["turn_index"]) for row in rows})
         messages_by_turn: dict[int, list] = {turn_index: [] for turn_index in turn_indexes}
         raw_messages = messages_from_dict([json.loads(row["raw"]) for row in rows])
         for row, message in zip(rows, raw_messages, strict=True):

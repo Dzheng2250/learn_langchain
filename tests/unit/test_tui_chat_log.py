@@ -7,10 +7,10 @@ from rich.markdown import Markdown
 from rich.markup import render as render_markup
 from rich.text import Text
 
-from src.tui.screens.chat import ChatScreen
+from src.tui.screens.chat import ChatScreen, _history_entries
 from src.tui.renderer import render_event, render_task_progress
 from src.tui.widgets.approval_bar import ApprovalBar, inline_approval_options
-from src.tui.widgets.chat_log import ChatLog, _LogEntry, _ReasoningState
+from src.tui.widgets.chat_log import ChatLog, HistoryEntry, _LogEntry, _ReasoningState
 
 
 class FakeEntryWidget:
@@ -59,6 +59,115 @@ class TuiChatLogTest(unittest.TestCase):
         self.assertIn("read 3", rendered)
         self.assertIn("changed 2", rendered)
         self.assertIn("warnings 2", rendered)
+
+    def test_history_dto_uses_safe_render_modes_and_folded_details(self):
+        entries = _history_entries([
+            {
+                "turn_index": 1,
+                "messages": [
+                    {
+                        "role": "user",
+                        "blocks": [{"type": "text", "text": "[red]literal[/red]"}],
+                    },
+                    {
+                        "role": "assistant",
+                        "blocks": [
+                            {
+                                "type": "reasoning",
+                                "content": "private thought",
+                                "char_count": 15,
+                                "display": "collapsed",
+                            },
+                            {"type": "text", "text": "**final answer**"},
+                            {
+                                "type": "tool_call",
+                                "id": "tool-1",
+                                "name": "read_workspace_file",
+                                "args": {"path": "README.md"},
+                            },
+                        ],
+                    },
+                    {
+                        "role": "user",
+                        "blocks": [{
+                            "type": "tool_result",
+                            "tool_call_id": "tool-1",
+                            "name": "read_workspace_file",
+                            "content": "<content omitted>",
+                        }],
+                    },
+                ],
+            }
+        ])
+
+        self.assertEqual(
+            ["markup", "reasoning", "markdown", "tool", "tool"],
+            [e.mode for e in entries],
+        )
+        self.assertIn(r"\[red]literal\[/red]", entries[0].content)
+        self.assertFalse(entries[1].expanded)
+        self.assertEqual("private thought", entries[1].content)
+        self.assertEqual("**final answer**", entries[2].content)
+
+    def test_history_replace_keeps_reasoning_and_tools_collapsible(self):
+        log = self._fake_log()
+
+        ChatLog.replace_history(
+            log,
+            [
+                HistoryEntry("markup", "You: hello"),
+                HistoryEntry(
+                    "reasoning",
+                    content="thinking",
+                    char_count=8,
+                    display="collapsed",
+                ),
+                HistoryEntry("tool", "tool detail"),
+                HistoryEntry("markdown", "answer"),
+            ],
+            has_more=True,
+        )
+
+        self.assertTrue(log._history_has_more)
+        self.assertEqual(4, len(log._entries))
+        self.assertEqual(3, len(log.widgets))
+        self.assertFalse(log._entries[1].reasoning.expanded)
+        ChatLog.set_tool_events_visible(log, True)
+        self.assertEqual(4, len(log.widgets))
+
+    def test_history_top_posts_only_one_pagination_message(self):
+        log = self._fake_log()
+        log._history_has_more = True
+        log._user_scroll_paused = True
+        log._scroll_y = 0
+
+        ChatLog.request_older_history_if_needed(log)
+        ChatLog.request_older_history_if_needed(log)
+
+        self.assertEqual(1, len(log.posted_messages))
+        self.assertIsInstance(log.posted_messages[0], ChatLog.HistoryTopReached)
+
+    def test_history_prepend_preserves_visible_anchor(self):
+        log = self._fake_log()
+        log._entries = [_LogEntry("current", "plain")]
+        log._scroll_y = 20
+        log._max_scroll_y = 100
+        original_rebuild = log._rebuild_visible_entries
+
+        def rebuild_with_growth(self):
+            original_rebuild()
+            self._max_scroll_y = 140
+
+        log._rebuild_visible_entries = MethodType(rebuild_with_growth, log)
+
+        ChatLog.prepend_history(
+            log,
+            [HistoryEntry("plain", "older")],
+            has_more=False,
+        )
+
+        self.assertEqual(60, log._scroll_y)
+        self.assertTrue(log._user_scroll_paused)
     def _fake_log(self):
         log = ChatLog.__new__(ChatLog)
         log._entries = []
@@ -78,6 +187,9 @@ class TuiChatLogTest(unittest.TestCase):
         log._user_scroll_paused = False
         log._user_scroll_pause_until = 0.0
         log._force_follow_until = 0.0
+        log._history_has_more = False
+        log._history_loading = False
+        log._history_top_notified = False
         log._is_scroll_end = True
         log._is_scrollbar_grabbed = False
         log._scroll_y = 0
@@ -86,6 +198,7 @@ class TuiChatLogTest(unittest.TestCase):
         log.scrolled = 0
         log.scrolled_up = 0
         log.scrolled_down = 0
+        log.posted_messages = []
 
         def mount(self, widget):
             self.widgets.append(widget)
@@ -107,6 +220,12 @@ class TuiChatLogTest(unittest.TestCase):
             self.scrolled_down += 1
             self._scroll_y = min(self._max_scroll_y, self._scroll_y + 1)
             self._is_scroll_end = self._scroll_y >= self._max_scroll_y
+
+        def scroll_to(self, *, y, **_kwargs):
+            self._scroll_y = y
+
+        def post_message(self, message):
+            self.posted_messages.append(message)
 
         type(log).is_vertical_scroll_end = property(lambda self: self._is_scroll_end)
         type(log).is_vertical_scrollbar_grabbed = property(
@@ -135,6 +254,8 @@ class TuiChatLogTest(unittest.TestCase):
         log.scroll_end = MethodType(scroll_end, log)
         log.scroll_up = MethodType(scroll_up, log)
         log.scroll_down = MethodType(scroll_down, log)
+        log.scroll_to = MethodType(scroll_to, log)
+        log.post_message = MethodType(post_message, log)
         log.call_after_refresh = MethodType(call_after_refresh, log)
         log._new_widget = MethodType(_new_widget, log)
         return log
@@ -982,7 +1103,8 @@ class TuiChatLogTest(unittest.TestCase):
         approval_bar = SimpleNamespace(clear_request=lambda: None)
         screen = ChatScreen.__new__(ChatScreen)
         screen._session_name = "default"
-        status_checked = {"value": False}
+        screen._busy = False
+        loaded_session = {"value": None}
 
         def query_one(_self, widget_type):
             if getattr(widget_type, "__name__", "") == "StatusBar":
@@ -991,17 +1113,118 @@ class TuiChatLogTest(unittest.TestCase):
                 return approval_bar
             return log
 
-        async def check_status(_self):
-            status_checked["value"] = True
+        async def load_session(_self, session_name):
+            loaded_session["value"] = session_name
 
         screen.query_one = MethodType(query_one, screen)
-        screen._check_session_status = MethodType(check_status, screen)
+        screen._load_session_view = MethodType(load_session, screen)
 
         asyncio.run(ChatScreen._dispatch_command(screen, "/session next"))
 
         self.assertEqual("next", screen._session_name)
         self.assertEqual("next", status.session)
-        self.assertTrue(status_checked["value"])
+        self.assertEqual("next", loaded_session["value"])
+
+    def test_session_switch_is_rejected_while_agent_request_is_running(self):
+        log = self._fake_log()
+        status = SimpleNamespace(set_session=lambda _value: None)
+        screen = ChatScreen.__new__(ChatScreen)
+        screen._session_name = "default"
+        screen._busy = True
+
+        def query_one(_self, widget_type):
+            return status if getattr(widget_type, "__name__", "") == "StatusBar" else log
+
+        screen.query_one = MethodType(query_one, screen)
+
+        asyncio.run(ChatScreen._dispatch_command(screen, "/session next"))
+
+        self.assertEqual("default", screen._session_name)
+        self.assertIn("Cannot switch Session", str(log._entries[-1].content))
+
+    def test_late_history_response_cannot_replace_new_session_view(self):
+        class FakeLog:
+            def __init__(self):
+                self.pages = []
+
+            def clear(self):
+                return None
+
+            def replace_history(self, entries, *, has_more):
+                self.pages.append(([entry.content for entry in entries], has_more))
+
+            def write_event(self, _value):
+                return None
+
+        class FakeStatus:
+            def set_paused(self, _value):
+                return None
+
+            def set_goal_mode(self, _value):
+                return None
+
+        async def scenario():
+            log = FakeLog()
+            status = FakeStatus()
+            approval = SimpleNamespace(clear_request=lambda: None)
+            screen = ChatScreen.__new__(ChatScreen)
+            screen._session_name = "first"
+            screen._history_generation = 0
+            screen._history_before_turn = None
+            screen._history_has_more = False
+            screen._history_loading = False
+            screen._streamed_response_active = False
+            screen._show_tool_events = True
+            screen._goal_mode = True
+            screen._paused_execution = False
+            screen._pending_approval_ids = set()
+            screen._pending_approval_requests = {}
+            screen._resolving_approval_ids = set()
+            first_release = asyncio.Event()
+
+            def query_one(_self, widget_type):
+                name = getattr(widget_type, "__name__", "")
+                if name == "StatusBar":
+                    return status
+                if widget_type is ApprovalBar:
+                    return approval
+                return log
+
+            async def request_history(_self, session_name, *, before_turn):
+                if session_name == "first":
+                    await first_release.wait()
+                return {
+                    "turns": [{
+                        "turn_index": 1,
+                        "messages": [{
+                            "role": "assistant",
+                            "blocks": [{"type": "text", "text": session_name}],
+                        }],
+                    }],
+                    "next_before_turn": None,
+                    "has_more": False,
+                }
+
+            async def check_status(_self, **_kwargs):
+                return None
+
+            screen.query_one = MethodType(query_one, screen)
+            screen._request_session_history = MethodType(request_history, screen)
+            screen._check_session_status = MethodType(check_status, screen)
+
+            first = asyncio.create_task(ChatScreen._load_session_view(screen, "first"))
+            await asyncio.sleep(0)
+            screen._session_name = "second"
+            await ChatScreen._load_session_view(screen, "second")
+            first_release.set()
+            await first
+            return log.pages, screen
+
+        pages, screen = asyncio.run(scenario())
+
+        self.assertEqual([(["second"], False)], pages)
+        self.assertFalse(screen._show_tool_events)
+        self.assertFalse(screen._goal_mode)
 
     def test_log_scroll_actions_work_when_input_has_focus(self):
         class FakeLog:
@@ -1012,6 +1235,7 @@ class TuiChatLogTest(unittest.TestCase):
                 self.home = 0
                 self.bottom = 0
                 self.resumed = 0
+                self.history_requests = 0
 
             def pause_auto_scroll(self):
                 self.paused += 1
@@ -1034,6 +1258,9 @@ class TuiChatLogTest(unittest.TestCase):
             def call_after_refresh(self, callback):
                 callback()
 
+            def request_older_history_if_needed(self):
+                self.history_requests += 1
+
         log = FakeLog()
         screen = ChatScreen.__new__(ChatScreen)
 
@@ -1053,6 +1280,7 @@ class TuiChatLogTest(unittest.TestCase):
         self.assertEqual(1, log.home)
         self.assertEqual(1, log.bottom)
         self.assertEqual(1, log.resumed)
+        self.assertEqual(2, log.history_requests)
 
     def test_screen_mouse_scroll_pauses_log_follow_tail(self):
         class FakeLog:

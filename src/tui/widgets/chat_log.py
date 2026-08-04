@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import time
+from contextlib import nullcontext
 from dataclasses import dataclass
 
 from rich.markdown import Markdown
@@ -10,6 +11,7 @@ from rich.errors import MarkupError
 from rich.text import Text
 from textual import events
 from textual.containers import VerticalScroll
+from textual.message import Message
 from textual.widgets import Static
 
 
@@ -50,6 +52,18 @@ class _LogEntry:
     reasoning: _ReasoningState | None = None
 
 
+@dataclass(frozen=True)
+class HistoryEntry:
+    """Frontend-safe historical content ready for ChatLog rendering."""
+
+    mode: str
+    content: str = ""
+    char_count: int = 0
+    redacted: bool = False
+    display: str = "metadata"
+    expanded: bool = False
+
+
 class ChatLog(VerticalScroll):
     """Append-only event log with an incrementally updated stream block.
 
@@ -63,6 +77,9 @@ class ChatLog(VerticalScroll):
     prefixes are periodically committed as Markdown widgets. The final tail is
     rendered once when the response completes.
     """
+
+    class HistoryTopReached(Message):
+        """Posted once when user navigation reaches pageable history top."""
 
     def __init__(self) -> None:
         super().__init__(id="log")
@@ -83,6 +100,9 @@ class ChatLog(VerticalScroll):
         self._user_scroll_paused: bool = False
         self._user_scroll_pause_until: float = 0.0
         self._force_follow_until: float = 0.0
+        self._history_has_more: bool = False
+        self._history_loading: bool = False
+        self._history_top_notified: bool = False
 
     def on_mount(self) -> None:
         """Start a fixed-rate render pump for buffered stream tokens."""
@@ -127,6 +147,82 @@ class ChatLog(VerticalScroll):
         self._capture_scroll_follow_state()
         if content:
             self._append_committed(_LogEntry(content, "markdown"))
+
+    def replace_history(self, entries: list[HistoryEntry], *, has_more: bool) -> None:
+        """Replace the current visual state with one initial history page."""
+        self.clear()
+        self._entries = [self._history_entry(entry) for entry in entries]
+        self._reasoning_target_index = self._latest_reasoning_index()
+        self._history_has_more = bool(has_more)
+        self._rebuild_visible_entries()
+        self.call_after_refresh(self.force_scroll_to_bottom)
+
+    def prepend_history(self, entries: list[HistoryEntry], *, has_more: bool) -> None:
+        """Insert an older page while preserving the user's visual anchor."""
+        if not entries:
+            self.set_history_loading(False, has_more=has_more)
+            return
+        self.flush_tokens()
+        old_scroll = float(self.scroll_y)
+        old_max_scroll = float(self.max_scroll_y)
+        added = [self._history_entry(entry) for entry in entries]
+        shift = len(added)
+        self._entries = [*added, *self._entries]
+        if self._task_progress_index is not None:
+            self._task_progress_index += shift
+        if self._reasoning_index is not None:
+            self._reasoning_index += shift
+        self._reasoning_target_index = self._latest_reasoning_index()
+        self._history_has_more = bool(has_more)
+        self._history_loading = False
+        self._history_top_notified = False
+        self._rebuild_visible_entries()
+        self.pause_auto_scroll()
+
+        def restore_anchor() -> None:
+            delta = max(0.0, float(self.max_scroll_y) - old_max_scroll)
+            self.scroll_to(y=old_scroll + delta, animate=False)
+
+        self.call_after_refresh(restore_anchor)
+
+    def set_history_loading(self, loading: bool, *, has_more: bool | None = None) -> None:
+        """Update pagination state without coupling ChatLog to RPC transport."""
+        self._history_loading = bool(loading)
+        if has_more is not None:
+            self._history_has_more = bool(has_more)
+        if not loading:
+            self._history_top_notified = False
+
+    def request_older_history_if_needed(self) -> None:
+        """Schedule one pagination request when the user is at the loaded top."""
+        self.call_after_refresh(self._maybe_request_older_history)
+
+    @staticmethod
+    def _history_entry(entry: HistoryEntry) -> _LogEntry:
+        if entry.mode == "reasoning":
+            return _LogEntry(
+                "",
+                "reasoning",
+                _ReasoningState(
+                    content=entry.content,
+                    char_count=entry.char_count,
+                    redacted=entry.redacted,
+                    expanded=entry.expanded,
+                    finished=True,
+                    display=entry.display,
+                ),
+            )
+        return _LogEntry(entry.content, entry.mode)
+
+    def _latest_reasoning_index(self) -> int | None:
+        return next(
+            (
+                index
+                for index in range(len(self._entries) - 1, -1, -1)
+                if self._entries[index].mode == "reasoning"
+            ),
+            None,
+        )
 
     def write_tool_event(self, markup: str) -> None:
         """Store one collapsible tool event and mount it only when expanded."""
@@ -342,6 +438,9 @@ class ChatLog(VerticalScroll):
         self._user_scroll_paused = False
         self._user_scroll_pause_until = 0.0
         self._force_follow_until = 0.0
+        self._history_has_more = False
+        self._history_loading = False
+        self._history_top_notified = False
         self.remove_children()
 
 
@@ -382,12 +481,27 @@ class ChatLog(VerticalScroll):
             return
         if new_scroll < old_scroll:
             self.pause_auto_scroll()
+            self.call_after_refresh(self._maybe_request_older_history)
             return
         if self._user_scroll_paused and self._is_at_vertical_end():
             self._user_scroll_paused = False
             self._auto_scroll = True
             self._user_scroll_pause_until = 0.0
             self._force_follow_until = 0.0
+
+    def _maybe_request_older_history(self) -> None:
+        """Notify the screen once when user scrolling reaches the loaded top."""
+        if (
+            not self._history_has_more
+            or self._history_loading
+            or self._history_top_notified
+            or not self._user_scroll_paused
+        ):
+            return
+        if float(self.scroll_y) > 1:
+            return
+        self._history_top_notified = True
+        self.post_message(self.HistoryTopReached())
 
     def on_mouse_scroll_up(self, event: events.MouseScrollUp) -> None:
         """Mouse-wheel upward means the user wants to inspect history."""
@@ -396,6 +510,7 @@ class ChatLog(VerticalScroll):
             self._on_mouse_scroll_up(event)
         except Exception:
             self.scroll_up(animate=False)
+        self.call_after_refresh(self._maybe_request_older_history)
 
     def on_mouse_scroll_down(self, event: events.MouseScrollDown) -> None:
         """Scroll down normally and resume follow-tail only at the bottom."""
@@ -501,19 +616,25 @@ class ChatLog(VerticalScroll):
 
     def _rebuild_visible_entries(self) -> None:
         """Recreate mounted widgets after a visibility-only display change."""
-        self.remove_children()
-        self._active_token_widget = None
-        self._task_progress_widget = None
-        for index, entry in enumerate(self._entries):
-            if entry.mode == "tool" and not self._tool_events_visible:
-                continue
-            widget = self._append_entry(entry)
-            if index == self._task_progress_index:
-                self._task_progress_widget = widget
-            if index == self._reasoning_index:
-                self._reasoning_widget = widget
-            if index == self._reasoning_target_index and entry.mode == "reasoning":
-                self._reasoning_target_index = index
+        batch = (
+            self.app.batch_update()
+            if getattr(self, "_parent", None) is not None
+            else nullcontext()
+        )
+        with batch:
+            self.remove_children()
+            self._active_token_widget = None
+            self._task_progress_widget = None
+            for index, entry in enumerate(self._entries):
+                if entry.mode == "tool" and not self._tool_events_visible:
+                    continue
+                widget = self._append_entry(entry)
+                if index == self._task_progress_index:
+                    self._task_progress_widget = widget
+                if index == self._reasoning_index:
+                    self._reasoning_widget = widget
+                if index == self._reasoning_target_index and entry.mode == "reasoning":
+                    self._reasoning_target_index = index
 
     def _new_widget(self, entry: _LogEntry) -> Static:
         """Create a Textual widget for one log entry.

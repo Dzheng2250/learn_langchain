@@ -11,6 +11,7 @@ from typing import TYPE_CHECKING, Protocol
 
 from src.core.context.models import AgentContextState
 from src.core.maintenance.models import MaintenanceJobSpec
+from src.core.history_models import ConversationHistoryPage
 from src.core.workspace.models import SessionContext
 
 if TYPE_CHECKING:
@@ -34,6 +35,19 @@ class ConversationHistoryStore(Protocol):
 
     def rebuild_recent(self, session: SessionContext) -> int:
         """Rebuild compact recent context from durable history."""
+
+
+class ConversationHistoryReader(Protocol):
+    """Read immutable conversation pages without exposing a storage backend."""
+
+    def list_page(
+        self,
+        session: SessionContext,
+        *,
+        before_turn: int | None,
+        limit_turns: int,
+    ) -> ConversationHistoryPage:
+        """Return complete Turns ordered from oldest to newest."""
 
 
 class SessionStore(Protocol):

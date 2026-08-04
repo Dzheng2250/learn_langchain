@@ -14,6 +14,7 @@ from .execution import (
 )
 from .state import (
     ConversationHistoryStore,
+    ConversationHistoryReader,
     ExecutionStore,
     MaintenanceQueue,
     MemoryRetrievalStore,
@@ -28,6 +29,7 @@ __all__ = [
     "AgentSessionStore",
     "CheckpointStore",
     "ConversationHistoryStore",
+    "ConversationHistoryReader",
     "ExecutionFailureStore",
     "ExecutionLifecycleStore",
     "ExecutionPauseStore",

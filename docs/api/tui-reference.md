@@ -47,6 +47,7 @@
 - 自动加载 `runtime_dir` 下的 auth token。
 - 启动时自动发现 workspace 根目录。
 - 自动 ping Core daemon 验证连接。
+- 启动和重新进入时自动加载当前 Session 最近 30 个完整 Turn。
 - 启动时自动检查 session 是否有暂停的 execution。
 - 状态栏实时反映连接状态（绿/黄/红）。
 
@@ -61,6 +62,9 @@
 ### Session 管理
 
 - 通过 `/session` 切换 session 名称。
+- 切换后清空旧视图并加载目标 Session 历史、上下文额度、暂停状态和审批模式；Agent 请求执行期间禁止切换。
+- 历史 reasoning 和工具过程默认折叠，继续分别由 `Ctrl+T` 和 `Ctrl+O` 控制。
+- 向上滚动到已加载内容顶部时自动读取更早的完整 Turn；前插历史后保持当前可视位置。
 - 显示暂停 execution 的恢复提示。
 - `/resume` 恢复暂停 execution。
 - `/discard` 丢弃暂停 execution。
@@ -97,7 +101,7 @@
 
 ### UI 功能
 
-- Session 列表与历史查询。
+- Session 列表选择器。
 - 消息编辑或删除。
 - Markdown / 代码渲染。
 - 文件上传或图片展示。

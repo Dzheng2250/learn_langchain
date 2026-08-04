@@ -83,7 +83,7 @@ from src.core.maintenance.handlers import (
 from src.core.memory.extractor import MemoryCandidateExtractor
 from src.core.resource_activity import ResourceActivityQueryService
 from src.core.adapters.sqlite.resource_activity import SQLiteResourceActivityRepository
-from src.core.session import SessionLifecycleService
+from src.core.session import SessionHistoryQueryService, SessionLifecycleService
 from src.core.session.checkpoint_cleanup import SessionCheckpointCleanupQueue
 from src.core.session.status import SessionStatusReader
 from src.core.state import (
@@ -428,6 +428,11 @@ class CoreContainer(containers.DeclarativeContainer):
         checkpoint_cleanup=session_checkpoint_cleanup,
         status_reader=session_status_reader,
     )
+    session_history_service = providers.Factory(
+        SessionHistoryQueryService,
+        lifecycle_store=session_lifecycle_store,
+        history_reader=conversation_history_store,
+    )
 
     router = providers.Singleton(
         RpcRouter,
@@ -447,6 +452,7 @@ class CoreContainer(containers.DeclarativeContainer):
         session_service=session_lifecycle_service,
         approval_service=tool_approval_service,
         resource_activity_service=resource_activity_service,
+        session_history_service=session_history_service,
     )
     transport = providers.Factory(
         create_transport,
