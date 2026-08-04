@@ -422,6 +422,19 @@ class TuiChatLogTest(unittest.TestCase):
         self.assertIsInstance(rendered, Text)
         self.assertIn("[/[/dim]", rendered.plain)
 
+    def test_reasoning_deltas_render_once_on_the_next_stream_frame(self):
+        log = self._fake_log()
+        ChatLog.start_reasoning(log, expanded=True, display="collapsed")
+        widget = log.widgets[0]
+        before = _rendered_text(widget)
+
+        ChatLog.append_reasoning(log, "first", char_count=5)
+        ChatLog.append_reasoning(log, " second", char_count=12)
+
+        self.assertEqual(before, _rendered_text(widget))
+        self.render_frame(log)
+        self.assertIn("first second", _rendered_text(widget))
+
     def test_malformed_structural_markup_falls_back_to_literal_text(self):
         markup = "[dim]broken[/[/dim]"
 
@@ -692,6 +705,141 @@ class TuiChatLogTest(unittest.TestCase):
 
         self.render_frame(log)
         self.assertEqual("hello", _rendered_text(log.widgets[-1]))
+
+    def test_agent_start_event_clears_stale_paused_status(self):
+        log = self._fake_log()
+        paused_values = []
+        status = SimpleNamespace(set_paused=paused_values.append)
+        screen = ChatScreen.__new__(ChatScreen)
+        screen._paused_execution = True
+        screen._streamed_response_active = False
+
+        def query_one(_self, widget_type):
+            return status if getattr(widget_type, "__name__", "") == "StatusBar" else log
+
+        screen.query_one = MethodType(query_one, screen)
+
+        asyncio.run(
+            ChatScreen._render_event(
+                screen,
+                {
+                    "event": "step",
+                    "data": {"type": "agent_start", "message": "Agent turn started."},
+                },
+            )
+        )
+
+        self.assertFalse(screen._paused_execution)
+        self.assertEqual([False], paused_values)
+
+    def test_context_usage_event_updates_status_bar_immediately(self):
+        log = self._fake_log()
+        usage_values = []
+        status = SimpleNamespace(set_usage=usage_values.append)
+        screen = ChatScreen.__new__(ChatScreen)
+        screen._streamed_response_active = False
+        screen.query_one = MethodType(
+            lambda _self, widget_type: (
+                status if getattr(widget_type, "__name__", "") == "StatusBar" else log
+            ),
+            screen,
+        )
+
+        asyncio.run(
+            ChatScreen._render_event(
+                screen,
+                {
+                    "event": "context_usage_updated",
+                    "data": {
+                        "context_tokens": 125,
+                        "input_tokens": 100,
+                        "output_tokens": 25,
+                        "estimated": False,
+                    },
+                },
+            )
+        )
+
+        self.assertEqual([125], usage_values)
+
+    def test_terminal_rpc_result_clears_stale_paused_status(self):
+        log = self._fake_log()
+        paused_values = []
+        status = SimpleNamespace(
+            set_paused=paused_values.append,
+            set_usage=lambda _value: None,
+        )
+        screen = ChatScreen.__new__(ChatScreen)
+        screen._paused_execution = True
+        screen.query_one = MethodType(
+            lambda _self, widget_type: (
+                status if getattr(widget_type, "__name__", "") == "StatusBar" else log
+            ),
+            screen,
+        )
+
+        ChatScreen._handle_result(screen, {"status": "ok"})
+
+        self.assertFalse(screen._paused_execution)
+        self.assertEqual([False], paused_values)
+
+    def test_manual_resume_optimistically_clears_paused_status(self):
+        paused_values = []
+        status = SimpleNamespace(
+            set_paused=paused_values.append,
+            set_disconnected=lambda _reason: None,
+        )
+        log = SimpleNamespace(
+            force_scroll_to_bottom=lambda: None,
+            write_event=lambda _markup: None,
+        )
+        screen = ChatScreen.__new__(ChatScreen)
+        screen._auth_token = "token"
+        screen._paused_execution = True
+        screen._busy = False
+        screen._config = SimpleNamespace(
+            core_host="127.0.0.1",
+            core_port=1,
+            request_timeout=1,
+        )
+        screen._workspace_root = "."
+        screen._session_name = "default"
+        screen._inflight_task = None
+        screen._inflight_client = None
+        observed_during_request = []
+
+        def query_one(_self, widget_type):
+            return status if getattr(widget_type, "__name__", "") == "StatusBar" else log
+
+        screen.query_one = MethodType(query_one, screen)
+        screen._on_event = lambda _event: None
+        screen._wait_for_event_queue = MethodType(
+            lambda _self: _completed_coroutine(),
+            screen,
+        )
+        screen._handle_result = lambda _result: None
+        screen._clear_inflight = lambda _task, _client: None
+
+        class FakeClient:
+            async def connect(self):
+                return None
+
+            async def request(self, *_args, **_kwargs):
+                observed_during_request.append(screen._paused_execution)
+                return {"status": "ok"}
+
+            async def close(self):
+                return None
+
+        async def run():
+            with patch("src.tui.screens.chat.AsyncCoreClient", return_value=FakeClient()):
+                await ChatScreen._resume_execution(screen)
+
+        asyncio.run(run())
+
+        self.assertEqual([False], observed_during_request)
+        self.assertFalse(screen._paused_execution)
+        self.assertEqual([False], paused_values)
 
     def test_action_submit_starts_background_input_task(self):
         class FakeInputBar:

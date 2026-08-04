@@ -92,6 +92,7 @@ class ChatLog(VerticalScroll):
         self._reasoning_widget: Static | None = None
         self._reasoning_index: int | None = None
         self._reasoning_target_index: int | None = None
+        self._reasoning_dirty: bool = False
         self._stream_committed_length: int = 0
         self._markdown_render_limit: int = MARKDOWN_RENDER_LIMIT
         self._partial_markdown_min_chars: int = PARTIAL_MARKDOWN_MIN_CHARS
@@ -121,6 +122,7 @@ class ChatLog(VerticalScroll):
         """
         self._capture_scroll_follow_state()
         self._render_token_buffer()
+        self._render_pending_reasoning()
 
     def flush_tokens(self) -> None:
         """Finish the current streamed response before writing another event."""
@@ -256,6 +258,7 @@ class ChatLog(VerticalScroll):
         self._reasoning_index = len(self._entries) - 1
         self._reasoning_target_index = self._reasoning_index
         self._reasoning_widget = self._append_entry(entry)
+        self._reasoning_dirty = False
         self._scroll_to_bottom()
 
     def append_reasoning(
@@ -277,7 +280,7 @@ class ChatLog(VerticalScroll):
             state.content += content
         state.char_count = max(state.char_count, int(char_count or 0))
         state.redacted = state.redacted or redacted
-        self._replace_reasoning_entry(index, widget, state)
+        self._reasoning_dirty = True
 
     def finish_reasoning(self, *, char_count: int = 0, redacted: bool = False) -> None:
         """Mark the active reasoning block complete."""
@@ -291,7 +294,19 @@ class ChatLog(VerticalScroll):
         state.char_count = max(state.char_count, int(char_count or 0))
         state.redacted = state.redacted or redacted
         state.finished = True
+        self._reasoning_dirty = False
         self._replace_reasoning_entry(index, widget, state)
+
+    def _render_pending_reasoning(self) -> None:
+        """Render accumulated reasoning deltas at the shared stream frame rate."""
+        if not getattr(self, "_reasoning_dirty", False):
+            return
+        entry, widget, index = self._active_reasoning_entry()
+        if entry is None or widget is None or index is None or entry.reasoning is None:
+            self._reasoning_dirty = False
+            return
+        self._reasoning_dirty = False
+        self._replace_reasoning_entry(index, widget, entry.reasoning)
 
     def toggle_reasoning(self) -> None:
         """Expand or collapse every reasoning block, including history."""
@@ -433,6 +448,7 @@ class ChatLog(VerticalScroll):
         self._reasoning_widget = None
         self._reasoning_index = None
         self._reasoning_target_index = None
+        self._reasoning_dirty = False
         self._stream_committed_length = 0
         self._auto_scroll = True
         self._user_scroll_paused = False

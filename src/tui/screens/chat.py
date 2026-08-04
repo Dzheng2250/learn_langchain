@@ -639,6 +639,8 @@ class ChatScreen(Screen):
             return
 
         try:
+            was_paused = self._paused_execution
+            self._set_execution_paused(False)
             result = await client.request(
                 "session.resume",
                 {
@@ -650,14 +652,19 @@ class ChatScreen(Screen):
                 on_event=self._on_event,
             )
         except CoreAuthenticationError:
+            self._set_execution_paused(was_paused)
             log.write_event("[red]Authentication failed.[/red]")
         except CoreConnectionInterruptedError:
+            self._set_execution_paused(was_paused)
             log.write_event("[red]Connection lost mid-stream.[/red]")
         except CoreRequestError as exc:
+            self._set_execution_paused(was_paused)
             log.write_event(f"[red]Resume failed: {exc}[/red]")
         except asyncio.CancelledError:
+            self._set_execution_paused(was_paused)
             pass
         except Exception as exc:
+            self._set_execution_paused(was_paused)
             log.write_event(f"[red]Unexpected error: {exc}[/red]")
         else:
             await self._wait_for_event_queue()
@@ -994,7 +1001,6 @@ class ChatScreen(Screen):
             return
         self._ensure_event_worker()
         await queue.put(params)
-        await self._yield_to_textual()
 
     def _ensure_event_worker(self) -> None:
         """Start the background UI event consumer for real mounted screens."""
@@ -1006,6 +1012,7 @@ class ChatScreen(Screen):
 
     async def _drain_event_queue(self) -> None:
         """Render queued Core events outside the socket read loop."""
+        events_since_yield = 0
         while True:
             params = await self._event_queue.get()
             try:
@@ -1017,7 +1024,10 @@ class ChatScreen(Screen):
                     self._log_event_render_failure(exc)
             finally:
                 self._event_queue.task_done()
-            await self._yield_to_textual()
+            events_since_yield += 1
+            if self._event_queue.empty() or events_since_yield >= 32:
+                await self._yield_to_textual()
+                events_since_yield = 0
 
     def _log_event_render_failure(self, exc: Exception) -> None:
         """Report event-render failures without killing the queue consumer."""
@@ -1044,6 +1054,11 @@ class ChatScreen(Screen):
             self._streamed_response_active = False
             return
         data = params.get("data", {})
+        if event == "context_usage_updated":
+            self._update_context_usage(data)
+            return
+        if event == "step" and data.get("type") == "agent_start":
+            self._set_execution_paused(False)
         if event == "tool_approval_required":
             request_id = str(data.get("request_id") or "")
             if request_id:
@@ -1119,21 +1134,19 @@ class ChatScreen(Screen):
         """Handle done event status and context usage."""
         self._update_context_usage(data)
         if status == "paused":
-            self._paused_execution = True
-            self.query_one(StatusBar).set_paused(True)
+            self._set_execution_paused(True)
             # Show resume hint in the log
             log = self.query_one(ChatLog)
             log.write_event(
                 "[yellow]Send /resume to continue or /discard to cancel.[/yellow]"
             )
             self.call_after_refresh(self._show_next_approval)
-        elif status == "ok":
-            if self._paused_execution:
-                self._paused_execution = False
-                self.query_one(StatusBar).set_paused(False)
-            if self._goal_mode:
-                self._goal_mode = False
-                self.query_one(StatusBar).set_goal_mode(False)
+        elif status in {"ok", "idle", "completed", "discarded", "terminated"}:
+            self._set_execution_paused(False)
+            if status == "ok":
+                if self._goal_mode:
+                    self._goal_mode = False
+                    self.query_one(StatusBar).set_goal_mode(False)
 
     # ── result handling ─────────────────────────────────────────────
 
@@ -1153,10 +1166,12 @@ class ChatScreen(Screen):
             f"{dur}"
         )
         self.query_one(ChatLog).write_event(summary)
-        if status == "paused" and stop_reason == "tool_approval":
-            self._paused_execution = True
-            self.query_one(StatusBar).set_paused(True)
-            self.call_after_refresh(self._show_next_approval)
+        if status == "paused":
+            self._set_execution_paused(True)
+            if stop_reason == "tool_approval":
+                self.call_after_refresh(self._show_next_approval)
+        elif status in {"ok", "idle", "completed", "discarded", "terminated"}:
+            self._set_execution_paused(False)
 
     # ── helpers ─────────────────────────────────────────────────────
 
@@ -1174,6 +1189,11 @@ class ChatScreen(Screen):
         except (TypeError, ValueError):
             return
         self.query_one(StatusBar).set_usage(context_tokens)
+
+    def _set_execution_paused(self, paused: bool) -> None:
+        """Keep the local execution latch and status bar in one state."""
+        self._paused_execution = bool(paused)
+        self.query_one(StatusBar).set_paused(self._paused_execution)
 
     def _log_error(self, message: str) -> None:
         self.query_one(ChatLog).write_event(f"[red]{message}[/red]")
