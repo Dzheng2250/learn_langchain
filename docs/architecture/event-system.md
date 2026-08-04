@@ -37,6 +37,31 @@
 客户端断开后，Response Event 停止发送，但已经开始的 Agent Turn 继续执行并产生
 Telemetry Event。
 
+<a id="observability-channel-map"></a>
+
+### 观测通道与权威边界
+
+```mermaid
+flowchart LR
+    Runtime["Core Runtime"] --> Stream["agent.event<br/>请求内流式 UX"]
+    Stream --> Frontend["CLI / TUI / 其他前端"]
+    Runtime --> Telemetry["Telemetry Event<br/>脱敏事件与指标"]
+    Telemetry --> EventDB["telemetry/events.db<br/>可配置 Sink"]
+    Runtime --> Trace["System Trace<br/>跨层诊断时间线"]
+    Trace --> JSONL["traces/.../daemon.jsonl"]
+    Runtime --> Ledger["Resource Activity<br/>资源读写事实账本"]
+    Ledger --> StateDB["state.db<br/>resource_activities"]
+    StateDB --> RPC["resource_activity.summary/list"]
+    RPC --> Frontend
+    Runtime --> Business["state.db + checkpoints.db<br/>业务状态与恢复真相"]
+```
+
+- `agent.event` 为前端实时体验服务，断线后可以丢失，不能作为历史或恢复来源。
+- Telemetry 用于统计和领域诊断，Sink 失败不得改变业务结果。
+- System Trace 用于把 IPC、Agent、LLM 与 Tool 串成排障时间线，不参与恢复或计费。
+- Resource Activity 是可查询的资源读写元数据账本，前端通过稳定 RPC 消费，不直接读取 SQLite。
+- 真正决定 Session、Execution 和 graph 如何恢复的仍是业务状态与 checkpoint。
+
 ## 2. 一条 Telemetry Event 如何流转
 
 以工具调用开始事件为例：

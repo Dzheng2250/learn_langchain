@@ -16,6 +16,8 @@
 
 ## 执行链
 
+<a id="tool-approval-map"></a>
+
 ```text
 ToolRegistry
   -> HookDispatcher.PreToolUse
@@ -29,6 +31,28 @@ ToolRegistry
 ```
 
 `ToolRegistry` 只管理不可变元数据与 Agent audience，不负责授权。`ToolSpec` 必须声明 capability、approval、sandbox、network 和 timeout。`ObservedToolNode` 只作为 LangGraph 适配器，具体策略由 `ToolExecutionPipeline` 处理。
+
+```mermaid
+flowchart TD
+    Call["LLM tool call"] --> Registry["ToolRegistry<br/>能力与受众"]
+    Registry --> PreHook["PreToolUse Hook"]
+    PreHook --> Validate["参数 schema 重新校验"]
+    Validate --> Policy["ToolPolicyEngine"]
+    Policy -->|"DENY"| Rejected["结构化拒绝结果"]
+    Policy -->|"ALLOW"| Enforcer["CapabilityEnforcer<br/>路径 / 沙箱 / 网络硬边界"]
+    Policy -->|"ASK"| Persist["持久化 approval request"]
+    Persist --> Interrupt["LangGraph interrupt<br/>保存 checkpoint"]
+    Interrupt --> Frontend["任意前端<br/>approval.resolve"]
+    Frontend --> Resume["Command(resume)"]
+    Resume --> Recheck["重新评估策略与参数"]
+    Recheck --> Enforcer
+    Enforcer --> Execute["ToolExecutor"]
+    Execute --> PostHook["PostToolUse Hook"]
+    PostHook --> Result["ToolMessage + Telemetry<br/>+ resource activity"]
+```
+
+审批只确认用户对本次动作的意图，不能绕过 `CapabilityEnforcer`。等待审批期间 Workspace、规则或
+符号链接可能变化，因此恢复后必须重新校验，而不能把旧的 `ALLOW` 当作永久执行令牌。
 
 Tool 安全模块不再定义私有 Hook。它消费系统级 `PreToolUse`、`PermissionRequest` 和 `PostToolUse` 三个相位；完整模型、配置和失败策略见 [Agent 生命周期 Hook 架构](/docs/architecture/agent-lifecycle-hooks.md)。参数替换后必须重新执行 schema 与权限校验，Hook 不能绕过硬边界或创建永久授权。
 

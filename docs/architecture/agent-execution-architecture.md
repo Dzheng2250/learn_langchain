@@ -78,6 +78,39 @@ CoreApp
 - `ToolRegistry`：集中声明工具能力、受众和风险等级。
 - `EventBus`：将 Telemetry 观测事件广播到持久化或调试 sink。
 
+<a id="execution-identity-map"></a>
+
+## Session、Turn 与可恢复执行层级
+
+```mermaid
+flowchart TD
+    Workspace["Workspace"] --> Session["Session<br/>长期会话边界"]
+    Session --> Completed["已提交 Turn 1..N<br/>正式消息历史"]
+    Session --> Pending["待完成 Turn N+1"]
+    Pending --> Execution["Execution<br/>可跨请求恢复的执行身份"]
+    Execution --> Grant0["Grant 0<br/>首次 chat 的有界预算"]
+    Execution --> GrantN["Grant 1..N<br/>每次 resume 的新预算"]
+    Grant0 --> Slice00["Slice 0"]
+    Grant0 --> Slice01["Slice 1"]
+    GrantN --> SliceN0["Slice 0"]
+    Slice00 --> Step1["Graph step"]
+    Slice00 --> Step2["Graph step"]
+    Step1 -. "durability=sync" .-> Checkpoint["checkpoints.db<br/>最近完整图状态"]
+    Step2 -. "完成后推进" .-> Checkpoint
+    Execution -->|"成功最终化"| Completed
+```
+
+- `Turn` 是最终成功提交的会话轮次；暂停中的工作仍属于待完成 Turn，不进入正式消息历史。
+- `Execution` 是持久实体，可经历多次 `chat/resume/approval.resolve` 请求。
+- `Grant` 是一次请求授予的逻辑预算批次，以 `grant_index` 表达，不是独立数据库表。
+- `Slice` 是 Grant 内一次受图步数限制的执行片段，对应 `execution_slices` 记录；每个新 Grant 的
+  `slice_index` 从 `0` 重新开始。
+- checkpoint 的恢复粒度是最后一个完整 LangGraph step（superstep），不是整个 Slice。节点内尚未完成的
+  流式草稿不会成为可恢复状态，恢复时会从最近完整 checkpoint 重新执行该节点。
+
+因此，系统同时保留两类真相：`state.db` 记录 Execution/Turn 的业务生命周期，`checkpoints.db`
+记录未完成图的可恢复计算状态。二者不能互相替代。
+
 ## 一次请求的数据流
 
 ```text
