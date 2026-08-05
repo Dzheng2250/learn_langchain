@@ -24,7 +24,7 @@ def inline_approval_options(persistable: bool) -> tuple[str, ...]:
 def approval_request_detail(request: dict[str, Any]) -> str:
     """Build a defensive, content-free summary for one approval request."""
     args = dict(request.get("args") or {})
-    for key in ("content", "old_text", "new_text"):
+    for key in ("content", "old_text", "new_text", "patch"):
         value = args.get(key)
         if isinstance(value, str):
             args[key] = f"<{len(value)} chars omitted>"

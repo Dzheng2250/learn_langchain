@@ -16,6 +16,7 @@ from src.core.tools.security.models import PolicyAction, ToolCallContext
 from src.core.tools.security.policy import DefaultToolPolicyEngine
 from src.core.tools.security.pipeline import ToolExecutionPipeline
 from src.core.tools.command_changes import create_staged_command_tools
+from src.core.tools.observed import conflicting_mutation_calls
 from src.core.tools.registry import create_workspace_toolset
 from src.core.tools.workspace_write import create_workspace_write_tools
 from src.core.tools.workspace import resolve_workspace_mutation_path
@@ -32,7 +33,14 @@ class WorkspaceWriteToolsTest(unittest.TestCase):
         self.root.mkdir(parents=True)
         self.addCleanup(shutil.rmtree, self.root, True)
         tools = create_workspace_write_tools(self.root, max_bytes=64)
-        self.write, self.replace, self.mkdir, self.move, self.delete = tools
+        (
+            self.write,
+            self.replace,
+            self.patch,
+            self.mkdir,
+            self.move,
+            self.delete,
+        ) = tools
 
     def test_write_replace_move_and_delete(self):
         result = self.write.invoke({"path": "src/demo.txt", "content": "alpha"})
@@ -49,6 +57,24 @@ class WorkspaceWriteToolsTest(unittest.TestCase):
         self.move.invoke({"source": "src/demo.txt", "destination": "archive/demo.txt"})
         self.delete.invoke({"path": "archive/demo.txt"})
         self.assertFalse((self.root / "archive/demo.txt").exists())
+
+    def test_patch_tool_updates_existing_file_and_returns_only_a_summary(self):
+        target = self.root / "sample.txt"
+        target.write_text("old\n", encoding="utf-8")
+        patch_text = (
+            "*** Begin Patch\n"
+            "*** Update File: sample.txt\n"
+            "@@\n"
+            "-old\n"
+            "+new\n"
+            "*** End Patch"
+        )
+
+        result = self.patch.invoke({"patch": patch_text})
+
+        self.assertEqual(target.read_text(encoding="utf-8"), "new\n")
+        self.assertIn("1 file(s), 1 hunk(s), +1/-1 lines", result)
+        self.assertNotIn("old", result)
 
     def test_resource_observation_uses_exact_ranges_and_both_move_uris(self):
         class Recorder:
@@ -124,7 +150,7 @@ class WorkspaceWriteToolsTest(unittest.TestCase):
 
 
     def test_recursive_operations_enforce_entry_limit(self):
-        _write, _replace, _mkdir, _move, delete = create_workspace_write_tools(
+        _write, _replace, _patch, _mkdir, _move, delete = create_workspace_write_tools(
             self.root, max_bytes=64, max_entries=1
         )
         nested = self.root / "many"
@@ -155,11 +181,54 @@ class WorkspaceWriteToolsTest(unittest.TestCase):
                 approval_repository=None,
             )
         parent_names = {tool.name for tool in toolset.parent_tools}
+        parent_model_names = {tool.name for tool in toolset.parent_model_tools}
         child_names = {tool.name for tool in toolset.base_tools}
         self.assertIn("write_workspace_file", parent_names)
         self.assertIn("delete_workspace_path", parent_names)
+        self.assertIn("apply_workspace_patch", parent_names)
+        self.assertIn("apply_workspace_patch", parent_model_names)
+        self.assertIn("replace_workspace_text", parent_names)
+        self.assertNotIn("replace_workspace_text", parent_model_names)
         self.assertNotIn("write_workspace_file", child_names)
         self.assertNotIn("delete_workspace_path", child_names)
+
+    def test_registered_patch_resolver_returns_validated_paths(self):
+        @tool
+        def delegate_to_subagent(task: str) -> str:
+            """Test delegate."""
+            return task
+
+        with patch("src.core.tools.registry.create_delegate_tool", return_value=delegate_to_subagent):
+            toolset = create_workspace_toolset(
+                WorkspaceContext(uuid4(), self.root), UnusedModelProvider(),
+                approval_repository=None,
+            )
+
+        spec = next(
+            item for item in toolset.registry.specs()
+            if item.name == "apply_workspace_patch"
+        )
+        patch_text = "\n".join((
+            "*** Begin Patch",
+            "*** Update File: sample.py",
+            "@@",
+            "-old",
+            "+new",
+            "*** End Patch",
+        ))
+        self.assertIsNotNone(spec.resource_resolver)
+        self.assertEqual(spec.resource_resolver({"patch": patch_text}), ("sample.py",))
+        self.assertEqual(
+            conflicting_mutation_calls(
+                [{
+                    "id": "invalid-patch",
+                    "name": "apply_workspace_patch",
+                    "args": {"patch": patch_text.removeprefix("*** Begin Patch\n")},
+                }],
+                {spec.name: spec},
+            ),
+            set(),
+        )
 
 
 class WorkspaceWritePolicyTest(unittest.TestCase):
@@ -190,7 +259,7 @@ class WorkspaceWritePolicyTest(unittest.TestCase):
         root = REPOSITORY_ROOT / ".test_tmp" / f"policy-{uuid4().hex}"
         root.mkdir(parents=True)
         self.addCleanup(shutil.rmtree, root, True)
-        write, _replace, _mkdir, _move, delete = create_workspace_write_tools(root, max_bytes=64)
+        write, _replace, _patch, _mkdir, _move, delete = create_workspace_write_tools(root, max_bytes=64)
         engine = DefaultToolPolicyEngine(self.Rules("allow"))
         overwrite = self.context(write, args={"path": "a.txt", "content": "x", "overwrite": True})
         decision = engine.evaluate(overwrite, rule_key="workspace-write:write_workspace_file:.", persistable=True)

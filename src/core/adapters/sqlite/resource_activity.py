@@ -23,31 +23,44 @@ class SQLiteResourceActivityRepository:
         self.max_items = max(1, int(max_items))
 
     def evidence_for(self, context) -> dict:
-        path = context.args.get("resource_uri") or context.args.get("path") or context.args.get("source")
-        if not path or not context.execution_id:
+        paths = tuple(getattr(context, "resource_paths", ()) or ())
+        if not paths:
+            path = context.args.get("resource_uri") or context.args.get("path") or context.args.get("source")
+            paths = (path,) if path else ()
+        if not paths or not context.execution_id:
             return {"status": "not_applicable", "activity_id": None}
-        value = str(path)
-        uri = (
-            value
-            if value.startswith(("db://", "http://", "https://", "ssh://", "command://"))
-            else workspace_uri(context.workspace_root, value)
-        )
+        resources = []
         with self.database.connect() as conn:
-            row = conn.execute(
-                """SELECT activity_id, observation_mode FROM resource_activities
-                   WHERE execution_id=? AND resource_uri=? AND operation IN ('read','summarize')
-                   ORDER BY sequence DESC LIMIT 1""",
-                (str(context.execution_id), uri),
-            ).fetchone()
-        if row is None:
-            return {"status": "missing", "activity_id": None, "resource_uri": uri}
-        if row["observation_mode"] in ("range", "summary"):
-            status = "partial"
-        elif row["observation_mode"] in ("scope_only", "unknown"):
-            status = "incomplete"
-        else:
-            status = "current"
-        return {"status": status, "activity_id": row["activity_id"], "resource_uri": uri}
+            for path in paths:
+                value = str(path)
+                uri = (
+                    value
+                    if value.startswith(("db://", "http://", "https://", "ssh://", "command://"))
+                    else workspace_uri(context.workspace_root, value)
+                )
+                row = conn.execute(
+                    """SELECT activity_id, observation_mode FROM resource_activities
+                       WHERE execution_id=? AND resource_uri=? AND operation IN ('read','summarize')
+                       ORDER BY sequence DESC LIMIT 1""",
+                    (str(context.execution_id), uri),
+                ).fetchone()
+                if row is None:
+                    resources.append({"status": "missing", "activity_id": None, "resource_uri": uri})
+                elif row["observation_mode"] in ("range", "summary"):
+                    resources.append({"status": "partial", "activity_id": row["activity_id"], "resource_uri": uri})
+                elif row["observation_mode"] in ("scope_only", "unknown"):
+                    resources.append({"status": "incomplete", "activity_id": row["activity_id"], "resource_uri": uri})
+                else:
+                    resources.append({"status": "current", "activity_id": row["activity_id"], "resource_uri": uri})
+        rank = {"current": 0, "partial": 1, "incomplete": 2, "missing": 3}
+        status = max((item["status"] for item in resources), key=rank.get)
+        activity_ids = [item["activity_id"] for item in resources if item["activity_id"]]
+        return {
+            "status": status,
+            "activity_id": activity_ids[0] if len(activity_ids) == 1 else None,
+            "activity_ids": activity_ids,
+            "resources": resources,
+        }
 
     def record(self, context, observation: ResourceObservation) -> str | None:
         if not self.enabled or not context.execution_id:

@@ -149,6 +149,8 @@ Execution 状态和 `checkpoints.db` 中的真实 checkpoint，修复崩溃留�
 写入可使用 `resource_activities` 的摘要对账，无法证明结果的外部副作用必须人工处理。
 `resource_activities` 只提供观测证据，不能替代执行账本。
 
+多文件 `apply_workspace_patch` 会把所有目标路径写入同一 Tool Ledger 调用的 before/after 状态。全部目标为 before 时可重试，全部为 after 时可重放结果，混合状态必须进入人工恢复；不能只凭某一个文件的 digest 判定整个补丁完成。
+
 LangGraph checkpoint 以完整工具批次为提交边界，而不是每个工具调用各写一次。批次内部恢复依赖
 `tool_ledger` 的小型终态记录；这既避免副作用重放，也避免工具数量线性放大 graph step 和 checkpoint 写入。
 

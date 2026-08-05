@@ -1,6 +1,7 @@
 """Convert completed LangGraph messages into stable step events."""
 
 from src.core.common.content import message_content_text
+from src.core.tools.workspace_patch import parse_workspace_patch
 
 TOOL_RESULT_PREVIEW_LIMIT = 600
 PLANNING_TOOL_PREVIEW_LIMIT = 8000
@@ -73,7 +74,9 @@ def step_events_from_message(message) -> list[dict]:
                 "data": {
                     "type": "tool_call_start",
                     "tool": tool_call.get("name"),
-                    "args": tool_call.get("args"),
+                    "args": safe_tool_args(
+                        str(tool_call.get("name") or ""), tool_call.get("args")
+                    ),
                     "id": tool_call.get("id"),
                 },
             }
@@ -108,3 +111,27 @@ def step_events_from_message(message) -> list[dict]:
         ]
 
     return []
+
+
+def safe_tool_args(tool_name: str, args):
+    """Remove large mutation bodies before tool calls cross the frontend API."""
+    if not isinstance(args, dict):
+        return args
+    if tool_name != "apply_workspace_patch":
+        return args
+    patch_text = str(args.get("patch") or "")
+    try:
+        parsed = parse_workspace_patch(patch_text)
+        return {
+            "valid": True,
+            "paths": list(parsed.paths),
+            "file_count": len(parsed.files),
+            "hunk_count": parsed.hunk_count,
+            "patch_chars": len(patch_text),
+        }
+    except ValueError:
+        return {
+            "valid": False,
+            "patch_chars": len(patch_text),
+            "error": "invalid_patch_syntax",
+        }

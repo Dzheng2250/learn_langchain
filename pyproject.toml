@@ -23,6 +23,7 @@ dependencies = [
     "bashlex>=0.18",
     "tenacity>=8.2",
     "filelock>=3.13",
+    "lark>=1.2",
 ]
 
 [project.scripts]

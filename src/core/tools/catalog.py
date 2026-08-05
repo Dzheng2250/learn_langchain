@@ -83,6 +83,8 @@ class ToolSpec:
     effect: ToolEffect = ToolEffect.READ_ONLY
     replay_policy: ToolReplayPolicy = ToolReplayPolicy.SAFE_RETRY
     parallel_safe: bool = False
+    model_visible: bool = True
+    resource_resolver: Callable[[dict], tuple[str, ...]] | None = None
 
     def __post_init__(self) -> None:
         if (self.tool is None) == (self.factory is None):
@@ -140,6 +142,18 @@ class ToolRegistry:
         """Return specifications visible to one Agent audience."""
         return tuple(spec for spec in self.specs() if audience in spec.audiences)
 
-    def tools_for(self, audience: ToolAudience) -> list:
-        """Return executable tool objects visible to one Agent audience."""
+    def model_specs_for(self, audience: ToolAudience) -> tuple[ToolSpec, ...]:
+        """Return specifications exposed in one Agent's model Tool Schema."""
+        return tuple(spec for spec in self.specs_for(audience) if spec.model_visible)
+
+    def execution_tools_for(self, audience: ToolAudience) -> list:
+        """Return every executable tool, including checkpoint compatibility tools."""
         return [spec.resolve_tool() for spec in self.specs_for(audience)]
+
+    def model_tools_for(self, audience: ToolAudience) -> list:
+        """Return only tools that new model responses may request."""
+        return [spec.resolve_tool() for spec in self.model_specs_for(audience)]
+
+    def tools_for(self, audience: ToolAudience) -> list:
+        """Compatibility alias for the complete executable tool view."""
+        return self.execution_tools_for(audience)

@@ -1,6 +1,7 @@
 """Single execution boundary for hooks, policy, approval, and observation."""
 
 import time
+import posixpath
 from pathlib import PurePosixPath
 
 from langchain_core.messages import ToolMessage
@@ -20,6 +21,7 @@ from src.core.tools.security.command_rules import command_rule_key
 from src.core.tools.security.enforcement import CapabilityEnforcer
 from src.core.resource_activity import bind_resource_activity, lookup_resource_evidence
 from src.core.state.tool_ledger import ToolRecoveryRequired
+from src.core.tools.errors import ToolSideEffectUncertain
 from src.core.tools.security.models import PolicyAction, ToolCallContext
 
 
@@ -50,10 +52,16 @@ class ToolExecutionPipeline:
             return self._contain_failure(request, context, exc)
 
     def _invoke_with_context(self, request, execute, context):
+        try:
+            evidence_context = self._resolve_resources(context)
+        except (OSError, ValueError):
+            evidence_context = context
         pre_payload = {
             "args": context.args,
             "resource_evidence": lookup_resource_evidence(
-                self.resource_activity_recorder, context, source="tool_pipeline"
+                self.resource_activity_recorder,
+                evidence_context,
+                source="tool_pipeline",
             ),
         }
         hook_context, hook_decision = self.hook_dispatcher.dispatch(
@@ -68,7 +76,9 @@ class ToolExecutionPipeline:
             context = context.with_args(replacement)
         try:
             request = self._validated_request(request, context)
-        except ValidationError as exc:
+            context = context.with_args(dict(request.tool_call.get("args") or {}))
+            context = self._resolve_resources(context)
+        except (ValidationError, OSError, ValueError) as exc:
             self._dispatch_post_tool(
                 context,
                 "error",
@@ -247,6 +257,13 @@ class ToolExecutionPipeline:
         except ToolBudgetExceeded as exc:
             self._record_failure(context, exc, started_at)
             raise
+        except ToolSideEffectUncertain as exc:
+            self._record_failure(context, exc, started_at)
+            raise ToolRecoveryRequired(
+                str(exc),
+                tool_call_id=context.tool_call_id,
+                tool_name=context.tool_name,
+            ) from exc
         except Exception as exc:
             self._dispatch_post_tool(
                 context,
@@ -372,10 +389,34 @@ class ToolExecutionPipeline:
         return "Approval context is missing required identity: " + ", ".join(missing)
 
     @staticmethod
+    def _resolve_resources(context):
+        resolver = context.spec.resource_resolver
+        if resolver is None:
+            return context
+        resolved = resolver(context.args)
+        if resolved is None:
+            raise ValueError("Tool resource resolver returned no paths.")
+        paths = tuple(resolved)
+        if not paths:
+            raise ValueError("Tool resource resolver returned no paths.")
+        return context.with_resource_paths(paths)
+
+    @staticmethod
     def _rule_identity(context):
         if ToolCapability.COMMAND_EXECUTION in context.spec.capabilities:
             return command_rule_key(str(context.args.get("command", "")))
         if ToolCapability.FILE_WRITE in context.spec.capabilities:
+            if context.resource_paths:
+                parents = [
+                    PurePosixPath(path.replace("\\", "/").strip("/")).parent.as_posix()
+                    for path in context.resource_paths
+                ]
+                try:
+                    scope = posixpath.commonpath(parents)
+                except ValueError:
+                    return f"workspace-write:{context.tool_name}:", False
+                scope = scope or "."
+                return f"workspace-write:{context.tool_name}:{scope}", True
             path = (
                 context.args.get("path")
                 or context.args.get("source")

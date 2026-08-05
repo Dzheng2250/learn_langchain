@@ -30,7 +30,7 @@ ToolRegistry
   -> Telemetry
 ```
 
-`ToolRegistry` 只管理不可变元数据与 Agent audience，不负责授权。`ToolSpec` 必须声明 capability、approval、sandbox、network、timeout、`effect`、`replay_policy` 和 `parallel_safe`。`LedgerBackedToolNode` 只作为 LangGraph 批次调度适配器，具体策略由 `ToolExecutionPipeline` 处理。
+`ToolRegistry` 只管理不可变元数据与 Agent audience，不负责授权。`ToolSpec` 必须声明 capability、approval、sandbox、network、timeout、`effect`、`replay_policy` 和 `parallel_safe`；兼容工具可声明 `model_visible=false`，参数内嵌多资源的工具必须声明 `resource_resolver`。`LedgerBackedToolNode` 只作为 LangGraph 批次调度适配器，具体策略由 `ToolExecutionPipeline` 处理。
 
 `effect` 区分 `read_only/internal_mutation/workspace_mutation/external`；`replay_policy` 区分
 `safe_retry/result_replay/reconcile/manual`。只有 `read_only + approval=none` 可以声明 `parallel_safe`。
@@ -57,6 +57,8 @@ flowchart TD
 
 审批只确认用户对本次动作的意图，不能绕过 `CapabilityEnforcer`。等待审批期间 Workspace、规则或
 符号链接可能变化，因此恢复后必须重新校验，而不能把旧的 `ALLOW` 当作永久执行令牌。
+
+多资源写入以 `resource_resolver` 返回的完整路径集作为审批身份；审批参数和前端事件只暴露路径与统计，不暴露文件正文或 patch。Workspace patch 的专用规则见 [Workspace 编辑架构](/docs/architecture/workspace-editing.md)。
 
 Tool 安全模块不再定义私有 Hook。它消费系统级 `PreToolUse`、`PermissionRequest` 和 `PostToolUse` 三个相位；完整模型、配置和失败策略见 [Agent 生命周期 Hook 架构](/docs/architecture/agent-lifecycle-hooks.md)。参数替换后必须重新执行 schema 与权限校验，Hook 不能绕过硬边界或创建永久授权。
 

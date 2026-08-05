@@ -635,6 +635,83 @@ class ToolSecurityTest(unittest.TestCase):
         self.assertEqual(1, len(post_hook.calls))
         self.assertEqual("success", post_hook.calls[0].payload["status"])
 
+    def test_pre_tool_replacement_revalidates_args_and_resource_paths(self):
+        calls = []
+
+        @tool
+        def edit(path: str) -> str:
+            """Record the path selected by a pre-tool hook."""
+            calls.append(path)
+            return "ok"
+
+        class ReplacePathHook:
+            def handle(self, _context):
+                return HookDecision(
+                    HookAction.REPLACE,
+                    payload={"args": {"path": "updated.txt"}},
+                )
+
+        class CapturePolicy:
+            def __init__(self):
+                self.contexts = []
+
+            def evaluate(self, context, **_kwargs):
+                self.contexts.append(context)
+                return PolicyDecision(PolicyAction.ALLOW)
+
+        hooks = HookRegistry()
+        hooks.register(HookSpec(
+            "replace-path",
+            HookPoint.PRE_TOOL_USE,
+            ReplacePathHook(),
+            matcher="^edit$",
+        ))
+        hooks.freeze()
+        policy = CapturePolicy()
+        spec = _spec(
+            name="edit",
+            tool=edit,
+            risk=ToolRisk.READ_ONLY,
+            capabilities=frozenset(),
+            approval=ApprovalRequirement.NONE,
+            resource_resolver=lambda args: (args["path"],),
+        )
+        pipeline = ToolExecutionPipeline(
+            {"edit": spec},
+            policy=policy,
+            approvals=ApprovalService(self.repository),
+            hook_dispatcher=HookDispatcher(hooks),
+        )
+        builder = StateGraph(MessagesState, context_schema=ToolExecutionContext)
+        builder.add_node("tools", ObservedToolNode([edit], pipeline=pipeline))
+        builder.add_edge(START, "tools")
+        builder.add_edge("tools", END)
+        graph = builder.compile(checkpointer=MemorySaver())
+
+        events = list(stream_graph_events(
+            graph,
+            [AIMessage(content="", tool_calls=[{
+                "name": "edit",
+                "args": {"path": "original.txt"},
+                "id": "replace-resource",
+                "type": "tool_call",
+            }])],
+            checkpoint_thread_id="replace-resource-thread",
+            tool_context=ToolExecutionContext(
+                self.context.workspace_id,
+                self.context.session_id,
+                self.context.execution_id,
+                self.context.run_id,
+                "parent",
+                self.context.workspace_root,
+            ),
+        ))
+
+        self.assertEqual("done", events[-1]["event"])
+        self.assertEqual(["updated.txt"], calls)
+        self.assertEqual({"path": "updated.txt"}, policy.contexts[0].args)
+        self.assertEqual(("updated.txt",), policy.contexts[0].resource_paths)
+
     def test_delegate_subagent_tools_use_the_configured_hook_dispatcher(self):
         calls = []
 

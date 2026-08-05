@@ -110,6 +110,7 @@ class WorkspaceRuntimeFactory:
             checkpointer=checkpointer,
             risk_by_name={spec.name: spec.risk for spec in toolset.registry.specs()},
             tool_pipeline=toolset.pipeline,
+            model_tools=toolset.parent_model_tools,
         )
         return WorkspaceRuntime(workspace, toolset, graph)
 

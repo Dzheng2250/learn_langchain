@@ -61,6 +61,7 @@
 - [Provider 错误处理](/docs/architecture/provider-error-handling.md)
 - [LLM Provider 边界](/docs/architecture/llm-provider-boundary.md)
 - [Anthropic 前缀缓存控制](/docs/architecture/prompt-cache-strategy.md)
+- [Workspace 编辑架构](/docs/architecture/workspace-editing.md)
 
 边界要求：
 
