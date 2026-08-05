@@ -123,15 +123,15 @@ CONTEXT_SOFT_LIMIT_RATIO = env_float(
 # Backward-compatible alias for older internal callers; new code should use
 # RECENT_TURN_LIMIT so tool-heavy Turns are not sliced in half.
 RECENT_MESSAGE_LIMIT = RECENT_TURN_LIMIT
-# Compression starts when the dynamic input budget, Turn count, or optional
-# fixed-token ceiling is crossed. Old Turns are summarized first.
+# Compression starts only when the dynamic input budget or optional fixed-token
+# ceiling is crossed. Turn count only limits the raw tail after compression.
 SUMMARY_TRIGGER_TOKEN_LIMIT_ENABLED = env_bool(
     "LEARN_AGENT_SUMMARY_TRIGGER_TOKEN_LIMIT_ENABLED", False
 )
 SUMMARY_TRIGGER_TOKEN_LIMIT = env_int("LEARN_AGENT_SUMMARY_TRIGGER_TOKEN_LIMIT", 90_000)
-SUMMARY_TRIGGER_TURN_LIMIT = RECENT_TURN_LIMIT
-# Backward-compatible alias for older internal callers; new code should use
-# SUMMARY_TRIGGER_TURN_LIMIT.
+# Deprecated compatibility aliases. Turn/message count no longer triggers
+# compaction; these remain zero so older imports keep working safely.
+SUMMARY_TRIGGER_TURN_LIMIT = 0
 SUMMARY_TRIGGER_MESSAGE_LIMIT = SUMMARY_TRIGGER_TURN_LIMIT
 CONTEXT_SUMMARY_MAX_TOKENS = env_int(
     "LEARN_AGENT_CONTEXT_SUMMARY_MAX_TOKENS", 16_384

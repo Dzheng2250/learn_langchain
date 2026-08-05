@@ -149,10 +149,11 @@ class ContextWindowPlanner:
             + current_summary_tokens
             + sum(count.tokens for count in turn_counts)
         )
-        # Crossing the soft limit asks the planner to return below that limit.
-        # Otherwise only count/half-window rules compact, and the hard limit is
-        # retained as the total safety boundary.
-        planned_total_limit = soft if current_projected > soft else hard
+        token_limit_exceeded = current_projected > soft
+        # Turn count and the raw-tail ratio are retention policies, not
+        # compaction triggers. Below the token threshold every complete Turn
+        # remains active, regardless of RECENT_TURN_LIMIT.
+        planned_total_limit = soft if token_limit_exceeded else hard
         raw_limit = max(
             0,
             min(
@@ -171,6 +172,22 @@ class ContextWindowPlanner:
             self.summary_reserve_tokens,
         )
         turn_tokens = [count.tokens for count in turn_counts]
+        if not token_limit_exceeded:
+            retained_tokens = sum(turn_tokens)
+            return ContextWindowPlan(
+                compacted_turns=(),
+                retained_turns=tuple(turns),
+                budget=budget,
+                source_tokens=0,
+                retained_tokens=retained_tokens,
+                projected_input_tokens=current_projected,
+                planned_input_tokens=current_projected,
+                estimated=(
+                    fixed_count.estimated
+                    or summary_count.estimated
+                    or any(count.estimated for count in turn_counts)
+                ),
+            )
         retained_count = 0
         retained_tokens = 0
         for token_count in reversed(turn_tokens):
