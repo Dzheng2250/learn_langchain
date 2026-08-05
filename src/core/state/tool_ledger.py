@@ -46,6 +46,47 @@ class ToolLedgerRepository:
         self.artifact_store = artifact_store
         self.inline_result_bytes = max(1024, int(inline_result_bytes))
 
+    def replay_completed(self, context) -> ToolLedgerClaim:
+        """Replay a terminal result without claiming or retrying the call.
+
+        Batch ToolNodes restart from their graph checkpoint after an interrupt.
+        This lookup lets them recover already committed results before repeating
+        policy, approval, or budget work. Non-terminal rows still flow through
+        ``claim`` so their replay policy and reconciliation rules remain active.
+        """
+        if not context.execution_id or not context.tool_call_id:
+            return ToolLedgerClaim("execute")
+        args_hash = _args_hash(context.args)
+        with self.database.connect() as conn:
+            row = conn.execute(
+                "SELECT * FROM tool_ledger WHERE execution_id=? AND tool_call_id=?",
+                (str(context.execution_id), context.tool_call_id),
+            ).fetchone()
+            if row is None:
+                return ToolLedgerClaim("execute")
+            if row["tool_name"] != context.tool_name or row["args_hash"] != args_hash:
+                raise ToolRecoveryRequired(
+                    "Tool call identity was reused with different arguments.",
+                    tool_call_id=context.tool_call_id,
+                    tool_name=context.tool_name,
+                )
+            if row["status"] not in {"succeeded", "failed"}:
+                return ToolLedgerClaim("execute")
+            payload = self._result_payload(row)
+            if payload:
+                return ToolLedgerClaim("replay", _deserialize_message(payload))
+        with self.database.transaction() as conn:
+            conn.execute(
+                "UPDATE tool_ledger SET status='uncertain' "
+                "WHERE execution_id=? AND tool_call_id=?",
+                (str(context.execution_id), context.tool_call_id),
+            )
+        raise ToolRecoveryRequired(
+            "A completed tool result is missing and cannot be replayed safely.",
+            tool_call_id=context.tool_call_id,
+            tool_name=context.tool_name,
+        )
+
     def claim(self, context) -> ToolLedgerClaim:
         if not context.execution_id or not context.tool_call_id:
             return ToolLedgerClaim("execute")

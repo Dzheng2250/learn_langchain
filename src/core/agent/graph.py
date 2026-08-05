@@ -13,7 +13,7 @@ from src.core.llm.completion import ensure_complete_response, response_stop_reas
 from src.core.llm.usage import context_tokens, has_context_usage, message_usage
 from src.core.prompts import build_parent_system_prompt
 from src.core.tasks.context import ToolExecutionContext
-from src.core.tools.observed import CheckpointedToolNode, has_pending_tool_calls
+from src.core.tools.observed import LedgerBackedToolNode
 from src.core.agent.context_guard import (
     AgentGraphState,
     InTurnContextGuard,
@@ -121,7 +121,7 @@ def create_parent_graph(
     builder.add_node("agent", agent_node)
     builder.add_node(
         "tools",
-        CheckpointedToolNode(
+        LedgerBackedToolNode(
             parent_tools,
             specs={
                 name: spec
@@ -141,10 +141,6 @@ def create_parent_graph(
         {"retry": "context_guard", "ready": "agent"},
     )
     builder.add_conditional_edges("agent", tools_condition, {"tools": "tools", "__end__": END})
-    builder.add_conditional_edges(
-        "tools",
-        has_pending_tool_calls,
-        {"pending": "tools", "complete": "journal_tools"},
-    )
+    builder.add_edge("tools", "journal_tools")
     builder.add_edge("journal_tools", "context_guard")
     return builder.compile(checkpointer=checkpointer)

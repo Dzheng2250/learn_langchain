@@ -24,7 +24,7 @@ WorkspaceRuntimeFactory
   -> create_workspace_toolset()
   -> ToolRegistry.register(ToolSpec)
   -> 按 Parent/Subagent 过滤并 freeze
-  -> Agent/CheckpointedToolNode
+  -> Agent/LedgerBackedToolNode
   -> ToolExecutionPipeline
   -> Hook -> Policy/Approval -> CapabilityEnforcer
   -> Durable Tool Ledger -> Tool

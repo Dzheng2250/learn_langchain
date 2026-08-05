@@ -34,6 +34,7 @@ from src.core.state import (
     ToolRecoveryRequired,
 )
 from src.core.state.types import ExecutionStatus
+from src.core.tasks.context import ToolExecutionContext
 from src.core.tools.catalog import (
     ApprovalRequirement,
     ToolAudience,
@@ -43,10 +44,15 @@ from src.core.tools.catalog import (
     ToolRisk,
     ToolSpec,
 )
-from src.core.tools.observed import CheckpointedToolNode, has_pending_tool_calls
+from src.core.tools.observed import LedgerBackedToolNode
 from src.core.tools.recovery_service import ToolRecoveryService
-from src.core.tools.security.models import ToolCallContext
+from src.core.tools.security.models import PolicyAction, PolicyDecision, ToolCallContext
 from src.core.tools.security.pipeline import ToolExecutionPipeline
+
+
+class AllowPolicy:
+    def evaluate(self, context, *, rule_key="", persistable=False):
+        return PolicyDecision(PolicyAction.ALLOW)
 
 
 class ToolExecutionRecoveryTest(unittest.TestCase):
@@ -63,7 +69,7 @@ class ToolExecutionRecoveryTest(unittest.TestCase):
         self.executions = ExecutionRepository(self.database)
         self.execution = self.executions.begin(self.session, "test")
 
-    def test_side_effect_batch_checkpoints_each_call_before_budget_pause(self):
+    def test_side_effect_batch_replays_ledger_results_after_budget_pause(self):
         completed = []
 
         @tool
@@ -77,21 +83,40 @@ class ToolExecutionRecoveryTest(unittest.TestCase):
             tool=mutate,
             audiences=frozenset({ToolAudience.PARENT}),
             risk=ToolRisk.CONTROLLED_EXECUTION,
-            capabilities=frozenset({ToolCapability.FILE_WRITE}),
+            capabilities=frozenset({ToolCapability.INTERNAL_STATE}),
             approval=ApprovalRequirement.NONE,
-            effect=ToolEffect.WORKSPACE_MUTATION,
-            replay_policy=ToolReplayPolicy.RECONCILE,
+            effect=ToolEffect.INTERNAL_MUTATION,
+            replay_policy=ToolReplayPolicy.MANUAL,
         )
-        builder = StateGraph(MessagesState)
-        builder.add_node("tools", CheckpointedToolNode([mutate], specs={"mutate": spec}))
-        builder.add_edge(START, "tools")
-        builder.add_conditional_edges(
+        ledger = ToolLedgerRepository(self.database)
+        pipeline = ToolExecutionPipeline(
+            {"mutate": spec},
+            policy=AllowPolicy(),
+            approvals=None,
+            tool_ledger=ledger,
+        )
+        builder = StateGraph(MessagesState, context_schema=ToolExecutionContext)
+        builder.add_node(
             "tools",
-            has_pending_tool_calls,
-            {"pending": "tools", "complete": END},
+            LedgerBackedToolNode(
+                [mutate],
+                specs={"mutate": spec},
+                pipeline=pipeline,
+            ),
         )
+        builder.add_edge(START, "tools")
+        builder.add_edge("tools", END)
         graph = builder.compile(checkpointer=MemorySaver())
         config = {"configurable": {"thread_id": "batch"}, "recursion_limit": 100}
+        runtime_context = ToolExecutionContext(
+            workspace_id=str(self.session.workspace.workspace_id),
+            session_id=str(self.session.session_id),
+            execution_id=self.execution.execution_id,
+            run_id="run-1",
+            workspace_root=str(self.root),
+            turn_index=1,
+            slice_id="slice-1",
+        )
         request = AIMessage(
             content="",
             tool_calls=[
@@ -108,11 +133,24 @@ class ToolExecutionRecoveryTest(unittest.TestCase):
         token = bind_execution_budget(first_budget)
         try:
             with self.assertRaises(ToolBudgetExceeded):
-                graph.invoke({"messages": [request]}, config=config)
+                graph.invoke(
+                    {"messages": [request]},
+                    config=config,
+                    context=runtime_context,
+                )
         finally:
             reset_execution_budget(token)
 
         self.assertEqual(list(range(12)), completed)
+        with self.database.connect() as conn:
+            rows = conn.execute(
+                "SELECT tool_call_id,status FROM tool_ledger ORDER BY tool_call_id"
+            ).fetchall()
+        self.assertEqual(12, len(rows))
+        self.assertTrue(all(row["status"] == "succeeded" for row in rows))
+        checkpoint_messages = graph.get_state(config).values["messages"]
+        self.assertFalse(any(isinstance(item, ToolMessage) for item in checkpoint_messages))
+
         second_budget = ExecutionBudget(
             max_controlled_executions=12,
             controlled_execution_limit_enabled=True,
@@ -121,10 +159,18 @@ class ToolExecutionRecoveryTest(unittest.TestCase):
         )
         token = bind_execution_budget(second_budget)
         try:
-            graph.invoke(None, config=config)
+            result = graph.invoke(None, config=config, context=runtime_context)
         finally:
             reset_execution_budget(token)
         self.assertEqual(list(range(13)), completed)
+        tool_results = [
+            message for message in result["messages"] if isinstance(message, ToolMessage)
+        ]
+        self.assertEqual(13, len(tool_results))
+        self.assertEqual(
+            [f"done:{value}" for value in range(13)],
+            [message.content for message in tool_results],
+        )
 
     def test_completed_result_is_replayed_without_reexecution(self):
         context = self._context(ToolReplayPolicy.MANUAL)
@@ -140,6 +186,103 @@ class ToolExecutionRecoveryTest(unittest.TestCase):
         replay = ledger.claim(context)
         self.assertEqual("replay", replay.action)
         self.assertEqual("exact result", replay.message.content)
+
+    def test_completed_batch_result_bypasses_policy_and_new_grant_budget(self):
+        calls = []
+
+        @tool
+        def mutate(value: int) -> str:
+            """Record a mutation that must not run during replay."""
+            calls.append(value)
+            return f"unexpected:{value}"
+
+        spec = ToolSpec(
+            name="mutate",
+            tool=mutate,
+            audiences=frozenset({ToolAudience.PARENT}),
+            risk=ToolRisk.CONTROLLED_EXECUTION,
+            capabilities=frozenset({ToolCapability.INTERNAL_STATE}),
+            approval=ApprovalRequirement.NONE,
+            effect=ToolEffect.INTERNAL_MUTATION,
+            replay_policy=ToolReplayPolicy.MANUAL,
+        )
+        ledger_context = ToolCallContext(
+            "mutate",
+            "completed-call",
+            {"value": 7},
+            str(self.session.workspace.workspace_id),
+            str(self.session.session_id),
+            self.execution.execution_id,
+            "run-1",
+            "parent",
+            spec,
+            str(self.root),
+            1,
+            "slice-1",
+        )
+        ledger = ToolLedgerRepository(self.database)
+        ledger.claim(ledger_context)
+        ledger.finish(
+            ledger_context,
+            ToolMessage(
+                content="saved:7",
+                name="mutate",
+                tool_call_id="completed-call",
+            ),
+        )
+
+        class PolicyMustNotRun:
+            def evaluate(self, *args, **kwargs):
+                raise AssertionError("completed calls must bypass policy")
+
+        pipeline = ToolExecutionPipeline(
+            {"mutate": spec},
+            policy=PolicyMustNotRun(),
+            approvals=None,
+            tool_ledger=ledger,
+        )
+        builder = StateGraph(MessagesState, context_schema=ToolExecutionContext)
+        builder.add_node(
+            "tools",
+            LedgerBackedToolNode(
+                [mutate],
+                specs={"mutate": spec},
+                pipeline=pipeline,
+            ),
+        )
+        builder.add_edge(START, "tools")
+        builder.add_edge("tools", END)
+        graph = builder.compile()
+        budget = ExecutionBudget(
+            max_controlled_executions=0,
+            controlled_execution_limit_enabled=True,
+            hard_max_tool_calls=0,
+            max_wall_seconds=10,
+        )
+        token = bind_execution_budget(budget)
+        try:
+            result = graph.invoke(
+                {"messages": [AIMessage(content="", tool_calls=[{
+                    "name": "mutate",
+                    "args": {"value": 7},
+                    "id": "completed-call",
+                }])]},
+                context=ToolExecutionContext(
+                    workspace_id=str(self.session.workspace.workspace_id),
+                    session_id=str(self.session.session_id),
+                    execution_id=self.execution.execution_id,
+                    run_id="run-1",
+                    workspace_root=str(self.root),
+                    turn_index=1,
+                    slice_id="slice-2",
+                ),
+            )
+        finally:
+            reset_execution_budget(token)
+
+        self.assertEqual([], calls)
+        self.assertEqual(0, budget.tool_calls)
+        self.assertEqual("saved:7", result["messages"][-1].content)
 
     def test_large_completed_result_is_replayed_from_artifact(self):
         context = self._context(ToolReplayPolicy.MANUAL)

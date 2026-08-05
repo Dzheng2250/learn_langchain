@@ -16,7 +16,7 @@ from src.core.llm.contracts import LlmPurpose, ModelProvider
 from src.core.prompts import SUBAGENT_SYSTEM_PROMPT, build_subagent_task_prompt
 from src.core.tasks.context import ToolExecutionContext
 from src.core.agent.budget import ToolBudgetExceeded
-from src.core.tools.observed import CheckpointedToolNode, has_pending_tool_calls
+from src.core.tools.observed import LedgerBackedToolNode
 
 
 def create_delegate_tool(
@@ -54,7 +54,7 @@ def create_delegate_tool(
     builder.add_node("subagent", subagent_node)
     builder.add_node(
         "tools",
-        CheckpointedToolNode(
+        LedgerBackedToolNode(
             base_tools,
             specs=specs_by_name or {},
             event_source="subagent_tool_node",
@@ -66,11 +66,7 @@ def create_delegate_tool(
     )
     builder.add_edge(START, "subagent")
     builder.add_conditional_edges("subagent", tools_condition, {"tools": "tools", "__end__": END})
-    builder.add_conditional_edges(
-        "tools",
-        has_pending_tool_calls,
-        {"pending": "tools", "complete": "subagent"},
-    )
+    builder.add_edge("tools", "subagent")
     graph = builder.compile()
 
     @tool

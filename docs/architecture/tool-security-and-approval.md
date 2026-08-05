@@ -30,7 +30,7 @@ ToolRegistry
   -> Telemetry
 ```
 
-`ToolRegistry` 只管理不可变元数据与 Agent audience，不负责授权。`ToolSpec` 必须声明 capability、approval、sandbox、network、timeout、`effect`、`replay_policy` 和 `parallel_safe`。`CheckpointedToolNode` 只作为 LangGraph 调度适配器，具体策略由 `ToolExecutionPipeline` 处理。
+`ToolRegistry` 只管理不可变元数据与 Agent audience，不负责授权。`ToolSpec` 必须声明 capability、approval、sandbox、network、timeout、`effect`、`replay_policy` 和 `parallel_safe`。`LedgerBackedToolNode` 只作为 LangGraph 批次调度适配器，具体策略由 `ToolExecutionPipeline` 处理。
 
 `effect` 区分 `read_only/internal_mutation/workspace_mutation/external`；`replay_policy` 区分
 `safe_retry/result_replay/reconcile/manual`。只有 `read_only + approval=none` 可以声明 `parallel_safe`。

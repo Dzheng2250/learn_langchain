@@ -149,6 +149,9 @@ Execution 状态和 `checkpoints.db` 中的真实 checkpoint，修复崩溃留�
 写入可使用 `resource_activities` 的摘要对账，无法证明结果的外部副作用必须人工处理。
 `resource_activities` 只提供观测证据，不能替代执行账本。
 
+LangGraph checkpoint 以完整工具批次为提交边界，而不是每个工具调用各写一次。批次内部恢复依赖
+`tool_ledger` 的小型终态记录；这既避免副作用重放，也避免工具数量线性放大 graph step 和 checkpoint 写入。
+
 ### 1.8 最终一致
 
 最终一致表示两个数据库在短时间内可能不一致，但恢复协调器和后台任务会让它们最终收敛。

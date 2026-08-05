@@ -66,10 +66,10 @@ CONTROLLED_EXECUTION  命令或容器执行
 DELEGATION            委派子 Agent
 ```
 
-`CheckpointedToolNode` 在统一工具边界进行预算准入和调度，因此不需要每个工具函数自己实现预算逻辑。
-模型一次返回多个调用时，只有显式声明 `parallel_safe` 的纯读取工具可组成并行 wave；有副作用、需审批或
-controlled 的工具每个占一个 graph step。每个成功 wave 都先形成 checkpoint，后续调用的暂停不会撤销
-已完成工具的进度。
+`LedgerBackedToolNode` 在统一工具边界进行预算准入和调度，因此不需要每个工具函数自己实现预算逻辑。
+模型一次返回多个调用时，显式声明 `parallel_safe` 的纯读取工具可以并行；有副作用、需审批或 controlled
+的工具按原始顺序串行执行。整个工具批次通常只占一个 graph step，批次内部每个调用则在 `tool_ledger`
+中单独 claim 并保存精确结果。暂停使节点从入口重启时，已完成调用重放 `ToolMessage`，只执行尚未完成的调用。
 
 ## 暂停与恢复的数据流
 
@@ -94,8 +94,8 @@ flowchart TB
 
 LangGraph checkpoint 使用独立的 `checkpoints.db`。恢复时使用相同 `checkpoint_thread_id` 并以 `input=None` 继续，而不是重新发送原始问题从头执行。
 
-工具执行还使用 `state.db.tool_ledger` 保存 durable claim 和精确结果。checkpoint 回退到工具节点前时，
-已完成调用直接重放保存的 `ToolMessage`；遗留 `running` 调用在 daemon 启动时转为 `uncertain`。结构化文件
+工具执行还使用 `state.db.tool_ledger` 保存 durable claim 和精确结果。工具批次尚未形成 checkpoint 时，
+已完成调用也能直接重放保存的 `ToolMessage`；遗留 `running` 调用在 daemon 启动时转为 `uncertain`。结构化文件
 写入可通过资源活动 digest 对账，命令、委派和其他无法证明的外部副作用必须人工处理。
 
 暂停按恢复前置条件分为：`continue`（预算、步数、断连）、`action_required`（审批、工具恢复）、

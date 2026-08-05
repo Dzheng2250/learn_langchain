@@ -283,13 +283,14 @@ class ObservedToolNode(ToolNode):
         super().__init__(tools, wrap_tool_call=fault_contained_wrapper, **kwargs)
 
 
-class CheckpointedToolNode(ObservedToolNode):
-    """Execute one checkpoint-safe wave from the latest assistant tool batch.
+class LedgerBackedToolNode(ObservedToolNode):
+    """Execute a complete tool batch with per-call durable recovery.
 
-    LangGraph's prebuilt ToolNode executes every tool call in one graph node. A
-    control exception from one call therefore discards the node output even when
-    sibling calls already changed external state. This adapter executes only one
-    side-effecting call per superstep; explicitly safe reads may share a wave.
+    LangGraph checkpoints the batch only after this node returns. Each call is
+    therefore committed to the Tool Ledger first; if an interrupt restarts the
+    node, completed calls replay their exact ToolMessage and only pending calls
+    execute. Side effects remain sequential while explicitly safe reads may run
+    in parallel.
     """
 
     def __init__(self, tools, *, specs: dict[str, ToolSpec], **kwargs) -> None:
@@ -307,12 +308,12 @@ class CheckpointedToolNode(ObservedToolNode):
         if not pending:
             return self._combine_tool_outputs([], input_type)
 
-        wave = self._select_wave(pending)
-        config_list = get_config_list(config, len(wave))
-        tool_runtimes = []
-        for call, cfg in zip(wave, config_list, strict=False):
+        config_list = get_config_list(config, len(pending))
+        calls_with_runtime = []
+        for call, cfg in zip(pending, config_list, strict=False):
             state = self._extract_state(input, cfg)
-            tool_runtimes.append(
+            calls_with_runtime.append((
+                call,
                 ToolRuntime(
                     state=state,
                     tool_call_id=call["id"],
@@ -323,44 +324,38 @@ class CheckpointedToolNode(ObservedToolNode):
                     tools=list(self.tools_by_name.values()),
                     execution_info=runtime.execution_info,
                     server_info=runtime.server_info,
-                )
-            )
+                ),
+            ))
 
-        input_types = [input_type] * len(wave)
-        if len(wave) == 1:
-            outputs = [self._run_one(wave[0], input_type, tool_runtimes[0])]
-        else:
-            with get_executor_for_config(config) as executor:
-                outputs = list(
-                    executor.map(self._run_one, wave, input_types, tool_runtimes)
-                )
-        return self._combine_tool_outputs(outputs, input_type)
-
-    def _select_wave(self, pending: list[dict]) -> list[dict]:
-        first = pending[0]
-        first_name = str(first.get("name") or "")
-        first_spec = self.execution_specs.get(first_name)
-        risk = first_spec.risk if first_spec is not None else ToolRisk.READ_ONLY
-        budget = current_execution_budget()
-        if budget is not None:
-            budget.require_capacity(
-                first_name or "unknown",
-                risk,
-                tool_call_id=str(first.get("id") or ""),
-            )
-
-        if first_spec is None or not first_spec.parallel_safe:
-            return [first]
-
-        capacity = budget.remaining_for(risk) if budget is not None else len(pending)
-        wave = []
-        for call in pending:
+        outputs = []
+        index = 0
+        while index < len(calls_with_runtime):
+            call, tool_runtime = calls_with_runtime[index]
             spec = self.execution_specs.get(str(call.get("name") or ""))
-            if spec is None or not spec.parallel_safe or len(wave) >= capacity:
-                break
-            wave.append(call)
-        return wave or [first]
+            if spec is None or not spec.parallel_safe:
+                outputs.append(self._run_one(call, input_type, tool_runtime))
+                index += 1
+                continue
 
+            wave = []
+            while index < len(calls_with_runtime):
+                candidate, candidate_runtime = calls_with_runtime[index]
+                candidate_spec = self.execution_specs.get(
+                    str(candidate.get("name") or "")
+                )
+                if candidate_spec is None or not candidate_spec.parallel_safe:
+                    break
+                wave.append((candidate, candidate_runtime))
+                index += 1
+            with get_executor_for_config(config) as executor:
+                outputs.extend(executor.map(
+                    self._run_one,
+                    [item[0] for item in wave],
+                    [input_type] * len(wave),
+                    [item[1] for item in wave],
+                ))
+
+        return self._combine_tool_outputs(outputs, input_type)
 
 def completed_tool_call_ids(input) -> set[str]:
     """Return tool IDs completed after the latest assistant request."""
@@ -386,20 +381,3 @@ def completed_tool_call_ids(input) -> set[str]:
         for message in messages[assistant_index + 1 :]
         if isinstance(message, ToolMessage)
     }
-
-
-def has_pending_tool_calls(state) -> str:
-    """Route a partial tool batch until every original call has one result."""
-    messages = list(state.get("messages") or [])
-    assistant = next(
-        (
-            message
-            for message in reversed(messages)
-            if isinstance(message, AIMessage) and getattr(message, "tool_calls", None)
-        ),
-        None,
-    )
-    if assistant is None:
-        return "complete"
-    expected = {str(call.get("id") or "") for call in assistant.tool_calls}
-    return "pending" if expected - completed_tool_call_ids(state) else "complete"

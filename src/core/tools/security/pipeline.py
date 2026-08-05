@@ -82,6 +82,10 @@ class ToolExecutionPipeline:
                 error=exc,
             )
             return self._error(context, exc)
+        if self.tool_ledger is not None:
+            completed = self.tool_ledger.replay_completed(context)
+            if completed.action == "replay" and completed.message is not None:
+                return completed.message
         rule_key, persistable = self._rule_identity(context)
         decision = self.policy.evaluate(
             context, rule_key=rule_key, persistable=persistable
