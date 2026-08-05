@@ -27,6 +27,26 @@ class CompactionRequiredGraph(FakeGraph):
 
 
 class StreamingEventsTest(unittest.TestCase):
+    def test_patch_tool_event_exposes_summary_not_patch_body(self):
+        patch_text = (
+            "*** Begin Patch\n*** Update File: src/app.py\n@@\n"
+            "-old\n+new\n*** End Patch"
+        )
+        events = step_events_from_message(AIMessage(
+            content="",
+            tool_calls=[{
+                "name": "apply_workspace_patch",
+                "args": {"patch": patch_text},
+                "id": "patch-1",
+                "type": "tool_call",
+            }],
+        ))
+        args = events[0]["data"]["args"]
+        self.assertEqual(args["paths"], ["src/app.py"])
+        self.assertEqual(args["hunk_count"], 1)
+        self.assertNotIn("patch", args)
+        self.assertNotIn("old", repr(args))
+
     def test_context_compaction_control_signal_is_not_wrapped_as_graph_error(self):
         with self.assertRaises(ContextCompactionRequired):
             list(stream_graph_events(CompactionRequiredGraph([]), []))

@@ -70,9 +70,13 @@ class ToolCallContext:
     workspace_root: str = ""
     turn_index: int | None = None
     slice_id: str | None = None
+    resource_paths: tuple[str, ...] = ()
 
     def with_args(self, args: dict[str, Any]):
-        return replace(self, args=dict(args))
+        return replace(self, args=dict(args), resource_paths=())
+
+    def with_resource_paths(self, paths):
+        return replace(self, resource_paths=tuple(str(path) for path in paths))
 
 
 @dataclass(frozen=True)

@@ -23,7 +23,7 @@
 WorkspaceRuntimeFactory
   -> create_workspace_toolset()
   -> ToolRegistry.register(ToolSpec)
-  -> 按 Parent/Subagent 过滤并 freeze
+  -> 分离 model_tools_for / execution_tools_for 并 freeze
   -> Agent/LedgerBackedToolNode
   -> ToolExecutionPipeline
   -> Hook -> Policy/Approval -> CapabilityEnforcer
@@ -59,7 +59,8 @@ WorkspaceRuntimeFactory
 | `summarize_large_file` | Subagent | 分块并行摘要大文件 | 会调用 FILE_SUMMARY LLM | `tools/summarization.py` |
 | `run_command_in_container` | Parent | 在只读 Workspace 副本中运行命令 | POLICY；Docker、禁网 | `tools/commands.py` |
 | `write_workspace_file` | Parent | 新建或显式覆盖文本文件 | POLICY；覆盖必须重新审批 | `tools/workspace_write.py` |
-| `replace_workspace_text` | Parent | 按预期次数精确替换文本 | POLICY | `tools/workspace_write.py` |
+| `apply_workspace_patch` | Parent | 基于同一快照更新已有文本文件的多个 hunk | POLICY；模型可见 | `tools/workspace_patch.py`、`tools/workspace_write.py` |
+| `replace_workspace_text` | Parent | 恢复旧 checkpoint 的精确替换 | POLICY；仅执行兼容，不再对模型可见 | `tools/workspace_write.py` |
 | `create_workspace_directory` | Parent | 创建目录 | POLICY | `tools/workspace_write.py` |
 | `move_workspace_path` | Parent | 移动文件或目录 | 每次审批 | `tools/workspace_write.py` |
 | `delete_workspace_path` | Parent | 删除文件或显式递归删除目录 | 每次审批 | `tools/workspace_write.py` |
@@ -70,6 +71,8 @@ WorkspaceRuntimeFactory
 | `delegate_to_subagent` | Parent | 委派有步数和上下文限制的只读研究 | 不递归委派 | `core/subagent/graph.py` |
 
 写工具由 `LEARN_AGENT_FILE_WRITE_ENABLED` 控制；staged command 工具由 `LEARN_AGENT_COMMAND_WRITE_ENABLED` 控制。路径必须是 Workspace 相对路径，且 `.git`、`.env*`、运行时数据库和敏感目录始终不可访问。批准不会绕过这些硬边界。
+
+同一已有文件的多处编辑必须合并为一次 `apply_workspace_patch`；协议、快照匹配、回滚和恢复规则见 [Workspace 编辑架构](/docs/architecture/workspace-editing.md)。
 
 ## 3. 如何使用与排查
 

@@ -1,6 +1,7 @@
 """Central ToolNode wrapper that observes every tool-call boundary."""
 
 import time
+import posixpath
 from collections.abc import Callable, Sequence
 from dataclasses import replace
 from typing import Any
@@ -23,7 +24,7 @@ from src.core.resource_activity import (
     bind_resource_activity, current_resource_context, lookup_resource_evidence,
 )
 from src.core.state.tool_ledger import ToolRecoveryRequired
-from src.core.tools.catalog import ToolRisk, ToolSpec
+from src.core.tools.catalog import ToolEffect, ToolRisk, ToolSpec
 
 
 def _tool_call_name(request) -> str | None:
@@ -308,6 +309,8 @@ class LedgerBackedToolNode(ObservedToolNode):
         if not pending:
             return self._combine_tool_outputs([], input_type)
 
+        conflicts = conflicting_mutation_calls(pending, self.execution_specs)
+
         config_list = get_config_list(config, len(pending))
         calls_with_runtime = []
         for call, cfg in zip(pending, config_list, strict=False):
@@ -331,6 +334,22 @@ class LedgerBackedToolNode(ObservedToolNode):
         index = 0
         while index < len(calls_with_runtime):
             call, tool_runtime = calls_with_runtime[index]
+            call_id = str(call.get("id") or "")
+            if call_id in conflicts:
+                outputs.append(ToolMessage(
+                    content=(
+                        "Tool call was rejected before execution because another "
+                        "mutation in the same assistant response targets the same "
+                        "Workspace path. Combine the edits into one "
+                        "apply_workspace_patch call, or wait for the first result."
+                    ),
+                    name=str(call.get("name") or "unknown"),
+                    tool_call_id=call_id,
+                    status="error",
+                    additional_kwargs={"tool_execution_status": "resource_conflict"},
+                ))
+                index += 1
+                continue
             spec = self.execution_specs.get(str(call.get("name") or ""))
             if spec is None or not spec.parallel_safe:
                 outputs.append(self._run_one(call, input_type, tool_runtime))
@@ -370,6 +389,37 @@ class LedgerBackedToolNode(ObservedToolNode):
                 ))
 
         return self._combine_tool_outputs(outputs, input_type)
+
+
+def conflicting_mutation_calls(tool_calls, specs: dict[str, ToolSpec]) -> set[str]:
+    """Return every call in a same-resource mutation conflict group."""
+    calls_by_path: dict[str, list[str]] = {}
+    for call in tool_calls:
+        call_id = str(call.get("id") or "")
+        spec = specs.get(str(call.get("name") or ""))
+        if spec is None or spec.effect != ToolEffect.WORKSPACE_MUTATION:
+            continue
+        args = dict(call.get("args") or {})
+        try:
+            paths = tuple(spec.resource_resolver(args)) if spec.resource_resolver else ()
+        except (OSError, ValueError):
+            # The ordinary pipeline returns the detailed parser/validation error.
+            paths = ()
+        if not paths:
+            paths = tuple(
+                value
+                for key in ("path", "source", "destination")
+                if isinstance((value := args.get(key)), str) and value.strip()
+            )
+        for path in paths:
+            normalized = posixpath.normpath(path.replace("\\", "/")).casefold()
+            calls_by_path.setdefault(normalized, []).append(call_id)
+    return {
+        call_id
+        for call_ids in calls_by_path.values()
+        if len(call_ids) > 1
+        for call_id in call_ids
+    }
 
 def completed_tool_call_ids(input) -> set[str]:
     """Return tool IDs completed after the latest assistant request."""

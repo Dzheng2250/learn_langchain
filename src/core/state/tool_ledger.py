@@ -366,6 +366,10 @@ def _deserialize_message(raw: str) -> ToolMessage:
 def _tracked_paths(context) -> dict[str, Path]:
     root = canonicalize_workspace(Path(context.workspace_root))
     paths = {}
+    if context.resource_paths:
+        for index, value in enumerate(context.resource_paths):
+            paths[f"resource:{index}"] = resolve_workspace_target(root, value)
+        return paths
     for key in ("path", "source", "destination"):
         value = context.args.get(key)
         if isinstance(value, str) and value.strip():

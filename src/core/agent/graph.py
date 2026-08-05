@@ -29,13 +29,15 @@ def create_parent_graph(
     checkpointer=None,
     risk_by_name=None,
     tool_pipeline=None,
+    model_tools: list | None = None,
 ):
     """Create one compiled graph permanently bound to a WorkspaceRuntime."""
+    model_tools = parent_tools if model_tools is None else model_tools
     llm_with_tools = model_provider.create_chat_model(
         LlmPurpose.PARENT_AGENT,
         temperature=0.7,
         streaming=True,
-        tools=parent_tools,
+        tools=model_tools,
     )
 
     parent_system_message = SystemMessage(
@@ -47,7 +49,7 @@ def create_parent_graph(
     context_guard = InTurnContextGuard(
         model_provider,
         system_message=parent_system_message,
-        tools=parent_tools,
+        tools=model_tools,
     )
 
     def agent_node(state: AgentGraphState, config: RunnableConfig) -> dict:

@@ -261,6 +261,13 @@ def _tool_detail(tool: str, args: Any) -> str | None:
             f"new={len(str(args.get('new_text', '')))} chars, "
             f"expected={args.get('expected_count', 1)})"
         )
+    if tool == "apply_workspace_patch":
+        paths = args.get("paths") or []
+        return (
+            f"Patch: {args.get('file_count', len(paths))} file(s), "
+            f"{args.get('hunk_count', '?')} hunk(s): "
+            + ", ".join(str(path) for path in paths[:5])
+        )
     if tool == "move_workspace_path":
         return (
             f"Move: {args.get('source', '<source>')} -> "

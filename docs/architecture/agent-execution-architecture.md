@@ -268,6 +268,8 @@ Registry 只描述和筛选能力，不负责执行工具。父 Agent 与子 Age
 完成后才形成一次 graph checkpoint；中途暂停时，resume 从 Ledger 重放已完成结果并继续剩余调用。
 `ObservedToolNode` 仍保留为底层兼容适配器，不是生产 Graph 的批处理边界。
 
+模型 Tool Schema 与执行集合是两个视图：`model_tools_for()` 排除仅用于恢复旧 checkpoint 的工具，`execution_tools_for()` 保留完整集合。工具批次开始时还会对 Workspace mutation 的资源集合做冲突预检；同一路径的多个写调用在任何副作用前被拒绝，要求模型合并为一次 patch 或等待前一次结果。
+
 工具开始执行前会写入 durable tool ledger，完成后先持久化精确 `ToolMessage`，再运行
 非关键 PostHook 与 Telemetry。checkpoint 丢失时可以重放已保存结果，而不会重新执行副作用。
 无法确认是否已经产生副作用的调用会暂停为 `tool_recovery_required`，由恢复 RPC 处理。

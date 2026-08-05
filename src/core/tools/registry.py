@@ -25,6 +25,7 @@ from src.core.tools.summarization import create_summarize_large_file
 from src.core.tools.weather import get_weather
 from src.core.tools.workspace import create_workspace_file_tools
 from src.core.tools.workspace_write import create_workspace_write_tools
+from src.core.tools.workspace_patch import patch_paths
 from src.core.workspace.models import WorkspaceContext
 
 
@@ -34,6 +35,7 @@ class WorkspaceToolset:
     registry: ToolRegistry
     base_tools: list
     parent_tools: list
+    parent_model_tools: list
     skill_manifest: str
     pipeline: object | None = None
 
@@ -91,6 +93,8 @@ def create_workspace_toolset(
         effect=ToolEffect.READ_ONLY,
         replay_policy=ToolReplayPolicy.SAFE_RETRY,
         parallel_safe=False,
+        model_visible=True,
+        resource_resolver=None,
     ):
         """Register one LangChain tool with audience and risk metadata."""
         registry.register(
@@ -107,6 +111,8 @@ def create_workspace_toolset(
                 effect=effect,
                 replay_policy=replay_policy,
                 parallel_safe=parallel_safe,
+                model_visible=model_visible,
+                resource_resolver=resource_resolver,
             )
         )
 
@@ -128,6 +134,7 @@ def create_workspace_toolset(
         replay_policy=ToolReplayPolicy.MANUAL,
     )
     for write_tool in write_tools:
+        is_patch = write_tool.name == "apply_workspace_patch"
         register(
             write_tool,
             {ToolAudience.PARENT},
@@ -137,6 +144,15 @@ def create_workspace_toolset(
             sandbox=SandboxMode.WORKSPACE_WRITE,
             effect=ToolEffect.WORKSPACE_MUTATION,
             replay_policy=ToolReplayPolicy.RECONCILE,
+            model_visible=write_tool.name != "replace_workspace_text",
+            resource_resolver=(
+                lambda args: patch_paths(
+                    str(args.get("patch") or ""),
+                    max_files=file_operation_max_entries,
+                    max_hunks=file_operation_max_entries,
+                )
+                if is_patch else None
+            ),
         )
     if staged_command_tools:
         stage, apply_changes, discard_changes = staged_command_tools
@@ -228,6 +244,7 @@ def create_workspace_toolset(
         registry=registry,
         base_tools=base_tools,
         parent_tools=registry.tools_for(ToolAudience.PARENT),
+        parent_model_tools=registry.model_tools_for(ToolAudience.PARENT),
         skill_manifest=skill_store.format_skill_list(),
         pipeline=pipeline,
     )

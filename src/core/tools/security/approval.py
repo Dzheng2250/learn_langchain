@@ -6,6 +6,7 @@ from src.core.common.redaction import sanitize_value
 from src.core.telemetry import emit_event
 
 from src.core.tools.security.models import ApprovalResponse
+from src.core.tools.workspace_patch import parse_workspace_patch
 
 
 class ApprovalRepository(Protocol):
@@ -41,7 +42,7 @@ class ApprovalService:
         request = self.repository.create_request(
             context,
             decision,
-            _safe_args_summary(context.args),
+            _safe_args_summary(context.tool_name, context.args),
             approval_mode=approval_mode,
         )
         emit_event(
@@ -139,9 +140,21 @@ class ApprovalService:
         return True
 
 
-def _safe_args_summary(args: dict) -> dict:
+def _safe_args_summary(tool_name: str, args: dict) -> dict:
+    if tool_name == "apply_workspace_patch":
+        patch_text = str(args.get("patch") or "")
+        try:
+            parsed = parse_workspace_patch(patch_text)
+            return {
+                "paths": list(parsed.paths),
+                "file_count": len(parsed.files),
+                "hunk_count": parsed.hunk_count,
+                "patch_chars": len(patch_text),
+            }
+        except ValueError:
+            return {"patch": f"<{len(patch_text)} chars omitted; invalid patch>"}
     safe_args = dict(args)
-    for key in ("content", "old_text", "new_text"):
+    for key in ("content", "old_text", "new_text", "patch"):
         value = safe_args.get(key)
         if isinstance(value, str):
             safe_args[key] = f"<{len(value)} chars omitted>"

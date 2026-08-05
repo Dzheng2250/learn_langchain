@@ -68,10 +68,13 @@ LangGraph 在 [`src/core/agent/graph.py`](/src/core/agent/graph.py) 与 [`src/co
 
 ### 4.3 注册 API 形态
 
-入口函数 [`create_workspace_toolset()`](/src/core/tools/registry.py) 返回 `WorkspaceToolset`（含 `registry` / `base_tools` / `parent_tools` / `skill_manifest`）。内部 `register` 闭包签名：
+入口函数 [`create_workspace_toolset()`](/src/core/tools/registry.py) 返回 `WorkspaceToolset`（含 `registry` / `base_tools` / `parent_tools` / `parent_model_tools` / `skill_manifest`）。`parent_tools` 是完整执行集合，`parent_model_tools` 才会绑定给 LLM。内部 `register` 支持：
 
 ```python
-def register(tool, audiences, risk, description=""):
+def register(
+    tool, audiences, risk, description="",
+    *, model_visible=True, resource_resolver=None,
+):
     registry.register(
         ToolSpec(
             name=tool.name,
@@ -87,6 +90,8 @@ def register(tool, audiences, risk, description=""):
 
 - `name` 自动取 `tool.name`（LangChain 由函数名派生）。函数改名等于工具改名，会破坏现有 prompt 调用。
 - `description` 缺省时回退到 `tool.description`（即 `@tool` 从 docstring 提取的版本）。**不要**在 `register` 中显式传与 docstring 不一致的 `description`，否则模型会看到两份冲突描述。
+- `model_visible=False` 仅用于旧 checkpoint 兼容或内部执行工具；不要用它代替 audience 权限。
+- 参数内嵌多个路径时必须实现 `resource_resolver(args) -> tuple[str, ...]`，让审批、Capability Enforcer、冲突检测和 Ledger 使用同一资源集合。不能要求安全层解析任意字符串。
 - 同名注册抛 `ValueError("Tool already registered: ...")`，在启动期暴露问题。
 - `ToolRegistry.freeze()` 后再注册抛 `RuntimeError("Tool registry is frozen")`。同一 Workspace 的 `WorkspaceRuntime` 复用缓存，因此重复装配成本低。
 

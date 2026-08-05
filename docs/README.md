@@ -42,6 +42,7 @@
 - [TUI 架构](/docs/architecture/tui-architecture.md)
 - [Agent 执行架构](/docs/architecture/agent-execution-architecture.md)
 - [Agent 执行函数级调用链](/docs/architecture/agent-execution-call-chain.md)
+- [Workspace 编辑架构](/docs/architecture/workspace-editing.md)
 - [面向接口的 Core 设计](/docs/architecture/interface-driven-core.md)
 - [本地数据库与一致性](/docs/architecture/database-state-and-consistency.md)
 - [安全模型](/docs/architecture/security-model.md)

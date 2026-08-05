@@ -3,7 +3,8 @@
 from pathlib import Path
 
 from src.core.tools.catalog import NetworkMode, SandboxMode, ToolCapability
-from src.core.workspace.resolver import resolve_workspace_path, resolve_workspace_target
+from src.core.tools.workspace import resolve_workspace_mutation_path
+from src.core.workspace.resolver import resolve_workspace_path
 
 
 class CapabilityEnforcer:
@@ -28,10 +29,17 @@ class CapabilityEnforcer:
         if not ({ToolCapability.FILE_READ, ToolCapability.FILE_WRITE} & spec.capabilities):
             return
         root = Path(context.workspace_root)
+        if context.resource_paths:
+            for value in context.resource_paths:
+                if ToolCapability.FILE_WRITE in spec.capabilities:
+                    resolve_workspace_mutation_path(root, value)
+                else:
+                    resolve_workspace_path(root, value)
+            return
         for key in self.PATH_KEYS:
             value = context.args.get(key)
             if isinstance(value, str) and value:
                 if ToolCapability.FILE_WRITE in spec.capabilities:
-                    resolve_workspace_target(root, value)
+                    resolve_workspace_mutation_path(root, value)
                 else:
                     resolve_workspace_path(root, value)

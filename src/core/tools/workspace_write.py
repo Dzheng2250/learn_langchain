@@ -13,6 +13,7 @@ from src.core.telemetry import emit_event
 from src.core.resource_activity import ChangeState, ObservationMode, ResourceObservation, ResourceOperation, record_resource_activity
 from src.core.resource_activity.observation import file_snapshot, workspace_uri
 from src.core.tools.workspace import resolve_workspace_mutation_path
+from src.core.tools.workspace_patch import WorkspacePatchEngine
 from src.core.workspace.resolver import canonicalize_workspace
 
 
@@ -134,6 +135,43 @@ def create_workspace_write_tools(root: Path, *, max_bytes: int, max_entries: int
         return _observed_write("replace", path, action)
 
     @tool
+    def apply_workspace_patch(patch: str) -> str:
+        """Apply one snapshot-based patch to existing UTF-8 Workspace files.
+
+        Combine every change to the same file into one ``*** Update File``
+        section. Each hunk starts with ``@@`` and uses space, ``-``, and ``+``
+        prefixes for context, removed, and added lines. Use paths relative to
+        the Workspace. Do not combine another write to the same path in the
+        same model response.
+        """
+        def action() -> str:
+            result = WorkspacePatchEngine(
+                root,
+                max_bytes=max_bytes,
+                max_files=max_entries,
+                max_hunks=max_entries,
+            ).apply(patch)
+            for target, before, after, additions, deletions, hunks in result.snapshots:
+                _record_change(
+                    root,
+                    target,
+                    ResourceOperation.WRITE,
+                    before,
+                    after,
+                    patch_hunks=hunks,
+                    patch_additions=additions,
+                    patch_deletions=deletions,
+                )
+            path_summary = ", ".join(result.paths[:5])
+            if len(result.paths) > 5:
+                path_summary += f", +{len(result.paths) - 5} more"
+            return (
+                f"Applied patch to {result.files} file(s), {result.hunks} hunk(s), "
+                f"+{result.additions}/-{result.deletions} lines: {path_summary}."
+            )
+        return _observed_write("patch", "<validated patch paths>", action)
+
+    @tool
     def create_workspace_directory(path: str, parents: bool = True) -> str:
         """Create a directory inside the Workspace without replacing an existing file."""
         def action() -> str:
@@ -209,6 +247,7 @@ def create_workspace_write_tools(root: Path, *, max_bytes: int, max_entries: int
     return (
         write_workspace_file,
         replace_workspace_text,
+        apply_workspace_patch,
         create_workspace_directory,
         move_workspace_path,
         delete_workspace_path,

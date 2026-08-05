@@ -34,6 +34,7 @@
 | Agent Runtime 扩展 | `/docs/development/agent-runtime-extension.md` |
 | 新增工具指南（端到端教程） | `/docs/development/tool-extension-guide.md` |
 | 内置 Tool 使用与维护 | `/docs/development/built-in-tools-maintenance.md` |
+| Workspace 编辑架构 | `/docs/architecture/workspace-editing.md` |
 | LLM Provider 边界 | `/docs/architecture/llm-provider-boundary.md` |
 | Anthropic 前缀缓存控制 | `/docs/architecture/prompt-cache-strategy.md` |
 | Agent 函数级调用链 | `/docs/architecture/agent-execution-call-chain.md` |
