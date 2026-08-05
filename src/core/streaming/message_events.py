@@ -123,10 +123,15 @@ def safe_tool_args(tool_name: str, args):
     try:
         parsed = parse_workspace_patch(patch_text)
         return {
+            "valid": True,
             "paths": list(parsed.paths),
             "file_count": len(parsed.files),
             "hunk_count": parsed.hunk_count,
             "patch_chars": len(patch_text),
         }
     except ValueError:
-        return {"patch": f"<{len(patch_text)} chars omitted; invalid patch>"}
+        return {
+            "valid": False,
+            "patch_chars": len(patch_text),
+            "error": "invalid_patch_syntax",
+        }

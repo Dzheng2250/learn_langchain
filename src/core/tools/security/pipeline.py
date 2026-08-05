@@ -393,7 +393,10 @@ class ToolExecutionPipeline:
         resolver = context.spec.resource_resolver
         if resolver is None:
             return context
-        paths = tuple(resolver(context.args))
+        resolved = resolver(context.args)
+        if resolved is None:
+            raise ValueError("Tool resource resolver returned no paths.")
+        paths = tuple(resolved)
         if not paths:
             raise ValueError("Tool resource resolver returned no paths.")
         return context.with_resource_paths(paths)

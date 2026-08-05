@@ -138,11 +138,21 @@ def create_workspace_write_tools(root: Path, *, max_bytes: int, max_entries: int
     def apply_workspace_patch(patch: str) -> str:
         """Apply one snapshot-based patch to existing UTF-8 Workspace files.
 
+        The patch must use this complete envelope::
+
+            *** Begin Patch
+            *** Update File: relative/path.py
+            @@ optional function or class anchor
+             unchanged context
+            -old line
+            +new line
+            *** End Patch
+
         Combine every change to the same file into one ``*** Update File``
         section. Each hunk starts with ``@@`` and uses space, ``-``, and ``+``
         prefixes for context, removed, and added lines. Use paths relative to
-        the Workspace. Do not combine another write to the same path in the
-        same model response.
+        the Workspace. Do not omit the Begin/End lines. Do not combine another
+        write to the same path in the same model response.
         """
         def action() -> str:
             result = WorkspacePatchEngine(

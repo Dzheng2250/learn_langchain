@@ -116,6 +116,14 @@ def create_workspace_toolset(
             )
         )
 
+    def resolve_patch_resources(args: dict) -> tuple[str, ...]:
+        """Resolve patch targets without capturing mutable loop state."""
+        return patch_paths(
+            str(args.get("patch") or ""),
+            max_files=file_operation_max_entries,
+            max_hunks=file_operation_max_entries,
+        )
+
     both = {ToolAudience.PARENT, ToolAudience.SUBAGENT}
     register(get_weather, both, ToolRisk.READ_ONLY)
     register(read_file, {ToolAudience.SUBAGENT}, ToolRisk.READ_ONLY, capabilities={ToolCapability.FILE_READ}, parallel_safe=True)
@@ -145,14 +153,7 @@ def create_workspace_toolset(
             effect=ToolEffect.WORKSPACE_MUTATION,
             replay_policy=ToolReplayPolicy.RECONCILE,
             model_visible=write_tool.name != "replace_workspace_text",
-            resource_resolver=(
-                lambda args: patch_paths(
-                    str(args.get("patch") or ""),
-                    max_files=file_operation_max_entries,
-                    max_hunks=file_operation_max_entries,
-                )
-                if is_patch else None
-            ),
+            resource_resolver=resolve_patch_resources if is_patch else None,
         )
     if staged_command_tools:
         stage, apply_changes, discard_changes = staged_command_tools

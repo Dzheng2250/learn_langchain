@@ -262,6 +262,8 @@ def _tool_detail(tool: str, args: Any) -> str | None:
             f"expected={args.get('expected_count', 1)})"
         )
     if tool == "apply_workspace_patch":
+        if args.get("valid") is False:
+            return f"Patch: invalid syntax ({args.get('patch_chars', 0)} chars)"
         paths = args.get("paths") or []
         return (
             f"Patch: {args.get('file_count', len(paths))} file(s), "

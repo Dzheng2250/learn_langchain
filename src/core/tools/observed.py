@@ -399,10 +399,12 @@ def conflicting_mutation_calls(tool_calls, specs: dict[str, ToolSpec]) -> set[st
         spec = specs.get(str(call.get("name") or ""))
         if spec is None or spec.effect != ToolEffect.WORKSPACE_MUTATION:
             continue
-        args = dict(call.get("args") or {})
+        raw_args = call.get("args")
+        args = raw_args if isinstance(raw_args, dict) else {}
         try:
-            paths = tuple(spec.resource_resolver(args)) if spec.resource_resolver else ()
-        except (OSError, ValueError):
+            resolved = spec.resource_resolver(args) if spec.resource_resolver else ()
+            paths = tuple(resolved or ())
+        except (OSError, TypeError, ValueError):
             # The ordinary pipeline returns the detailed parser/validation error.
             paths = ()
         if not paths:

@@ -16,6 +16,7 @@ from src.core.tools.security.models import PolicyAction, ToolCallContext
 from src.core.tools.security.policy import DefaultToolPolicyEngine
 from src.core.tools.security.pipeline import ToolExecutionPipeline
 from src.core.tools.command_changes import create_staged_command_tools
+from src.core.tools.observed import conflicting_mutation_calls
 from src.core.tools.registry import create_workspace_toolset
 from src.core.tools.workspace_write import create_workspace_write_tools
 from src.core.tools.workspace import resolve_workspace_mutation_path
@@ -190,6 +191,44 @@ class WorkspaceWriteToolsTest(unittest.TestCase):
         self.assertNotIn("replace_workspace_text", parent_model_names)
         self.assertNotIn("write_workspace_file", child_names)
         self.assertNotIn("delete_workspace_path", child_names)
+
+    def test_registered_patch_resolver_returns_validated_paths(self):
+        @tool
+        def delegate_to_subagent(task: str) -> str:
+            """Test delegate."""
+            return task
+
+        with patch("src.core.tools.registry.create_delegate_tool", return_value=delegate_to_subagent):
+            toolset = create_workspace_toolset(
+                WorkspaceContext(uuid4(), self.root), UnusedModelProvider(),
+                approval_repository=None,
+            )
+
+        spec = next(
+            item for item in toolset.registry.specs()
+            if item.name == "apply_workspace_patch"
+        )
+        patch_text = "\n".join((
+            "*** Begin Patch",
+            "*** Update File: sample.py",
+            "@@",
+            "-old",
+            "+new",
+            "*** End Patch",
+        ))
+        self.assertIsNotNone(spec.resource_resolver)
+        self.assertEqual(spec.resource_resolver({"patch": patch_text}), ("sample.py",))
+        self.assertEqual(
+            conflicting_mutation_calls(
+                [{
+                    "id": "invalid-patch",
+                    "name": "apply_workspace_patch",
+                    "args": {"patch": patch_text.removeprefix("*** Begin Patch\n")},
+                }],
+                {spec.name: spec},
+            ),
+            set(),
+        )
 
 
 class WorkspaceWritePolicyTest(unittest.TestCase):

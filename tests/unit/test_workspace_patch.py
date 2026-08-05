@@ -70,6 +70,29 @@ class WorkspacePatchParserTest(unittest.TestCase):
         )
         self.assertEqual(without_final_newline, "one\nmiddle\ntwo")
 
+    def test_repeated_anchor_is_disambiguated_by_exact_hunk_context(self):
+        parsed = parse_workspace_patch(_patch(
+            "*** Update File: sample.py",
+            "@@ MAX_DET_ORDER",
+            "     MAX_DET_ORDER = 5",
+            "+    MAX_PAREN_DEPTH = 100",
+        ))
+
+        updated, additions, deletions = apply_file_patch(
+            "\n".join((
+                "class Calculator:",
+                "    MAX_DET_ORDER = 5",
+                "",
+                "    def validate(self):",
+                "        return self.MAX_DET_ORDER",
+                "",
+            )),
+            parsed.files[0],
+        )
+
+        self.assertIn("    MAX_PAREN_DEPTH = 100\n", updated)
+        self.assertEqual((additions, deletions), (1, 0))
+
     def test_rejects_duplicate_path_ambiguous_context_and_noop(self):
         with self.assertRaisesRegex(WorkspacePatchError, "duplicate"):
             parse_workspace_patch(_patch(
@@ -254,6 +277,31 @@ class WorkspacePatchBatchTest(unittest.TestCase):
         ]
         self.assertEqual(
             conflicting_mutation_calls(calls, specs), {"patch", "write"}
+        )
+
+    def test_conflict_detection_does_not_crash_on_empty_resolver_result(self):
+        @tool
+        def patch_tool(patch: str) -> str:
+            """Patch files."""
+            return patch
+
+        spec = ToolSpec(
+            name="patch_tool",
+            tool=patch_tool,
+            audiences=frozenset({ToolAudience.PARENT}),
+            risk=ToolRisk.CONTROLLED_EXECUTION,
+            capabilities=frozenset({ToolCapability.FILE_WRITE}),
+            approval=ApprovalRequirement.POLICY,
+            effect=ToolEffect.WORKSPACE_MUTATION,
+            resource_resolver=lambda _args: None,
+        )
+
+        self.assertEqual(
+            conflicting_mutation_calls(
+                [{"id": "patch", "name": "patch_tool", "args": {"patch": "bad"}}],
+                {"patch_tool": spec},
+            ),
+            set(),
         )
 
 

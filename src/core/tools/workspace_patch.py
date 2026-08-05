@@ -213,10 +213,8 @@ def apply_file_patch(original: str, patch: FilePatch) -> tuple[str, int, int]:
                 raise WorkspacePatchError(
                     f"{patch.path}: hunk {hunk_index} anchor was not found"
                 )
-            if len(anchors) > 1:
-                raise WorkspacePatchError(
-                    f"{patch.path}: hunk {hunk_index} anchor is ambiguous"
-                )
+            # The anchor is a forward-search hint, not the final identity.
+            # Exact hunk context below remains responsible for uniqueness.
             search_start = anchors[0]
 
         old = [line.text for line in hunk.lines if line.kind != "add"]
