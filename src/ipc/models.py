@@ -52,6 +52,7 @@ class SessionDeleteParams(SessionParams):
 
 class SessionResumeParams(SessionParams):
     instruction: str = Field(default="", max_length=20_000)
+    retry_conditions: bool = False
 
 
 class ApprovalResolveParams(SessionParams):
@@ -65,6 +66,14 @@ class ApprovalResolveParams(SessionParams):
 class ApprovalModeSetParams(SessionParams):
     mode: str = Field(min_length=1, max_length=100)
     acknowledge_risk: bool = False
+
+
+class ToolRecoveryGetParams(SessionParams):
+    tool_call_id: str = Field(min_length=1, max_length=200)
+
+
+class ToolRecoveryResolveParams(ToolRecoveryGetParams):
+    action: Literal["retry_once", "return_error", "discard_execution"]
 
 
 class ResourceActivityScopeParams(AuthenticatedParams):

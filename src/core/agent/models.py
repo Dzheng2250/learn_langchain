@@ -21,10 +21,42 @@ class StopReason(StrEnum):
     GRANT_WALL_TIME_LIMIT = "grant_wall_time_limit"
     CLIENT_DISCONNECTED = "client_disconnected"
     TOOL_APPROVAL = "tool_approval"
+    TOOL_RECOVERY_REQUIRED = "tool_recovery_required"
     MODEL_OUTPUT_LIMIT = "model_output_limit"
     CONTEXT_COMPACTION_REQUIRED = "context_compaction_required"
     GRAPH_ERROR = "graph_error"
     TURN_ERROR = "turn_error"
+
+
+class ResumePolicy(StrEnum):
+    """Action required before a persisted execution may continue."""
+
+    CONTINUE = "continue"
+    ACTION_REQUIRED = "action_required"
+    CONDITION_REQUIRED = "condition_required"
+    TERMINAL = "terminal"
+
+
+def resume_policy_for(stop_reason: str) -> ResumePolicy:
+    """Map stable stop reasons to one recovery contract."""
+    if stop_reason in {
+        StopReason.TOOL_APPROVAL.value,
+        StopReason.TOOL_RECOVERY_REQUIRED.value,
+    }:
+        return ResumePolicy.ACTION_REQUIRED
+    if stop_reason in {
+        StopReason.MODEL_OUTPUT_LIMIT.value,
+        StopReason.CONTEXT_COMPACTION_REQUIRED.value,
+        StopReason.GRAPH_ERROR.value,
+        StopReason.TURN_ERROR.value,
+    }:
+        return ResumePolicy.CONDITION_REQUIRED
+    if stop_reason in {
+        StopReason.LLM_NOT_CONFIGURED.value,
+        StopReason.TOOL_CALL_LIMIT.value,
+    }:
+        return ResumePolicy.TERMINAL
+    return ResumePolicy.CONTINUE
 
 
 @dataclass(frozen=True)

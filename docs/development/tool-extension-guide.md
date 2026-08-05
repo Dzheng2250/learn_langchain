@@ -21,7 +21,7 @@
 - 通过 `resolve_workspace_path` 与 `is_workspace_path_blocked` 实施路径安全。
 - 选择 `audiences`（`ToolAudience`）与 `risk`（`ToolRisk`）并理解其对预算与路由的影响。
 - 使用 `ToolRuntime` / `InjectedState` 注入 Execution 与 graph 状态，且这些参数不出现在 LLM 可见 schema 中。
-- 在 `create_workspace_toolset()` 中注册新工具，让 `ObservedToolNode` 自动接管观测与预算。
+- 在 `create_workspace_toolset()` 中注册新工具，让 `LedgerBackedToolNode` 自动接管调度、观测、预算与恢复。
 - 编写单元测试断言 audience / risk / schema / 路径安全 / 错误返回。
 - 提交前完成对应的文档同步与变更检查。
 
@@ -41,7 +41,18 @@
 
 1. **实现**：每个工具位于 `src/core/tools/` 下独立模块（`weather.py` / `workspace.py` / `commands.py` / `skills.py` / `summarization.py` 等），也可以位于其他子模块内自带工厂的 `tools.py`（如 `src/core/tasks/tools.py`、`src/core/subagent/graph.py`）。
 2. **注册**：[`src/core/tools/registry.py`](/src/core/tools/registry.py) 的 `create_workspace_toolset()` 是唯一集中注册入口。内部 `register()` 闭包把所有 `ToolSpec` 写入 [`ToolRegistry`](/src/core/tools/catalog.py)，随后调用 `freeze()` 冻结，禁止运行期再注册。
-3. **观测**：[`src/core/tools/observed.py`](/src/core/tools/observed.py) 的 `ObservedToolNode` 继承 `langgraph.prebuilt.ToolNode`，在 `wrap_tool_call` 中统一完成 telemetry 起点 / 终点事件与 `ExecutionBudget.charge()` 扣费。工具体内部不应再做观测埋点。
+3. **观测与恢复**：[`src/core/tools/observed.py`](/src/core/tools/observed.py) 的 `LedgerBackedToolNode` 基于 `ToolNode`，在单个 graph step 内执行完整批次；`wrap_tool_call` 统一完成 ledger claim、预算扣费、telemetry 和结果持久化。工具体内部不应再做观测埋点。
+
+注册新工具时必须准确声明：
+
+```python
+effect=ToolEffect.READ_ONLY | INTERNAL_MUTATION | WORKSPACE_MUTATION | EXTERNAL
+replay_policy=ToolReplayPolicy.SAFE_RETRY | RESULT_REPLAY | RECONCILE | MANUAL
+parallel_safe=True  # 仅纯读取、无需审批且线程安全时允许
+```
+
+不要为了减少人工恢复而虚假声明 `RECONCILE`。只有实现能够依据 durable before/after 状态判断“已完成、
+未执行、冲突”三种结果时才可使用；否则使用 `MANUAL`。有副作用工具禁止 `parallel_safe`。
 
 LangGraph 在 [`src/core/agent/graph.py`](/src/core/agent/graph.py) 与 [`src/core/subagent/graph.py`](/src/core/subagent/graph.py) 通过 `tools_condition` 自动把 `ToolMessage` 路由回 agent，工具体本身不写循环。
 
@@ -87,7 +98,7 @@ def register(tool, audiences, risk, description=""):
 - `ToolRisk = {READ_ONLY, INTERNAL_STATE, CONTROLLED_EXECUTION, DELEGATION}`，影响预算类目与限流：
   - `READ_ONLY` 仅计入 `hard_max_tool_calls`（`HARD_MAX_TOOL_CALLS_PER_GRANT`）。
   - `INTERNAL_STATE` 同上，且语义上不应暴露给 SUBAGENT（父级 Execution 私有状态）。
-  - `CONTROLLED_EXECUTION` 受 `MAX_CONTROLLED_EXECUTIONS_PER_GRANT` 子限制。
+  - `CONTROLLED_EXECUTION` 始终计数；仅当 `CONTROLLED_EXECUTION_LIMIT_ENABLED=true` 时受 `MAX_CONTROLLED_EXECUTIONS_PER_GRANT` 子限制。
   - `DELEGATION` 受 `MAX_DELEGATIONS_PER_GRANT` 子限制，且仅用于 [`create_delegate_tool()`](/src/core/subagent/graph.py) 注册的 `delegate_to_subagent`（见 [`registry.py:76`](/src/core/tools/registry.py)），普通工具不应选这个值。
 
 budget 计费逻辑见 [`src/core/agent/budget.py`](/src/core/agent/budget.py) 的 `ExecutionBudget.charge()`，工具体不应自行扣费。
@@ -103,7 +114,7 @@ flowchart TD
     C --> D[registry.freeze 冻结]
     D --> E[WorkspaceRuntimeFactory.create]
     E --> F[create_parent_graph parent_tools + risk_by_name]
-    F --> G[ObservedToolNode wrap_tool_call]
+    F --> G[LedgerBackedToolNode / ToolExecutionPipeline]
     G --> H1[record_tool_started]
     H1 --> H2[ExecutionBudget.charge name risk]
     H2 --> I[execute request 工具体]
@@ -384,14 +395,15 @@ SANDBOX_EXCLUDES = {
 
 ### 6.7 观测层职责边界
 
-工具体**禁止**做以下事项，全部由 [`ObservedToolNode`](/src/core/tools/observed.py) 在工具边界统一执行：
+工具体**禁止**做以下事项，全部由 [`LedgerBackedToolNode`](/src/core/tools/observed.py) 与
+`ToolExecutionPipeline` 在工具边界统一执行：
 
 - 调用 `record_tool_started` / `record_tool_finished` / `record_tool_failed` 或等价 telemetry 接口。
 - 调用 `ExecutionBudget.charge(name, risk)`（计费）。
 - 构造 `ToolMessage(status="error", ...)`（错误标准化）。
 - 字符串预览截断、并发 slot 申请（`ExecutionBudget.tool_slot`）。
 
-如果工具需要记录特殊事件，应该扩展 `ObservedToolNode` 的 wrap 钩子，让所有工具共享，而不是在单个工具内重复实现。
+如果工具需要记录特殊事件，应该扩展 `ToolExecutionPipeline` 的统一阶段，让所有工具共享，而不是在单个工具内重复实现。
 
 ### 6.8 反模式清单
 
@@ -399,9 +411,9 @@ SANDBOX_EXCLUDES = {
 |---|---|---|---|
 | 硬编码路径 | 工具体里写 `Path("/Users/...")` 或 `os.path.join(root, user_path)` | 路径逃逸、跨 workspace 泄漏 | 走 `resolve_workspace_path` + `is_workspace_path_blocked` |
 | 维护平行工具列表 | 在多处 `if audience == "parent"` 拼出 tool list | 与 `ToolRegistry` 不一致、audience 漂移 | 全部走 `register(..., audiences, risk)` |
-| 工具内做 telemetry | 工具体里调 `record_tool_*` 或写日志 | 重复事件、与中央 `ObservedToolNode` 冲突 | 让观测层统一做 |
+| 工具内做 telemetry | 工具体里调 `record_tool_*` 或写日志 | 重复事件、与中央执行管线冲突 | 让观测层统一做 |
 | ToolRuntime 写成可见参数 | 签名首参数是 `runtime`，没依赖注入魔法 | LLM 看到 `runtime` 字段、会乱传值 | 必须用 `ToolRuntime` 类型注解，LangChain 自动隐藏 |
-| 重复扣预算 | 工具体里 `budget.charge(...)` | 双扣预算 | 让 `ObservedToolNode._observe_tool_call` 统一扣 |
+| 重复扣预算 | 工具体里 `budget.charge(...)` | 双扣预算 | 让 `LedgerBackedToolNode` 调度、`ToolExecutionPipeline` 统一准入和扣费 |
 | raise ValueError 给 LLM | 工具体里 `if not x: raise ValueError(...)` | 变成 ToolMessage error，模型收到错误栈 | 改成 `return "xxx rejected: ..."` |
 | 注册时写死 description | `register(tool, ..., description="My tool")` 与 docstring 漂移 | 模型看到两份不一致描述 | 让 `register` 缺省 description 自动回退到 `tool.description`（已实现） |
 | 子 agent 拥有 DELEGATION | 给 SUBAGENT 注册 `ToolRisk.DELEGATION` | 递归委托、预算失控 | DELEGATION 仅 PARENT，且禁止与 SUBAGENT 同时 |
@@ -416,10 +428,10 @@ SANDBOX_EXCLUDES = {
 | 沙箱排除命中 | 模型传 `.env` / `.git` | 返回 `blocked by sandbox policy` | 同上 | 用 `path=".env"` 断言返回值含 `blocked by sandbox` |
 | 同名工具重复注册 | 误把同一工具 register 两次 | `ToolRegistry.register` 抛 `ValueError("Tool already registered: ...")` | 启动期即失败，定位明确 | 直接调 `create_workspace_toolset` 启动路径 |
 | `ToolRegistry` freeze 后再注册 | 测试或并发线程误调 | 抛 `RuntimeError("Tool registry is frozen")` | 启动期失败 | 单测不应触碰；如必要用 mock |
-| 预算耗尽（controlled execution） | 一次 Grant 内 `run_command_in_container` 用完 | `ToolBudgetExceeded` → 由 `ObservedToolNode` 记 `record_tool_failed` 并 `raise`，触发父级 `StopReason.BUDGET_LIMIT` | 父 agent 看到 budget 停止，转交用户决定 | 单测调 `ExecutionBudget.charge` 反复触发 |
+| 预算耗尽（controlled execution） | 部署显式开启安全阀后，一次 Grant 内受控调用达到上限 | `LedgerBackedToolNode` 在副作用前拒绝下一调用，已完成结果已进入 Ledger，触发 `StopReason.BUDGET_LIMIT` | resume 重放已完成结果并从首个未完成调用继续 | 显式开启安全阀，以多个副作用调用和较小预算验证不重放 |
 | 预算耗尽（delegation） | 一次 Grant 内 `delegate_to_subagent` 用完 | 同上，`StopReason.BUDGET_LIMIT` | 同上 | 单测同上 |
 | `ToolRuntime` 上下文缺失（测试中） | 测试直接调用工具体绕过 graph | 工具返回字符串 `xxx tool error: ... require graph runtime context.` | 集成测试补 `SimpleNamespace(context=...)` | 单元测试 + 集成测试各一 |
-| `ObservedToolNode` 未观测 | 误把工具直接喂给普通 `ToolNode` | telemetry 丢失、预算不扣 | 启动期走 `WorkspaceRuntimeFactory.create` 装配的图，自检脚本断言 | 集成测试断言 telemetry 事件被发出 |
+| `LedgerBackedToolNode` 未接管 | 误把工具直接喂给普通 `ToolNode` | 副作用批次不可恢复、telemetry/预算/ledger 丢失 | 启动期走 `WorkspaceRuntimeFactory.create` 装配的图 | 集成测试断言 checkpoint 与 ledger |
 | 工具结果超过输出上限 | 文件巨大 | 字符串被截断到 `*_OUTPUT_LIMIT` | 提示模型改用 `summarize_large_file` | 测一个 10MB 文件，断言结果以 `*_OUTPUT_LIMIT` 截断 |
 | LLM 把 `state` / `runtime` 当作可调用参数 | schema 泄漏 | 模型把字符串 `"state"` 当路径传入 | LangChain 自动隐藏，但需 schema 泄漏测试兜底 | `convert_to_openai_tool` 断言不含 `runtime` / `state` |
 
@@ -436,7 +448,7 @@ SANDBOX_EXCLUDES = {
 ### 8.2 性能边界
 
 - 单工具调用受 [`HARD_MAX_TOOL_CALLS_PER_GRANT`](/src/config/settings.py) 总数限制与 [`MAX_PARALLEL_TOOL_CALLS`](/src/config/settings.py) 并发 slot（`ExecutionBudget.tool_slot`）双重控制。
-- 控制执行类（`CONTROLLED_EXECUTION`）受 [`MAX_CONTROLLED_EXECUTIONS_PER_GRANT`](/src/config/settings.py) 子限制。
+- 控制执行类（`CONTROLLED_EXECUTION`）始终进入使用量统计；仅在 [`CONTROLLED_EXECUTION_LIMIT_ENABLED`](/src/config/settings.py) 开启后受 [`MAX_CONTROLLED_EXECUTIONS_PER_GRANT`](/src/config/settings.py) 子限制。该安全阀默认关闭。
 - 委派类（`DELEGATION`）受 [`MAX_DELEGATIONS_PER_GRANT`](/src/config/settings.py) 子限制，子 agent 自身有 `SUBAGENT_MAX_STEPS` 步数上限。
 - 输出大小受 [`src/config/settings.py`](/src/config/settings.py) 中相应 `*_OUTPUT_LIMIT` 限制（命名约定：`FILE_READ_OUTPUT_LIMIT` / `PARENT_FILE_READ_OUTPUT_LIMIT` / `DOCKER_OUTPUT_LIMIT` / `LARGE_FILE_SUMMARY_LIMIT` / `SKILL_READ_OUTPUT_LIMIT`）。
 - 路径类工具的并发 I/O 已在 [`summarization.py`](/src/core/tools/summarization.py) 演示 `ThreadPoolExecutor(max_workers=LARGE_FILE_MAP_WORKERS)` 模式。
@@ -444,7 +456,7 @@ SANDBOX_EXCLUDES = {
 ### 8.3 一致性边界
 
 - `ToolRegistry` 在 `WorkspaceRuntime` 装配期内不变（`freeze()`）；同一 Workspace 的 `WorkspaceRuntime` 复用缓存（见 [`WorkspaceRuntimeRegistry`](/src/core/workspace/runtime.py)）。
-- `risk_by_name` 由 `create_workspace_toolset` 从 `registry.specs_for(audience)` 派生后传给 `ObservedToolNode` 与 `create_delegate_tool`，不能手工维护平行映射。
+- 完整 `ToolSpec` 映射由 `create_workspace_toolset` 从 `registry.specs_for(audience)` 派生后传给 `LedgerBackedToolNode` 与 `create_delegate_tool`，不能手工维护平行映射。
 - 工具名 = 函数名，register 时以 `tool.name` 为准；函数改名等于工具改名，会破坏现有 prompt 调用。
 
 ## 当前限制
@@ -466,7 +478,7 @@ SANDBOX_EXCLUDES = {
 - [变更管理与检查清单](/docs/development/change-management.md) — Tool / 命令 / 文件访问类型的完成定义。
 - [开发文档索引](/docs/development/README.md) — 本文档在开发文档树中的位置。
 - [测试结构与运行指南](/docs/quality/testing-guide.md) — 单元测试归属与运行命令。
-- [Agent 执行架构](/docs/architecture/agent-execution-architecture.md) — `ObservedToolNode` 在图中的位置。
+- [Agent 执行架构](/docs/architecture/agent-execution-architecture.md) — `LedgerBackedToolNode` 在图中的位置。
 - [Agent 调用链](/docs/architecture/agent-execution-call-chain.md) — 工具调用如何被路由回 agent。
 
 ### 推荐链

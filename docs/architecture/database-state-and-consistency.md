@@ -143,6 +143,15 @@ Saga 是一种跨多个独立存储协调业务流程的方法。它不假装多
 本项目的 `ExecutionRecoveryCoordinator` 就是恢复协调器。它在 Core 启动时对照 `state.db` 中的
 Execution 状态和 `checkpoints.db` 中的真实 checkpoint，修复崩溃留下的中间状态。
 
+工具调用还需要第三个互补事实：`state.db.tool_ledger` 在工具实现前保存 durable claim，在工具
+返回后立即保存精确 `ToolMessage`。若 checkpoint 尚未提交，恢复时优先重放账本结果；若 daemon
+退出时账本仍为 `running`，启动过程会将其标记为 `uncertain`。安全读取可重试，结构化 Workspace
+写入可使用 `resource_activities` 的摘要对账，无法证明结果的外部副作用必须人工处理。
+`resource_activities` 只提供观测证据，不能替代执行账本。
+
+LangGraph checkpoint 以完整工具批次为提交边界，而不是每个工具调用各写一次。批次内部恢复依赖
+`tool_ledger` 的小型终态记录；这既避免副作用重放，也避免工具数量线性放大 graph step 和 checkpoint 写入。
+
 ### 1.8 最终一致
 
 最终一致表示两个数据库在短时间内可能不一致，但恢复协调器和后台任务会让它们最终收敛。
@@ -166,7 +175,7 @@ learn-agent/state/
 
 | 数据库 | 拥有者 | 保存内容 | 主要用途 |
 |---|---|---|---|
-| `state.db` | 本项目业务代码 | Session、消息、分支、记忆、Execution、维护任务 | 回答“用户的对话和任务现在是什么状态” |
+| `state.db` | 本项目业务代码 | Session、消息、分支、记忆、Execution、工具执行账本、维护任务 | 回答“用户的对话、任务和工具副作用现在是什么状态” |
 | `checkpoints.db` | LangGraph `SqliteSaver` | 图节点执行断点 | 回答“未完成的图应该从哪里继续” |
 
 不把 checkpoint 表直接并入 `state.db`，原因是：
@@ -192,7 +201,7 @@ learn-agent/state/
 
 ## 3. 本地状态数据所有权
 
-`state.db` 保存 Workspace、Session、Message、Execution、Memory 和 Maintenance Job 等业务事实。
+`state.db` 保存 Workspace、Session、Message、Execution、Tool Ledger、Memory 和 Maintenance Job 等业务事实。
 `checkpoints.db` 只保存 LangGraph 图执行断点。
 
 完整表关系、字段职责、外键、索引和 Session 删除语义统一维护在

@@ -13,7 +13,7 @@ from src.core.llm.completion import ensure_complete_response, response_stop_reas
 from src.core.llm.usage import context_tokens, has_context_usage, message_usage
 from src.core.prompts import build_parent_system_prompt
 from src.core.tasks.context import ToolExecutionContext
-from src.core.tools.observed import ObservedToolNode
+from src.core.tools.observed import LedgerBackedToolNode
 from src.core.agent.context_guard import (
     AgentGraphState,
     InTurnContextGuard,
@@ -112,13 +112,21 @@ def create_parent_graph(
         """Mirror completed tool results into the append-only Turn journal."""
         return {"turn_journal": latest_tool_results(state)}
 
+    def route_context_guard(state: AgentGraphState) -> str:
+        """Checkpoint a completed compaction before validating again."""
+        return "retry" if state.get("context_guard_retry") else "ready"
+
     builder = StateGraph(AgentGraphState, context_schema=ToolExecutionContext)
     builder.add_node("context_guard", context_guard)
     builder.add_node("agent", agent_node)
     builder.add_node(
         "tools",
-        ObservedToolNode(
+        LedgerBackedToolNode(
             parent_tools,
+            specs={
+                name: spec
+                for name, spec in getattr(tool_pipeline, "specs", {}).items()
+            },
             risk_by_name=risk_by_name,
             pipeline=tool_pipeline,
         ),
@@ -127,7 +135,11 @@ def create_parent_graph(
     # The graph is the AgentLoop: LLM output without tool calls terminates;
     # tool calls execute centrally, append ToolMessages, then return to LLM.
     builder.add_edge(START, "context_guard")
-    builder.add_edge("context_guard", "agent")
+    builder.add_conditional_edges(
+        "context_guard",
+        route_context_guard,
+        {"retry": "context_guard", "ready": "agent"},
+    )
     builder.add_conditional_edges("agent", tools_condition, {"tools": "tools", "__end__": END})
     builder.add_edge("tools", "journal_tools")
     builder.add_edge("journal_tools", "context_guard")

@@ -151,6 +151,25 @@ Core 会在当前 LLM 调用内部处理短期限流、网络中断和临时服�
 
 随后 Execution 以 `stop_reason=tool_approval` 暂停。参数已经过敏感字段过滤和长度限制。
 
+只有 `interrupt` payload 的 `type=tool_approval_required` 才会产生本事件。未知 interrupt 不得伪装成
+审批；Core 会以需要显式条件重试的 `graph_error` 暂停。
+
+## 工具恢复暂停
+
+无法安全判定副作用状态时，Core 发送普通 `paused` 事件，字段包括：
+
+```json
+{
+  "stop_reason": "tool_recovery_required",
+  "resume_policy": "action_required",
+  "tool_call_id": "...",
+  "tool": "..."
+}
+```
+
+该状态不会发送 `tool_approval_required`，前端应调用 `tool_recovery.list/get/resolve`，不能发送空
+`session.resume`。预算暂停会携带下一个未执行的 `tool_call_id`；它参与无进展指纹，但不会暴露工具参数。
+
 ## `step`
 
 步骤事件用于展示 Agent 进度。

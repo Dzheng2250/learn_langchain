@@ -6,10 +6,12 @@ from dataclasses import replace
 from typing import Any
 from types import SimpleNamespace
 
-from langchain_core.messages import ToolMessage
+from langchain_core.messages import AIMessage, ToolMessage
+from langchain_core.runnables.config import get_config_list, get_executor_for_config
 from langchain_core.tools import BaseTool
 from langgraph.errors import GraphBubbleUp
 from langgraph.prebuilt import ToolNode
+from langgraph.prebuilt.tool_node import ToolRuntime
 
 from src.core.common.content import message_content_text
 from src.core.common.debug import debug_print
@@ -20,7 +22,8 @@ from src.core.agent.budget import ToolBudgetExceeded, current_execution_budget
 from src.core.resource_activity import (
     bind_resource_activity, current_resource_context, lookup_resource_evidence,
 )
-from src.core.tools.catalog import ToolRisk
+from src.core.state.tool_ledger import ToolRecoveryRequired
+from src.core.tools.catalog import ToolRisk, ToolSpec
 
 
 def _tool_call_name(request) -> str | None:
@@ -263,7 +266,7 @@ class ObservedToolNode(ToolNode):
             """Keep fallback ToolNode failures model-visible and graph-local."""
             try:
                 return observed_wrapper(request, execute)
-            except (GraphBubbleUp, ToolBudgetExceeded):
+            except (GraphBubbleUp, ToolBudgetExceeded, ToolRecoveryRequired):
                 raise
             except Exception as exc:
                 try:
@@ -278,3 +281,117 @@ class ObservedToolNode(ToolNode):
                 return _tool_error_message(request, exc)
 
         super().__init__(tools, wrap_tool_call=fault_contained_wrapper, **kwargs)
+
+
+class LedgerBackedToolNode(ObservedToolNode):
+    """Execute a complete tool batch with per-call durable recovery.
+
+    LangGraph checkpoints the batch only after this node returns. Each call is
+    therefore committed to the Tool Ledger first; if an interrupt restarts the
+    node, completed calls replay their exact ToolMessage and only pending calls
+    execute. Side effects remain sequential while explicitly safe reads may run
+    in parallel.
+    """
+
+    def __init__(self, tools, *, specs: dict[str, ToolSpec], **kwargs) -> None:
+        self.execution_specs = dict(specs)
+        kwargs.setdefault(
+            "risk_by_name",
+            {name: spec.risk for name, spec in self.execution_specs.items()},
+        )
+        super().__init__(tools, **kwargs)
+
+    def _func(self, input, config, runtime):
+        tool_calls, input_type = self._parse_input(input)
+        completed = completed_tool_call_ids(input)
+        pending = [call for call in tool_calls if str(call.get("id") or "") not in completed]
+        if not pending:
+            return self._combine_tool_outputs([], input_type)
+
+        config_list = get_config_list(config, len(pending))
+        calls_with_runtime = []
+        for call, cfg in zip(pending, config_list, strict=False):
+            state = self._extract_state(input, cfg)
+            calls_with_runtime.append((
+                call,
+                ToolRuntime(
+                    state=state,
+                    tool_call_id=call["id"],
+                    config=cfg,
+                    context=runtime.context,
+                    store=runtime.store,
+                    stream_writer=runtime.stream_writer,
+                    tools=list(self.tools_by_name.values()),
+                    execution_info=runtime.execution_info,
+                    server_info=runtime.server_info,
+                ),
+            ))
+
+        outputs = []
+        index = 0
+        while index < len(calls_with_runtime):
+            call, tool_runtime = calls_with_runtime[index]
+            spec = self.execution_specs.get(str(call.get("name") or ""))
+            if spec is None or not spec.parallel_safe:
+                outputs.append(self._run_one(call, input_type, tool_runtime))
+                index += 1
+                continue
+
+            budget = current_execution_budget()
+            wave_capacity = len(calls_with_runtime) - index
+            if budget is not None:
+                remaining = budget.remaining_for(spec.risk)
+                # A single call must still enter the pipeline at zero capacity:
+                # completed ledger results replay before budget enforcement.
+                wave_capacity = max(
+                    1,
+                    min(budget.max_parallel_tool_calls, remaining),
+                )
+            wave = []
+            while index < len(calls_with_runtime) and len(wave) < wave_capacity:
+                candidate, candidate_runtime = calls_with_runtime[index]
+                candidate_spec = self.execution_specs.get(
+                    str(candidate.get("name") or "")
+                )
+                if (
+                    candidate_spec is None
+                    or not candidate_spec.parallel_safe
+                    or candidate_spec.risk != spec.risk
+                ):
+                    break
+                wave.append((candidate, candidate_runtime))
+                index += 1
+            with get_executor_for_config(config) as executor:
+                outputs.extend(executor.map(
+                    self._run_one,
+                    [item[0] for item in wave],
+                    [input_type] * len(wave),
+                    [item[1] for item in wave],
+                ))
+
+        return self._combine_tool_outputs(outputs, input_type)
+
+def completed_tool_call_ids(input) -> set[str]:
+    """Return tool IDs completed after the latest assistant request."""
+    if isinstance(input, list):
+        messages = input
+    elif isinstance(input, dict):
+        messages = list(input.get("messages") or [])
+    else:
+        messages = list(getattr(input, "messages", []) or [])
+    assistant_index = next(
+        (
+            index
+            for index in range(len(messages) - 1, -1, -1)
+            if isinstance(messages[index], AIMessage)
+            and getattr(messages[index], "tool_calls", None)
+        ),
+        None,
+    )
+    if assistant_index is None:
+        return set()
+    return {
+        str(message.tool_call_id or "")
+        for message in messages[assistant_index + 1 :]
+        if isinstance(message, ToolMessage)
+    }

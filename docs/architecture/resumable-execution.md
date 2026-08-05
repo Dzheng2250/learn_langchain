@@ -42,11 +42,14 @@ Turn       用户提出的一项请求
 | `LEARN_AGENT_MAX_AUTO_SLICES_PER_GRANT` | 3 | 一次 chat/resume 最多自动继续多少个 Slice |
 | `LEARN_AGENT_MAX_GRANT_WALL_SECONDS` | 600 | Grant 的协作式总时长上限 |
 | `LEARN_AGENT_MAX_PARALLEL_TOOL_CALLS` | 4 | 同一 Grant 同时执行的工具数 |
-| `LEARN_AGENT_MAX_CONTROLLED_EXECUTIONS_PER_GRANT` | 12 | 命令、容器等受控执行额度 |
+| `LEARN_AGENT_CONTROLLED_EXECUTION_LIMIT_ENABLED` | false | 是否启用受控执行次数安全阀 |
+| `LEARN_AGENT_MAX_CONTROLLED_EXECUTIONS_PER_GRANT` | 12 | 安全阀开启时的命令和 Workspace 变更调用额度 |
 | `LEARN_AGENT_MAX_DELEGATIONS_PER_GRANT` | 6 | 委派子 Agent 的额度 |
 | `LEARN_AGENT_HARD_MAX_TOOL_CALLS_PER_GRANT` | 100 | 所有工具调用的紧急硬上限 |
 
 “协作式总时长”表示系统在 Slice 边界检查时间。它不会在一个正在执行的 LLM 请求或工具函数中强制杀线程，避免破坏文件和状态。
+
+受控执行安全阀默认关闭。关闭只取消 `CONTROLLED_EXECUTION` 的 12 次子限制，调用仍会进入使用量与审计统计，并继续受 100 次总工具硬上限、Graph step、Grant 时长、审批、Hook、沙箱和 Capability Enforcer 约束。需要严格限制无人值守命令或 Workspace 变更的部署可以显式启用该安全阀。
 
 ## 为什么不再把所有工具都算成同一种调用
 
@@ -63,7 +66,10 @@ CONTROLLED_EXECUTION  命令或容器执行
 DELEGATION            委派子 Agent
 ```
 
-`ObservedToolNode` 在统一工具边界进行计数和并行控制，因此不需要每个工具函数自己实现预算逻辑。
+`LedgerBackedToolNode` 在统一工具边界进行预算准入和调度，因此不需要每个工具函数自己实现预算逻辑。
+模型一次返回多个调用时，显式声明 `parallel_safe` 的纯读取工具可以并行；有副作用、需审批或 controlled
+的工具按原始顺序串行执行。整个工具批次通常只占一个 graph step，批次内部每个调用则在 `tool_ledger`
+中单独 claim 并保存精确结果。暂停使节点从入口重启时，已完成调用重放 `ToolMessage`，只执行尚未完成的调用。
 
 ## 暂停与恢复的数据流
 
@@ -87,6 +93,14 @@ flowchart TB
 ```
 
 LangGraph checkpoint 使用独立的 `checkpoints.db`。恢复时使用相同 `checkpoint_thread_id` 并以 `input=None` 继续，而不是重新发送原始问题从头执行。
+
+工具执行还使用 `state.db.tool_ledger` 保存 durable claim 和精确结果。工具批次尚未形成 checkpoint 时，
+已完成调用也能直接重放保存的 `ToolMessage`；遗留 `running` 调用在 daemon 启动时转为 `uncertain`。结构化文件
+写入可通过资源活动 digest 对账，命令、委派和其他无法证明的外部副作用必须人工处理。
+
+暂停按恢复前置条件分为：`continue`（预算、步数、断连）、`action_required`（审批、工具恢复）、
+`condition_required`（输出限制、压缩或可重试错误）和 `terminal`。`session.resume` 只直接接受
+`continue`；审批与工具恢复使用各自 RPC，条件型暂停必须显式传 `retry_conditions=true`。
 
 可使用：
 

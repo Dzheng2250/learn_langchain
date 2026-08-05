@@ -11,6 +11,7 @@ from src.ipc.models import (
     ApprovalModeSetParams, ChatParams, PingParams,
     ResourceActivityListParams, ResourceActivityScopeParams,
     SessionDeleteParams, SessionHistoryParams, SessionParams, ShutdownParams,
+    ToolRecoveryGetParams, ToolRecoveryResolveParams,
 )
 
 
@@ -147,6 +148,110 @@ class CoreHandlersTest(unittest.IsolatedAsyncioTestCase):
 
 
 class AgentHandlersTest(unittest.IsolatedAsyncioTestCase):
+    async def test_tool_recovery_list_and_get_use_safe_service_contract(self):
+        class RecoveryService:
+            def list_pending(self, workspace_root, session_name):
+                return {
+                    "schema_version": 1,
+                    "items": [{"tool_call_id": "call-1", "tool_name": "write_file"}],
+                    "count": 1,
+                    "scope": [workspace_root, session_name],
+                }
+
+            def get(self, workspace_root, session_name, tool_call_id):
+                return {
+                    "schema_version": 1,
+                    "item": {
+                        "tool_call_id": tool_call_id,
+                        "tool_name": "write_file",
+                        "status": "uncertain",
+                    },
+                    "scope": [workspace_root, session_name],
+                }
+
+        handlers = AgentHandlers(
+            FakeAgentService(), tool_recovery_service=RecoveryService()
+        )
+
+        listed = await handlers.tool_recovery_list(
+            SessionParams(
+                auth_token="token", workspace_root="workspace", session_name="default"
+            ),
+            FakeRequestContext(),
+        )
+        detail = await handlers.tool_recovery_get(
+            ToolRecoveryGetParams(
+                auth_token="token",
+                workspace_root="workspace",
+                session_name="default",
+                tool_call_id="call-1",
+            ),
+            FakeRequestContext(),
+        )
+
+        self.assertEqual(1, listed["count"])
+        self.assertEqual("call-1", detail["item"]["tool_call_id"])
+        self.assertNotIn("result_payload", detail["item"])
+
+    async def test_tool_recovery_resolve_routes_dedicated_recovery_response(self):
+        class RecoveryService:
+            def __init__(self):
+                self.calls = []
+
+            def prepare_response(
+                self, workspace_root, session_name, tool_call_id, action
+            ):
+                self.calls.append((workspace_root, session_name, tool_call_id, action))
+                return {
+                    "type": "tool_recovery",
+                    "tool_call_id": tool_call_id,
+                    "action": action,
+                }
+
+        class ResumableAgent(FakeAgentService):
+            def __init__(self):
+                self.resume_values = []
+
+            async def resume_execution(
+                self,
+                workspace_root,
+                session_name,
+                instruction,
+                on_event,
+                **kwargs,
+            ):
+                self.resume_values.append(kwargs.get("resume_value"))
+                return {
+                    "status": "ok",
+                    "workspace_root": workspace_root,
+                    "session_name": session_name,
+                }
+
+        recovery = RecoveryService()
+        agent = ResumableAgent()
+        handlers = AgentHandlers(agent, tool_recovery_service=recovery)
+
+        result = await handlers.tool_recovery_resolve(
+            ToolRecoveryResolveParams(
+                auth_token="token",
+                workspace_root="workspace",
+                session_name="default",
+                tool_call_id="call-1",
+                action="return_error",
+            ),
+            FakeRequestContext(),
+        )
+
+        self.assertEqual("ok", result["status"])
+        self.assertEqual(
+            [("workspace", "default", "call-1", "return_error")],
+            recovery.calls,
+        )
+        self.assertEqual(
+            [{"type": "tool_recovery", "tool_call_id": "call-1", "action": "return_error"}],
+            agent.resume_values,
+        )
+
     async def test_approval_mode_get_and_set_share_the_generic_rpc_contract(self):
         class ApprovalModes:
             def get_mode(self, workspace_root, session_name):

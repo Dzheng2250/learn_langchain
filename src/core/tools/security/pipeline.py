@@ -19,13 +19,14 @@ from src.core.tools.catalog import ToolCapability
 from src.core.tools.security.command_rules import command_rule_key
 from src.core.tools.security.enforcement import CapabilityEnforcer
 from src.core.resource_activity import bind_resource_activity, lookup_resource_evidence
+from src.core.state.tool_ledger import ToolRecoveryRequired
 from src.core.tools.security.models import PolicyAction, ToolCallContext
 
 
 class ToolExecutionPipeline:
     """Authorize and execute every LangGraph tool request consistently."""
 
-    def __init__(self, specs, *, policy, approvals, approval_coordinator=None, hook_dispatcher=None, enforcer=None, event_source="agent_tool_node", resource_activity_recorder=None):
+    def __init__(self, specs, *, policy, approvals, approval_coordinator=None, hook_dispatcher=None, enforcer=None, event_source="agent_tool_node", resource_activity_recorder=None, tool_ledger=None):
         self.specs = dict(specs)
         self.policy = policy
         self.approvals = approvals
@@ -34,6 +35,7 @@ class ToolExecutionPipeline:
         self.enforcer = enforcer or CapabilityEnforcer()
         self.event_source = event_source
         self.resource_activity_recorder = resource_activity_recorder
+        self.tool_ledger = tool_ledger
 
     def invoke(self, request, execute):
         """Run one tool call without leaking ordinary failures into the graph."""
@@ -41,7 +43,7 @@ class ToolExecutionPipeline:
         try:
             context = self._context_from_request(request)
             return self._invoke_with_context(request, execute, context)
-        except (GraphBubbleUp, ToolBudgetExceeded):
+        except (GraphBubbleUp, ToolBudgetExceeded, ToolRecoveryRequired):
             # These are state-machine control signals, not tool failures.
             raise
         except Exception as exc:
@@ -80,6 +82,10 @@ class ToolExecutionPipeline:
                 error=exc,
             )
             return self._error(context, exc)
+        if self.tool_ledger is not None:
+            completed = self.tool_ledger.replay_completed(context)
+            if completed.action == "replay" and completed.message is not None:
+                return completed.message
         rule_key, persistable = self._rule_identity(context)
         decision = self.policy.evaluate(
             context, rule_key=rule_key, persistable=persistable
@@ -207,6 +213,19 @@ class ToolExecutionPipeline:
         started_at = time.monotonic()
         budget = current_execution_budget()
         if budget is not None:
+            # Keep budget pauses outside the durable execution claim. The
+            # checkpointed node performs the same wave-level check, while this
+            # guard also protects fallback/direct pipeline callers.
+            budget.require_capacity(
+                context.tool_name,
+                context.spec.risk,
+                tool_call_id=context.tool_call_id,
+            )
+        if self.tool_ledger is not None:
+            claim = self.tool_ledger.claim(context)
+            if claim.action == "replay" and claim.message is not None:
+                return claim.message
+        if budget is not None:
             budget.charge(context.tool_name, context.spec.risk)
         try:
             record_tool_started(
@@ -236,7 +255,12 @@ class ToolExecutionPipeline:
                 resource_activity_ids=activity_ids,
             )
             self._record_failure(context, exc, started_at)
-            return self._error(context, exc)
+            message = self._error(context, exc)
+            if self.tool_ledger is not None:
+                self.tool_ledger.finish(context, message)
+            return message
+        if self.tool_ledger is not None:
+            self.tool_ledger.finish(context, value)
         preview = message_content_text(value) or repr(value)
         self._dispatch_post_tool(
             context,

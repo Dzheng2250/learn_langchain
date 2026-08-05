@@ -34,7 +34,13 @@ class ExecutionLifecycleController(Protocol):
 
     def has_attached_execution(self, session) -> bool: ...
 
-    def resume(self, session): ...
+    def resume(
+        self,
+        session,
+        *,
+        resume_value: dict | None = None,
+        retry_conditions: bool = False,
+    ): ...
 
     def pause_runtime_creation_failed(self, execution, exc: Exception) -> None: ...
 
@@ -93,6 +99,7 @@ class AgentTurnRunner(Protocol):
         run_id: str | None = None,
         control: ExecutionControl | None = None,
         resume_value: dict | None = None,
+        retry_conditions: bool = False,
     ) -> dict:
         """Resume one recoverable execution without blocking the event loop."""
 

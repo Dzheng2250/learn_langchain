@@ -138,12 +138,17 @@ active context window 的 summary_text
 |---|---|
 | `executions` | 保存一项可能跨多个 Slice 的工作状态 |
 | `execution_slices` | 保存每次有界 LangGraph 运行的预算和停止原因 |
-| `tool_ledger` | 为工具调用审计预留账本结构 |
+| `tool_ledger` | 按 `execution_id + tool_call_id` 保存工具 durable claim、重放策略、状态和精确结果 |
 | `tool_approval_requests` | 保存与 Execution/tool_call 绑定的待审批请求及处理结果 |
 | `tool_permission_rules` | 保存 Session 或 Workspace 范围的 allow/deny 规则 |
 | `tool_approval_audit` | 保存不可变的审批响应审计记录 |
 
 Schema v12 增加审批模式元数据：`sessions.tool_approval_mode` 保存可为空的 Session override；`tool_approval_requests.approval_mode` 固化请求创建时模式；`tool_approval_audit.decision_source` 与 `approval_mode` 区分用户、自动、Hook 和旧记录。模式名不使用 SQL `CHECK`，因此新增注册策略不需要数据库迁移；应用层负责验证，未知值按 `manual` 安全处理。
+
+Schema v13 将预留的 `tool_ledger` 升级为执行幂等账本，并为 `executions` 增加 `resume_policy`、
+`pause_fingerprint`、`repeated_pause_count` 和 `pause_metadata`。工具在副作用前写入 `running`，返回后立即保存
+精确 `ToolMessage`；大结果写入 ArtifactStore。daemon 启动时遗留 `running` 变为 `uncertain`，不能盲目重放。
+v13 可离线回滚到 v12；回滚会丢弃精确结果、对账状态和暂停指纹，只保留旧版预览账本字段。
 
 `executions.status` 表示业务执行状态，例如：
 

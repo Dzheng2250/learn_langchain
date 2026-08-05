@@ -114,6 +114,10 @@ CREATE TABLE IF NOT EXISTS executions (
         )
     ),
     stop_reason TEXT NOT NULL DEFAULT '',
+    resume_policy TEXT NOT NULL DEFAULT 'continue',
+    pause_fingerprint TEXT NOT NULL DEFAULT '',
+    repeated_pause_count INTEGER NOT NULL DEFAULT 0,
+    pause_metadata TEXT NOT NULL DEFAULT '{}',
     original_input TEXT NOT NULL,
     progress_summary TEXT NOT NULL DEFAULT '',
     grant_index INTEGER NOT NULL DEFAULT 1,
@@ -186,16 +190,29 @@ CREATE TABLE IF NOT EXISTS execution_task_dependencies (
 );
 
 CREATE TABLE IF NOT EXISTS tool_ledger (
-    tool_call_id TEXT PRIMARY KEY,
     execution_id TEXT NOT NULL REFERENCES executions(execution_id) ON DELETE CASCADE,
+    tool_call_id TEXT NOT NULL,
     tool_name TEXT NOT NULL,
     risk TEXT NOT NULL,
-    status TEXT NOT NULL,
+    args_hash TEXT NOT NULL DEFAULT '',
+    effect TEXT NOT NULL DEFAULT 'read_only'
+        CHECK(effect IN ('read_only','internal_mutation','workspace_mutation','external')),
+    replay_policy TEXT NOT NULL DEFAULT 'safe_retry'
+        CHECK(replay_policy IN ('safe_retry','result_replay','reconcile','manual')),
+    status TEXT NOT NULL DEFAULT 'prepared'
+        CHECK(status IN ('prepared','running','succeeded','failed','uncertain','legacy')),
     args_preview TEXT NOT NULL DEFAULT '',
     result_preview TEXT NOT NULL DEFAULT '',
+    result_payload TEXT NOT NULL DEFAULT '',
+    before_state TEXT NOT NULL DEFAULT '{}',
+    after_state TEXT NOT NULL DEFAULT '{}',
     artifact_id TEXT,
+    attempt_count INTEGER NOT NULL DEFAULT 0,
+    run_id TEXT NOT NULL DEFAULT '',
+    slice_id TEXT,
     started_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    finished_at TEXT
+    finished_at TEXT,
+    PRIMARY KEY(execution_id, tool_call_id)
 );
 
 CREATE TABLE IF NOT EXISTS tool_approval_requests (

@@ -63,6 +63,7 @@ class AgentTurnService:
         run_id: str | None = None,
         control: ExecutionControl | None = None,
         resume_value: dict | None = None,
+        retry_conditions: bool = False,
     ) -> dict:
         """Schedule a recoverable execution resume on the bounded executor."""
         return await self.async_turn_runner.resume(
@@ -73,6 +74,7 @@ class AgentTurnService:
             run_id=run_id,
             control=control,
             resume_value=resume_value,
+            retry_conditions=retry_conditions,
         )
 
     def stream_turn(
@@ -103,6 +105,7 @@ class AgentTurnService:
         run_id: str,
         instruction: str = "",
         control: ExecutionControl | None = None,
+        retry_conditions: bool = False,
     ) -> Iterator[dict]:
         """Compatibility wrapper for synchronous internal callers."""
         yield from self.request_stream_service.stream_resume(
@@ -111,6 +114,7 @@ class AgentTurnService:
             run_id=run_id,
             instruction=instruction,
             control=control,
+            retry_conditions=retry_conditions,
         )
 
     def close(self) -> None:

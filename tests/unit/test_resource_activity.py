@@ -13,6 +13,7 @@ from src.core.adapters.sqlite.resource_activity import SQLiteResourceActivityRep
 from src.core.resource_activity.observation import command_uri, file_snapshot, workspace_uri
 from src.core.resource_activity.service import ResourceActivityQueryService
 from src.core.state.migrations import (
+    downgrade_v13_to_v12,
     apply_local_migrations,
     downgrade_v11_to_v10,
     downgrade_v12_to_v11,
@@ -221,6 +222,7 @@ class ResourceActivityRepositoryTest(unittest.TestCase):
         database.initialize()
         self.addCleanup(database.close)
         with database.transaction() as conn:
+            downgrade_v13_to_v12(conn)
             downgrade_v12_to_v11(conn)
         config = SimpleNamespace(runtime_dir=directory)
         with (
@@ -281,10 +283,10 @@ class ResourceActivityRepositoryTest(unittest.TestCase):
             self.assertRaisesRegex(ValueError, "Unsupported local schema downgrade"),
         ):
             main([
-                "rollback-local-state", "--from-version", "12",
-                "--to-version", "10", "--apply",
+                "rollback-local-state", "--from-version", "13",
+                "--to-version", "11", "--apply",
             ])
-        self.assertEqual([], list(directory.glob("state.db.v12-backup-*")))
+        self.assertEqual([], list(directory.glob("state.db.v13-backup-*")))
 
     def test_v11_repair_adds_event_key_to_an_early_v11_database(self):
         with self.database.transaction() as conn:
@@ -297,6 +299,7 @@ class ResourceActivityRepositoryTest(unittest.TestCase):
         self.assertIn("idx_resource_activities_event_key", indexes)
     def test_v11_downgrade_removes_only_resource_activity_tables(self):
         with self.database.transaction() as conn:
+            downgrade_v13_to_v12(conn)
             downgrade_v12_to_v11(conn)
             downgrade_v11_to_v10(conn)
         with self.database.connect() as conn:

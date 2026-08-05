@@ -25,7 +25,7 @@
 
 - `agent.chat` 到 `AgentTurnService` 的调用链。
 - Execution、Slice、预算、暂停、恢复和错误分支。
-- LangGraph、ModelProvider、ToolRegistry、ObservedToolNode 如何协作。
+- LangGraph、ModelProvider、ToolRegistry、`LedgerBackedToolNode` 如何协作。
 - Agent 执行如何接入请求流式事件与 Telemetry 边界。
 
 ## 本文不负责
@@ -241,6 +241,9 @@ name
 tool
 audiences
 risk
+effect
+replay_policy
+parallel_safe
 description
 ```
 
@@ -259,10 +262,15 @@ description
 Agent 工具视图。构建完成后 Registry 会冻结，运行期间不能改变 Workspace 能力集合。
 新增工具时不应直接修改多个工具列表，而应注册一条 `ToolSpec`。
 
-Registry 当前只描述和筛选能力，不负责执行工具。工具执行继续由 LangGraph
-`ObservedToolNode` 完成。
+Registry 只描述和筛选能力，不负责执行工具。父 Agent 与子 Agent 均使用
+`LedgerBackedToolNode`：有副作用、需审批或受控的调用在单个工具批次内按顺序执行；只有显式声明
+`parallel_safe` 的纯读取工具可以组成并行 wave。每个调用先把精确结果提交到 Tool Ledger，整个批次
+完成后才形成一次 graph checkpoint；中途暂停时，resume 从 Ledger 重放已完成结果并继续剩余调用。
+`ObservedToolNode` 仍保留为底层兼容适配器，不是生产 Graph 的批处理边界。
 
-未来可基于风险等级增加审批策略或只读运行模式。
+工具开始执行前会写入 durable tool ledger，完成后先持久化精确 `ToolMessage`，再运行
+非关键 PostHook 与 Telemetry。checkpoint 丢失时可以重放已保存结果，而不会重新执行副作用。
+无法确认是否已经产生副作用的调用会暂停为 `tool_recovery_required`，由恢复 RPC 处理。
 
 ## 事件边界
 

@@ -27,6 +27,11 @@ def register(subparsers, _config) -> None:
     resume.add_argument("--session", default="default")
     resume.add_argument("--workspace")
     resume.add_argument("--instruction", default="")
+    resume.add_argument(
+        "--retry-conditions",
+        action="store_true",
+        help="retry after explicitly correcting a condition-required pause",
+    )
     resume.set_defaults(handler=run)
 
 
@@ -38,6 +43,7 @@ def run(args, config) -> int:
     renderer = AgentEventRenderer()
     if args.session_action == "resume":
         params["instruction"] = args.instruction
+        params["retry_conditions"] = bool(args.retry_conditions)
     elif args.session_action == "delete":
         params["hard_delete"] = bool(args.hard)
     result = client.request(
@@ -49,11 +55,28 @@ def run(args, config) -> int:
         print()
         if result.get("status") == "paused":
             print(result.get("message", "Agent execution paused."))
-            print(
-                "Use 'learn-agent session resume --session "
-                f"{args.session}' to continue, or 'learn-agent session discard --session "
-                f"{args.session}' to discard it."
-            )
+            policy = result.get("resume_policy")
+            reason = result.get("stop_reason")
+            if policy == "action_required" and reason == "tool_approval":
+                print("Resolve the pending request with approval.list/resolve.")
+            elif policy == "action_required" and reason == "tool_recovery_required":
+                print("Resolve the uncertain call with tool_recovery.list/resolve.")
+            elif policy == "condition_required":
+                print(
+                    "Correct the blocking condition, then use 'learn-agent session resume "
+                    f"--session {args.session} --retry-conditions'."
+                )
+            elif policy == "terminal":
+                print(
+                    "This execution cannot be resumed. Use 'learn-agent session discard "
+                    f"--session {args.session}'."
+                )
+            else:
+                print(
+                    "Use 'learn-agent session resume --session "
+                    f"{args.session}' to continue, or 'learn-agent session discard --session "
+                    f"{args.session}' to discard it."
+                )
             return 0
         if result.get("status") == "ok" and result.get("goal_mode") and not renderer.done_announced:
             print("Goal mode execution completed. You can continue with a new message or exit.")

@@ -648,6 +648,7 @@ class ChatScreen(Screen):
                     "workspace_root": self._workspace_root,
                     "session_name": self._session_name,
                     "instruction": instruction,
+                    "retry_conditions": True,
                 },
                 on_event=self._on_event,
             )

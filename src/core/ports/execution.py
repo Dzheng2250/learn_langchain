@@ -20,6 +20,9 @@ class ExecutionPauseStore(Protocol):
         *,
         usage: dict | None = None,
         checkpoint_state: CheckpointState | str = CheckpointState.AVAILABLE,
+        resume_policy: str | None = None,
+        pause_fingerprint: str = "",
+        pause_metadata: dict | None = None,
     ) -> None: ...
 
 
@@ -38,7 +41,13 @@ class ExecutionLifecycleStore(ExecutionPauseStore, Protocol):
         goal_mode: bool = False,
     ) -> Any: ...
 
-    def resume(self, session: SessionContext) -> Any: ...
+    def resume(
+        self,
+        session: SessionContext,
+        *,
+        resume_value: dict | None = None,
+        retry_conditions: bool = False,
+    ) -> Any: ...
 
 
 class ExecutionSliceStore(Protocol):

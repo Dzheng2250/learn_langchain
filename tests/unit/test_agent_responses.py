@@ -31,6 +31,7 @@ class AgentResponsesTest(unittest.TestCase):
             stop_reason=None,
             status=ExecutionStatus.PAUSED_BUDGET,
             goal_mode=True,
+            resume_policy="continue",
         )
 
         event = pending_execution_event(session, "run-1", pending)
@@ -41,6 +42,22 @@ class AgentResponsesTest(unittest.TestCase):
         self.assertEqual("exec-1", data["execution_id"])
         self.assertEqual(ExecutionStatus.PAUSED_BUDGET.value, data["stop_reason"])
         self.assertTrue(data["goal_mode"])
+        self.assertEqual("continue", data["resume_policy"])
+
+    def test_pending_action_required_event_points_to_recovery_rpc(self):
+        session = self._session()
+        pending = SimpleNamespace(
+            execution_id="exec-recovery",
+            stop_reason=StopReason.TOOL_RECOVERY_REQUIRED.value,
+            status=ExecutionStatus.PAUSED_RECOVERY,
+            goal_mode=False,
+            resume_policy="action_required",
+        )
+
+        event = pending_execution_event(session, "run-recovery", pending)
+
+        self.assertIn("tool_recovery.list/resolve", event["data"]["message"])
+        self.assertEqual("action_required", event["data"]["resume_policy"])
 
     def test_archived_and_idle_events_are_terminal_done_events(self):
         session = self._session()

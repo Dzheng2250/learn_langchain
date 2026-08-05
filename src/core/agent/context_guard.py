@@ -28,6 +28,7 @@ class AgentGraphState(MessagesState):
     context_tokens: int
     context_usage_available: bool
     llm_usage_generation: int
+    context_guard_retry: bool
 
 
 class InTurnContextGuard:
@@ -77,7 +78,11 @@ class InTurnContextGuard:
         soft = empty_plan.budget.soft_input_limit
         hard = empty_plan.budget.hard_input_limit
         if projected <= soft:
-            return {}
+            return (
+                {"context_guard_retry": False}
+                if state.get("context_guard_retry")
+                else {}
+            )
 
         journal = list(state.get("turn_journal") or [])
         start = max(1, int(state.get("compacted_journal_count") or 1))
@@ -170,18 +175,7 @@ class InTurnContextGuard:
             0,
             projected - source_tokens - previous_summary_tokens + new_summary_tokens,
         )
-        if post_compaction_tokens >= projected:
-            if projected > hard:
-                raise ContextCompactionRequired(
-                    "Turn-local compaction did not reduce the active model input "
-                    "below its hard limit."
-                )
-            return {}
-        if post_compaction_tokens > hard:
-            raise ContextCompactionRequired(
-                "Turn-local compaction completed, but the remaining active input "
-                "still exceeds the hard limit."
-            )
+        needs_retry = post_compaction_tokens > hard
         generation = int(state.get("compaction_generation") or 0) + 1
         emit_event(
             "in_turn_context_compacted",
@@ -212,6 +206,7 @@ class InTurnContextGuard:
             "working_summary": summary,
             "compacted_journal_count": selected[-1][1],
             "compaction_generation": generation,
+            "context_guard_retry": needs_retry,
         }
 
     def _projected_input_tokens(self, *, prefix: list, active: list, journal: list) -> int:

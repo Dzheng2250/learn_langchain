@@ -7,6 +7,7 @@ from threading import BoundedSemaphore, Lock
 from time import monotonic
 
 from src.config.settings import (
+    CONTROLLED_EXECUTION_LIMIT_ENABLED,
     HARD_MAX_TOOL_CALLS_PER_GRANT,
     MAX_CONTROLLED_EXECUTIONS_PER_GRANT,
     MAX_DELEGATIONS_PER_GRANT,
@@ -19,12 +20,24 @@ from src.core.tools.catalog import ToolRisk
 class ToolBudgetExceeded(RuntimeError):
     """Raised before a tool executes when its Grant budget is exhausted."""
 
+    def __init__(
+        self,
+        message: str,
+        *,
+        tool_name: str = "",
+        tool_call_id: str = "",
+    ) -> None:
+        super().__init__(message)
+        self.tool_name = tool_name
+        self.tool_call_id = tool_call_id
+
 
 @dataclass
 class ExecutionBudget:
     """Thread-safe counters for one user-authorized execution Grant."""
 
     max_controlled_executions: int = MAX_CONTROLLED_EXECUTIONS_PER_GRANT
+    controlled_execution_limit_enabled: bool = CONTROLLED_EXECUTION_LIMIT_ENABLED
     max_delegations: int = MAX_DELEGATIONS_PER_GRANT
     hard_max_tool_calls: int = HARD_MAX_TOOL_CALLS_PER_GRANT
     max_parallel_tool_calls: int = MAX_PARALLEL_TOOL_CALLS
@@ -53,8 +66,10 @@ class ExecutionBudget:
                 raise ToolBudgetExceeded(
                     f"Grant tool hard limit reached ({self.hard_max_tool_calls})."
                 )
-            if risk == ToolRisk.CONTROLLED_EXECUTION and (
-                self.controlled_executions >= self.max_controlled_executions
+            if (
+                self.controlled_execution_limit_enabled
+                and risk == ToolRisk.CONTROLLED_EXECUTION
+                and self.controlled_executions >= self.max_controlled_executions
             ):
                 raise ToolBudgetExceeded(
                     f"Controlled execution budget reached ({self.max_controlled_executions})."
@@ -66,6 +81,57 @@ class ExecutionBudget:
                 self.controlled_executions += 1
             elif risk == ToolRisk.DELEGATION:
                 self.delegations += 1
+
+    def remaining_for(self, risk: ToolRisk) -> int:
+        """Return deterministic capacity available before another tool starts."""
+        with self._lock:
+            remaining = self.hard_max_tool_calls - self.tool_calls
+            if (
+                self.controlled_execution_limit_enabled
+                and risk == ToolRisk.CONTROLLED_EXECUTION
+            ):
+                remaining = min(
+                    remaining,
+                    self.max_controlled_executions - self.controlled_executions,
+                )
+            elif risk == ToolRisk.DELEGATION:
+                remaining = min(
+                    remaining,
+                    self.max_delegations - self.delegations,
+                )
+            return max(0, remaining)
+
+    def require_capacity(
+        self,
+        tool_name: str,
+        risk: ToolRisk,
+        *,
+        tool_call_id: str = "",
+    ) -> None:
+        """Raise before a graph wave starts when no capacity remains."""
+        if self.remaining_for(risk) > 0:
+            return
+        if (
+            self.controlled_execution_limit_enabled
+            and risk == ToolRisk.CONTROLLED_EXECUTION
+            and self.controlled_executions >= self.max_controlled_executions
+        ):
+            raise ToolBudgetExceeded(
+                f"Controlled execution budget reached ({self.max_controlled_executions}).",
+                tool_name=tool_name,
+                tool_call_id=tool_call_id,
+            )
+        if risk == ToolRisk.DELEGATION and self.delegations >= self.max_delegations:
+            raise ToolBudgetExceeded(
+                f"Delegation budget reached ({self.max_delegations}).",
+                tool_name=tool_name,
+                tool_call_id=tool_call_id,
+            )
+        raise ToolBudgetExceeded(
+            f"Grant tool hard limit reached ({self.hard_max_tool_calls}).",
+            tool_name=tool_name,
+            tool_call_id=tool_call_id,
+        )
 
     @contextmanager
     def tool_slot(self):

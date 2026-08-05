@@ -144,6 +144,7 @@ class TurnExecutionLoop:
             budget = ExecutionBudget()
             budget_token = bind_execution_budget(budget)
             exhausted_reason = StopReason.GRAPH_STEP_LIMIT.value
+            pause_data = {}
             goal_mode = bool(execution is not None and execution.goal_mode)
             goal_review_used = False
             if resume and goal_mode and checkpoint_thread_id is not None:
@@ -166,7 +167,12 @@ class TurnExecutionLoop:
                 if continuation_input is not None:
                     slice_input = continuation_input
                     continuation_input = None
-                elif resume and slice_number == 1 and resume_value is not None:
+                elif (
+                    resume
+                    and slice_number == 1
+                    and resume_value is not None
+                    and str(resume_value.get("type") or "") != "tool_recovery"
+                ):
                     slice_input = Command(resume=resume_value)
                 else:
                     slice_input = None if resume or slice_number > 1 else input_messages
@@ -189,6 +195,7 @@ class TurnExecutionLoop:
                         slice_result.exhausted_reason
                         or StopReason.GRAPH_STEP_LIMIT.value
                     )
+                    pause_data = dict(slice_result.pause_data or {})
                 elif slice_result.error_item is not None:
                     yield from self.error_handler.stream_slice_error(
                         session=session,
@@ -288,6 +295,7 @@ class TurnExecutionLoop:
                 if exhausted_reason in {
                     StopReason.BUDGET_LIMIT.value,
                     StopReason.TOOL_APPROVAL.value,
+                    StopReason.TOOL_RECOVERY_REQUIRED.value,
                 }:
                     break
                 if checkpoint_thread_id is None:
@@ -311,6 +319,7 @@ class TurnExecutionLoop:
                 exhausted_reason=exhausted_reason,
                 slice_number=slice_number,
                 total_tool_calls=total_tool_calls,
+                pause_data=pause_data,
             )
         except ContextCompactionRequired as exc:
             yield from self.error_handler.stream_context_compaction_required(

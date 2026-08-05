@@ -31,6 +31,7 @@ class SliceExecutionResult:
     error_item: dict | None = None
     done_item: dict | None = None
     tool_call_count: int = 0
+    pause_data: dict | None = None
 
 
 def _trace_slice(events, slice_id):
@@ -103,7 +104,11 @@ class SliceExecutionService:
                         status=(
                             ExecutionStatus.PAUSED_CONFIRMATION
                             if exhausted_reason == StopReason.TOOL_APPROVAL.value
-                            else ExecutionStatus.PAUSED_BUDGET
+                            else (
+                                ExecutionStatus.PAUSED_RECOVERY
+                                if exhausted_reason == StopReason.TOOL_RECOVERY_REQUIRED.value
+                                else ExecutionStatus.PAUSED_BUDGET
+                            )
                         ),
                         stop_reason=exhausted_reason,
                         graph_steps_used=int(item["data"].get("graph_steps_used", 0)),
@@ -121,6 +126,7 @@ class SliceExecutionService:
                         paused_for_budget=True,
                         exhausted_reason=exhausted_reason,
                         tool_call_count=tool_call_count,
+                        pause_data=dict(item.get("data") or {}),
                     )
                 if item["event"] == "error":
                     stop_reason = item["data"].get(

@@ -88,13 +88,16 @@ from src.core.session import SessionHistoryQueryService, SessionLifecycleService
 from src.core.session.checkpoint_cleanup import SessionCheckpointCleanupQueue
 from src.core.session.status import SessionStatusReader
 from src.core.state import (
+    ArtifactStore,
     CheckpointManager,
     ExecutionRepository,
     LocalStateDatabase,
     LocalWorkspaceRepository,
+    ToolLedgerRepository,
 )
 from src.core.tasks import TaskPlanningService, TaskRepository
 from src.core.tools.approval_service import ToolApprovalService
+from src.core.tools.recovery_service import ToolRecoveryService
 from src.core.tools.security import ApprovalModeResolver, ApprovalStrategyRegistry
 from src.core.workspace.runtime import WorkspaceRuntimeFactory, WorkspaceRuntimeRegistry
 from src.core.tracing import TracingModelProvider
@@ -120,6 +123,12 @@ class CoreContainer(containers.DeclarativeContainer):
         enabled=providers.Object(RESOURCE_ACTIVITY_ENABLED),
         hash_enabled=providers.Object(RESOURCE_ACTIVITY_HASH_ENABLED),
         max_items=providers.Object(RESOURCE_ACTIVITY_MAX_ITEMS_PER_EXECUTION),
+    )
+    artifact_store = providers.Singleton(ArtifactStore, database=state_database)
+    tool_ledger_repository = providers.Singleton(
+        ToolLedgerRepository,
+        database=state_database,
+        artifact_store=artifact_store,
     )
     checkpoint_manager = providers.Singleton(CheckpointManager)
     postgres_pool = providers.Singleton(create_optional_postgres_pool)
@@ -372,6 +381,7 @@ class CoreContainer(containers.DeclarativeContainer):
         command_changeset_max_bytes=providers.Object(COMMAND_CHANGESET_MAX_BYTES),
         hook_runtime=hook_runtime,
         resource_activity_recorder=resource_activity_repository,
+        tool_ledger=tool_ledger_repository,
     )
     runtime_registry = providers.Singleton(
         WorkspaceRuntimeRegistry,
@@ -408,6 +418,7 @@ class CoreContainer(containers.DeclarativeContainer):
         checkpoint_manager=checkpoint_manager,
         maintenance_scheduler=maintenance_scheduler,
         recovery_coordinator=recovery_coordinator,
+        tool_ledger=tool_ledger_repository,
     )
     agent_service = providers.Factory(
         AgentTurnService,
@@ -442,6 +453,12 @@ class CoreContainer(containers.DeclarativeContainer):
         lifecycle_store=session_lifecycle_store,
         history_reader=conversation_history_store,
     )
+    tool_recovery_service = providers.Factory(
+        ToolRecoveryService,
+        repository=tool_ledger_repository,
+        session_store=session_lifecycle_store,
+        execution_repository=execution_repository,
+    )
 
     router = providers.Singleton(
         RpcRouter,
@@ -462,6 +479,7 @@ class CoreContainer(containers.DeclarativeContainer):
         approval_service=tool_approval_service,
         resource_activity_service=resource_activity_service,
         session_history_service=session_history_service,
+        tool_recovery_service=tool_recovery_service,
     )
     transport = providers.Factory(
         create_transport,

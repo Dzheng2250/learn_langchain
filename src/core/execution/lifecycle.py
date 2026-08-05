@@ -51,9 +51,13 @@ class ExecutionLifecycleService:
         """Return whether the Session has any attached Execution state."""
         return self.execution_store.get_attached(session) is not None
 
-    def resume(self, session):
+    def resume(self, session, *, resume_value=None, retry_conditions: bool = False):
         """Resume the Session's recoverable Execution and record trace identity."""
-        pending = self.execution_store.resume(session)
+        pending = self.execution_store.resume(
+            session,
+            resume_value=resume_value,
+            retry_conditions=retry_conditions,
+        )
         self._record_attached(
             pending,
             {

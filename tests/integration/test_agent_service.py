@@ -470,6 +470,7 @@ class GoalModeRoutingTest(unittest.TestCase):
                     "goal-resume",
                     run_id="goal-resume",
                     instruction="continue",
+                    retry_conditions=True,
                 )
             )
         finally:

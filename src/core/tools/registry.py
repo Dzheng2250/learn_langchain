@@ -9,7 +9,7 @@ from src.core.tasks.service import TaskPlanningService
 from src.core.tasks.tools import create_task_tools
 from src.core.tools.catalog import (
     ApprovalRequirement, SandboxMode, ToolAudience, ToolCapability,
-    ToolRegistry, ToolRisk, ToolSpec,
+    ToolEffect, ToolRegistry, ToolReplayPolicy, ToolRisk, ToolSpec,
 )
 from src.core.tools.security import (
     ApprovalCoordinator,
@@ -58,6 +58,7 @@ def create_workspace_toolset(
     command_changeset_max_bytes: int = 10_485_760,
     hook_dispatcher=None,
     resource_activity_recorder=None,
+    tool_ledger=None,
 ) -> WorkspaceToolset:
     """Create, classify, and freeze all tools available in one Workspace."""
     provider = model_provider
@@ -87,6 +88,9 @@ def create_workspace_toolset(
         tool, audiences, risk, description="", *, capabilities=(),
         approval=ApprovalRequirement.NONE,
         sandbox=SandboxMode.ISOLATED_READ_ONLY, timeout_seconds=None,
+        effect=ToolEffect.READ_ONLY,
+        replay_policy=ToolReplayPolicy.SAFE_RETRY,
+        parallel_safe=False,
     ):
         """Register one LangChain tool with audience and risk metadata."""
         registry.register(
@@ -100,23 +104,28 @@ def create_workspace_toolset(
                 approval=approval,
                 sandbox=sandbox,
                 timeout_seconds=timeout_seconds or default_timeout_seconds,
+                effect=effect,
+                replay_policy=replay_policy,
+                parallel_safe=parallel_safe,
             )
         )
 
     both = {ToolAudience.PARENT, ToolAudience.SUBAGENT}
     register(get_weather, both, ToolRisk.READ_ONLY)
-    register(read_file, {ToolAudience.SUBAGENT}, ToolRisk.READ_ONLY, capabilities={ToolCapability.FILE_READ})
-    register(read_entire, {ToolAudience.SUBAGENT}, ToolRisk.READ_ONLY, capabilities={ToolCapability.FILE_READ})
-    register(read_lite, {ToolAudience.PARENT}, ToolRisk.READ_ONLY, capabilities={ToolCapability.FILE_READ})
-    register(list_skills, both, ToolRisk.READ_ONLY)
-    register(read_skill, both, ToolRisk.READ_ONLY)
-    register(summarize, {ToolAudience.SUBAGENT}, ToolRisk.READ_ONLY)
+    register(read_file, {ToolAudience.SUBAGENT}, ToolRisk.READ_ONLY, capabilities={ToolCapability.FILE_READ}, parallel_safe=True)
+    register(read_entire, {ToolAudience.SUBAGENT}, ToolRisk.READ_ONLY, capabilities={ToolCapability.FILE_READ}, parallel_safe=True)
+    register(read_lite, {ToolAudience.PARENT}, ToolRisk.READ_ONLY, capabilities={ToolCapability.FILE_READ}, parallel_safe=True)
+    register(list_skills, both, ToolRisk.READ_ONLY, parallel_safe=True)
+    register(read_skill, both, ToolRisk.READ_ONLY, parallel_safe=True)
+    register(summarize, {ToolAudience.SUBAGENT}, ToolRisk.READ_ONLY, parallel_safe=True)
     register(
         command,
         {ToolAudience.PARENT},
         ToolRisk.CONTROLLED_EXECUTION,
         capabilities={ToolCapability.COMMAND_EXECUTION, ToolCapability.FILE_READ},
         approval=ApprovalRequirement.POLICY,
+        effect=ToolEffect.EXTERNAL,
+        replay_policy=ToolReplayPolicy.MANUAL,
     )
     for write_tool in write_tools:
         register(
@@ -126,6 +135,8 @@ def create_workspace_toolset(
             capabilities={ToolCapability.FILE_WRITE},
             approval=ApprovalRequirement.POLICY,
             sandbox=SandboxMode.WORKSPACE_WRITE,
+            effect=ToolEffect.WORKSPACE_MUTATION,
+            replay_policy=ToolReplayPolicy.RECONCILE,
         )
     if staged_command_tools:
         stage, apply_changes, discard_changes = staged_command_tools
@@ -135,6 +146,8 @@ def create_workspace_toolset(
             ToolRisk.CONTROLLED_EXECUTION,
             capabilities={ToolCapability.COMMAND_EXECUTION, ToolCapability.FILE_READ},
             approval=ApprovalRequirement.POLICY,
+            effect=ToolEffect.EXTERNAL,
+            replay_policy=ToolReplayPolicy.MANUAL,
         )
         register(
             apply_changes,
@@ -143,27 +156,37 @@ def create_workspace_toolset(
             capabilities={ToolCapability.FILE_WRITE},
             approval=ApprovalRequirement.ALWAYS,
             sandbox=SandboxMode.WORKSPACE_WRITE,
+            effect=ToolEffect.WORKSPACE_MUTATION,
+            replay_policy=ToolReplayPolicy.MANUAL,
         )
         register(
             discard_changes,
             {ToolAudience.PARENT},
             ToolRisk.INTERNAL_STATE,
             capabilities={ToolCapability.INTERNAL_STATE},
+            effect=ToolEffect.INTERNAL_MUTATION,
+            replay_policy=ToolReplayPolicy.MANUAL,
         )
     if task_service is not None:
         for task_tool in create_task_tools(task_service):
+            is_read = task_tool.name in {"task_list", "task_get"}
             register(
                 task_tool, {ToolAudience.PARENT}, ToolRisk.INTERNAL_STATE,
                 capabilities={ToolCapability.INTERNAL_STATE},
+                effect=(ToolEffect.READ_ONLY if is_read else ToolEffect.INTERNAL_MUTATION),
+                replay_policy=(ToolReplayPolicy.SAFE_RETRY if is_read else ToolReplayPolicy.MANUAL),
+                parallel_safe=is_read,
             )
 
     base_tools = registry.tools_for(ToolAudience.SUBAGENT)
     base_risks = {spec.name: spec.risk for spec in registry.specs_for(ToolAudience.SUBAGENT)}
+    base_specs = {spec.name: spec for spec in registry.specs_for(ToolAudience.SUBAGENT)}
     delegate = create_delegate_tool(
         base_tools,
         provider,
         max_steps=subagent_max_steps,
         risk_by_name=base_risks,
+        specs_by_name=base_specs,
         hook_dispatcher=hook_dispatcher,
         workspace=workspace,
         resource_activity_recorder=resource_activity_recorder,
@@ -171,6 +194,8 @@ def create_workspace_toolset(
     register(
         delegate, {ToolAudience.PARENT}, ToolRisk.DELEGATION,
         capabilities={ToolCapability.DELEGATION},
+        effect=ToolEffect.EXTERNAL,
+        replay_policy=ToolReplayPolicy.MANUAL,
     )
     registry.freeze()
     pipeline = None
@@ -197,6 +222,7 @@ def create_workspace_toolset(
             hook_dispatcher=hook_dispatcher,
             enforcer=CapabilityEnforcer(network_policy=network_policy),
             resource_activity_recorder=resource_activity_recorder,
+            tool_ledger=tool_ledger,
         )
     return WorkspaceToolset(
         registry=registry,

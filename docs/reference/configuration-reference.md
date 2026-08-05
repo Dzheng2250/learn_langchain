@@ -117,11 +117,12 @@ telemetry/      默认 JSONL 观测事件
 | `LEARN_AGENT_HOOKS_ENABLED` | `true` | 是否启用系统级 Agent 生命周期 Hook。 |
 | `LEARN_AGENT_HOOK_CONFIG_FILES` | 空 | 额外 Hook JSON 文件；多个路径使用操作系统路径分隔符。 |
 | `LEARN_AGENT_PROJECT_HOOKS_ENABLED` | `false` | 是否信任并加载 Workspace 内 `.learn-agent/hooks.json`。 |
-| `LEARN_AGENT_MAX_CONTROLLED_EXECUTIONS_PER_GRANT` | `12` | 命令、容器等高风险受控执行的额度。 |
+| `LEARN_AGENT_CONTROLLED_EXECUTION_LIMIT_ENABLED` | `false` | 是否启用受控执行次数安全阀。默认关闭；关闭时仍统计命令和 Workspace 变更次数，但不因该子预算暂停。 |
+| `LEARN_AGENT_MAX_CONTROLLED_EXECUTIONS_PER_GRANT` | `12` | 受控执行安全阀开启时，一次 Grant 允许的命令和 Workspace 变更调用数。它是总工具上限之下的可选子预算。 |
 | `LEARN_AGENT_MAX_DELEGATIONS_PER_GRANT` | `6` | 父 Agent 委派子 Agent 的额度。 |
 | `LEARN_AGENT_HARD_MAX_TOOL_CALLS_PER_GRANT` | `100` | 所有工具调用的紧急硬上限，用于阻止失控循环。 |
 
-预算耗尽不会删除已提交历史；未完成执行可以通过 `learn-agent session resume` 继续。
+预算耗尽不会删除已提交历史；未完成执行可以通过 `learn-agent session resume` 继续。默认关闭受控执行子预算，是因为一次模型响应可以包含多个工具调用：固定的较低子上限会在正常长任务中提前暂停；总工具数、图步骤、Grant 时长、审批、沙箱和路径边界仍始终生效。
 
 Hook 配置文件不会自动创建；使用 `learn-agent hooks path` 查看搜索路径，使用 `learn-agent hooks init` 生成安全模板。
 

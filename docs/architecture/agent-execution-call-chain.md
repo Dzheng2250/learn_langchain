@@ -43,7 +43,7 @@
 | 11 | `TurnExecutionLoop.stream_locked_turn()` | `agent-turn` worker | 准备上下文并控制有界 Slice 循环 |
 | 12 | `SliceExecutionService.stream_slice()` | `agent-turn` worker | 启动 Slice，调用 Graph stream 并返回终态 |
 | 13 | `stream_graph_events()` | `agent-turn` worker | 将 LangGraph stream 转换为稳定内部事件 |
-| 14 | `agent_node()` / `ObservedToolNode` | `agent-turn` worker | 调用模型或执行模型请求的工具 |
+| 14 | `agent_node()` / `LedgerBackedToolNode` | `agent-turn` worker | 调用模型，或执行由 Ledger 保护的模型工具批次 |
 | 15 | `TurnCoordinator.finalize()` | `agent-turn` worker | 委托最小业务提交与维护任务入队 |
 | 16 | `on_event()` | `agent-turn` worker | 将流事件投递回 Core asyncio loop |
 | 17 | `SocketRequestContext.send_notification()` | Core asyncio loop | 将 `agent.event` 写入 TCP |
@@ -204,8 +204,11 @@ START
   -> agent_node
        -> LLM 无 tool_calls -> END
        -> LLM 有 tool_calls -> tools
-  -> ObservedToolNode
-       -> 追加 ToolMessage
+  -> LedgerBackedToolNode
+       -> 副作用调用按顺序执行，安全读取可并行
+       -> 每个结果先持久化到 Tool Ledger
+       -> 中断恢复时重放已完成结果
+       -> 整批追加 ToolMessage
   -> journal_tools
   -> context_guard
   -> agent_node
@@ -227,8 +230,11 @@ llm_with_tools.invoke(llm_messages)
 两个字段都使用 LangGraph 的 messages reducer。`context_guard` 只从活动 `messages` 移除已经闭合的旧工具周期，
 不会修改 `turn_journal`；checkpoint 恢复和最终归档因此仍保留本 Turn 的完整记录。
 
-`ObservedToolNode` 继承 LangGraph `ToolNode`。模型输出的每个 `tool_call` 会按名称匹配
-Workspace 工具，执行前后统一记录：
+`LedgerBackedToolNode` 建立在 `ObservedToolNode` 的单次调用适配能力之上。它按
+`ToolSpec.effect`、`replay_policy` 和 `parallel_safe` 调度完整工具批次：副作用调用串行，
+安全读取可并行。每个调用的精确 `ToolMessage` 先进入 Tool Ledger，整个批次完成后才一次性
+返回 graph state。若审批、预算或进程故障使节点重启，已完成结果从 Ledger 重放，随后继续首个未完成调用。
+每个调用仍会按名称匹配 Workspace 工具，并统一记录：
 
 ```text
 tool_started
@@ -237,6 +243,8 @@ tool_started
 ```
 
 工具函数本身不需要手写通用调用边界 Hook。工具内部只记录自身特有的领域事件。
+durable tool ledger 在工具实现前 claim 调用，在工具返回后先保存精确结果；若 daemon 在
+两者之间退出，安全读取可重试，结构化写入可按资源摘要对账，未知副作用则要求人工恢复。
 
 ### 第八阶段：把 Graph stream 转换为稳定事件
 
@@ -494,7 +502,7 @@ flowchart LR
         Start["模型输入"]
         Parent["Parent Agent LLM"]
         Decision{"是否调用工具"}
-        ToolNode["ObservedToolNode"]
+        ToolNode["LedgerBackedToolNode"]
         Tools["Workspace 工具"]
         Done["完成响应"]
 

@@ -11,6 +11,7 @@ from src.core.adapters.sqlite.tool_approvals import SQLiteToolApprovalRepository
 from src.core.adapters.sqlite.session_lifecycle import SQLiteSessionLifecycleStore
 from src.core.state import ExecutionRepository, LocalStateDatabase, LocalWorkspaceRepository
 from src.core.state.migrations import (
+    downgrade_v13_to_v12,
     apply_local_migrations,
     downgrade_v12_to_v11,
 )
@@ -220,6 +221,7 @@ class ToolApprovalModeTest(unittest.TestCase):
             approval_mode="manual",
         )
         with self.database.transaction() as conn:
+            downgrade_v13_to_v12(conn)
             downgrade_v12_to_v11(conn)
             self.assertEqual(
                 11,
@@ -233,7 +235,7 @@ class ToolApprovalModeTest(unittest.TestCase):
             )
             apply_local_migrations(conn)
             self.assertEqual(
-                12,
+                13,
                 conn.execute(
                     "SELECT MAX(version) FROM local_schema_migrations"
                 ).fetchone()[0],
