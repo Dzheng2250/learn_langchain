@@ -37,22 +37,44 @@ tools
 ### 缓存断点如何随 Execution 推进
 
 ```mermaid
-flowchart TB
-    subgraph First["新 Turn：第一次 LLM 调用"]
-        T1["tools marker"] --> S1["system marker"] --> H1["上一个已完成历史<br/>messages marker"] --> U1["当前 user<br/>不设 marker"]
-    end
-    subgraph ToolLoop["同一 Execution：工具完成后再次调用 LLM"]
-        T2["tools marker"] --> S2["system marker"] --> H2["旧历史"] --> U2["当前 user"] --> TU["assistant tool_use"] --> TR["tool_result<br/>messages marker"]
-    end
-    subgraph Next["下一个 Turn"]
-        Stable["上一 Turn 的完整历史<br/>最终 assistant 或末尾 tool_result<br/>messages marker"] --> U3["新的当前 user<br/>不设 marker"]
-    end
-    First --> ToolLoop --> Next
+sequenceDiagram
+    autonumber
+    participant Core as Core / LangGraph
+    participant Provider as Anthropic-compatible Provider
+    participant Tool as Tool
+
+    Note over Core,Provider: 调用 1：新 Turn 第一次请求
+    Core->>Provider: [已完成历史 | 断点 A] + 当前 user
+    Note right of Provider: 若前缀 A 已存在，则读取缓存 A<br/>当前 user 仍需正常处理
+    Provider-->>Core: assistant tool_use
+
+    Core->>Tool: 执行工具
+    Tool-->>Core: tool_result
+
+    Note over Core,Provider: 调用 2：工具结果回来后，重新构造请求
+    Core->>Provider: [已完成历史 + 当前 user + tool_use + tool_result | 断点 B]
+    Note right of Provider: 前半段仍可命中 A<br/>新增后缀正常计算<br/>并创建或刷新更深的缓存 B
+    Provider-->>Core: 最终回答，或下一个 tool_use
+
+    Note over Core,Provider: 调用 3 或下一 Turn
+    Core->>Provider: [截至 tool_result 的历史 | 断点 B] + 后续新内容
+    Note right of Provider: 相同前缀可直接读取缓存 B
 ```
 
-marker 标记的是“从请求开头到这里”的完整前缀，不是只缓存 marker 所在 block。因此工具循环中
-断点落到最新 `tool_result` 后，当前 user、`tool_use` 和 `tool_result` 都包含在缓存前缀内。
-Execution 暂停后恢复时，消息从 checkpoint 还原，策略会基于恢复后的完整消息重新计算最深稳定断点。
+为降低图的复杂度，上图只画 messages 断点；tools 和 system 还有各自更靠前的基础断点。
+
+调用 1 中，当前 user 是本次新增内容，因此位于断点 A 之后。模型返回 `tool_use`、工具产生
+`tool_result` 后，Core 才发起调用 2。此时这些内容已经成为调用 2 的固定输入，所以可以把更深的
+断点 B 放到 `tool_result`。这不是在同一次请求中移动 marker，而是两次 LLM 请求分别计算出的断点。
+
+```text
+调用 1： [可复用前缀 A] | 当前 user
+调用 2： [可复用前缀 A] + 当前 user + tool_use + tool_result | 新断点 B
+调用 3： [可复用前缀 B] | 后续新内容
+```
+
+marker 标记的是“从请求开头到这里”的完整前缀，不是只缓存 marker 所在 block。Execution 暂停后
+恢复时，消息从 checkpoint 还原，策略会基于恢复后的完整消息重新计算最深稳定断点。
 
 ## 实现调用链
 
