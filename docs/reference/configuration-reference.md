@@ -49,7 +49,7 @@ learn-agent start
 | `LEARN_AGENT_LLM_MAX_TOKENS` | `49152` | 单次模型响应的最大输出 token。thinking/reasoning 与最终文本共享该预算；若耗尽，Turn 会以 `model_output_limit` 失败并保留诊断状态，不会误记为完成。 |
 | `LEARN_AGENT_SUMMARY_TRIGGER_TOKEN_LIMIT_ENABLED` | `false` | 是否启用固定 Token 压缩门槛。关闭时不使用 `90000` 上限，只按输入硬上限和软比例动态计算；开启后固定门槛作为动态阈值的额外上限。 |
 | `LEARN_AGENT_SUMMARY_TRIGGER_TOKEN_LIMIT` | `90000` | 可选的固定 Token 压缩门槛，仅在对应开关启用时生效；实际阈值为 `min(该值, 输入硬上限 × LEARN_AGENT_CONTEXT_SOFT_LIMIT_RATIO)`。 |
-| `LEARN_AGENT_RECENT_TURN_LIMIT` | `1` | 压缩成功后默认只原样保留最新 1 个完整 Turn，允许设为 `0..3`；若最新 Turn 超出动态 Token 预算则可降为 0，且不会拆开工具调用周期。 |
+| `LEARN_AGENT_RECENT_TURN_LIMIT` | `1` | 仅控制 Token 阈值触发压缩后原样保留的完整 Turn 数量，允许设为 `0..3`；Turn 数本身不会触发压缩。若最新 Turn 超出动态 Token 预算则可降为 0，且不会拆开工具调用周期。 |
 | `LEARN_AGENT_RECENT_TURN_BUDGET_RATIO` | `0.5` | 原样 Turn 尾部最多占模型窗口的比例，取值须大于 `0` 且不超过 `0.5`。默认最多保留 1 个，超限时降为 0；显式提高 Turn 上限后会从配置值逐步减少。 |
 | `LEARN_AGENT_CONTEXT_SAFETY_MARGIN_TOKENS` | `8192` | 为 provider 包装、估算误差和协议开销预留的输入安全空间。它与最大输出之和必须小于模型窗口。 |
 | `LEARN_AGENT_CONTEXT_SOFT_LIMIT_RATIO` | `0.85` | 动态输入硬上限的软压缩比例。低于硬上限时压缩失败保留原文；达到硬上限时暂停等待可恢复压缩。 |

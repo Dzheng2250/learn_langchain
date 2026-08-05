@@ -184,7 +184,7 @@ summary_through_turn: int
 
 窗口规划器在构造模型输入前和后台维护任务中运行。满足任一条件时需要推进摘要：
 
-- 未压缩 Turn 数超过 `RECENT_TURN_LIMIT=1`，需要把更旧的完整 Turn 推进摘要窗口。
+- Turn 数本身不会触发压缩。只有上下文 Token 体积超过动态软阈值或已启用的固定 Token 阈值时，才会把旧的完整 Turn 推进摘要窗口。
 - 预计输入超过 `hard_input_limit × CONTEXT_SOFT_LIMIT_RATIO` 的动态软阈值。若显式启用 `SUMMARY_TRIGGER_TOKEN_LIMIT_ENABLED`，再取该动态值与 `SUMMARY_TRIGGER_TOKEN_LIMIT` 中的较小值。
 - 调用方显式要求强制总结。
 
@@ -192,7 +192,7 @@ summary_through_turn: int
 共用同一规划器：
 
 - 最终摘要模型使用独立的 `LEARN_AGENT_CONTEXT_SUMMARY_MAX_TOKENS=16384` 输出预算；Core 不再按字符截断摘要输出，也不会对进入摘要的单条来源消息设置字符预览上限。模型以 `max_tokens` 停止时压缩失败，错误会指向对应的 Summary 或 Map 输出预算配置，原始 Turn 保持活动状态。
-- 默认仅最近 `RECENT_TURN_LIMIT=1` 个完整 Turn 继续保留原文；一个 Turn 可以包含 user、assistant 和多条 tool message。若最新 Turn 本身超过动态原始 Turn Token 预算，则允许不保留原始 Turn，但它必须先完整进入摘要。
+- 压缩发生后，默认仅最近 `RECENT_TURN_LIMIT=1` 个完整 Turn 继续保留原文；该参数不是触发阈值。一个 Turn 可以包含 user、assistant 和多条 tool message。若最新 Turn 本身超过动态原始 Turn Token 预算，则允许不保留原始 Turn，但它必须先完整进入摘要。
 - 原文尾部同时受 `RECENT_TURN_BUDGET_RATIO=0.5` 约束。默认只尝试保留最新 1 个 Turn；若它仍超过动态预算则降为 0。显式配置为 2 或 3 时，规划器会从配置值逐步减少，所有被移出的 Turn 必须先成功进入新摘要。
 - 完整输入硬上限为模型窗口减去最大输出和安全余量；压缩失败且尚未到硬上限时保留原文，达到硬上限时以 `context_compaction_required` 暂停，禁止静默截断。
 - 摘要执行器先计算“静态摘要 Prompt + 上一代摘要 + 全部待压缩 Turn”的 Token 体积。请求能放入模型窗口时只调用一次；仅在确实超出摘要输入预算时，才按完整 Turn、闭合工具周期和消息边界进行 Token 感知 Map/Reduce。单条消息仍超限时才切成连续来源片段。

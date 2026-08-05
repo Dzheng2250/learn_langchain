@@ -88,6 +88,20 @@ class AgentContextManagerTest(unittest.TestCase):
             )
         )
 
+    def test_turn_count_does_not_trigger_summary(self):
+        policy = SummaryPolicy(turn_limit=1, token_limit=90_000)
+
+        self.assertFalse(
+            policy.should_summarize_state(
+                context_tokens=100,
+                turns=[
+                    TurnChunk(index, [HumanMessage(content="small")])
+                    for index in range(1, 101)
+                ],
+                messages=[HumanMessage(content="small") for _ in range(100)],
+            )
+        )
+
     def test_oversized_source_uses_token_aware_map_reduce(self):
         provider = RecordingSummaryProvider()
         executor = ContextSummaryExecutor(

@@ -46,16 +46,20 @@ class ContextWindowPlannerTest(unittest.TestCase):
             summary_max_tokens=0,
         )
 
-    def test_five_small_turns_keep_latest_three(self):
+    def test_turn_count_alone_never_triggers_compaction(self):
         plan = self.planner().plan([turn(index, 50) for index in range(1, 6)])
 
-        self.assertEqual([1, 2], [item.turn_index for item in plan.compacted_turns])
-        self.assertEqual([3, 4, 5], [item.turn_index for item in plan.retained_turns])
+        self.assertFalse(plan.requires_compaction)
+        self.assertEqual([], [item.turn_index for item in plan.compacted_turns])
+        self.assertEqual(
+            [1, 2, 3, 4, 5],
+            [item.turn_index for item in plan.retained_turns],
+        )
 
-    def test_token_budget_reduces_suffix_from_three_to_zero(self):
+    def test_token_trigger_applies_recent_turn_retention_limit(self):
         cases = [
             ([150, 150, 150], 3),
-            ([200, 200, 200], 2),
+            ([200, 200, 200], 3),
             ([100, 300, 300], 1),
             ([100, 100, 600], 0),
         ]
@@ -66,7 +70,17 @@ class ContextWindowPlannerTest(unittest.TestCase):
                     [turn(index, value) for index, value in enumerate(tokens, 1)]
                 )
                 self.assertEqual(retained, len(plan.retained_turns))
-                self.assertLessEqual(plan.retained_tokens, plan.budget.raw_turn_limit)
+                if plan.requires_compaction:
+                    self.assertLessEqual(
+                        plan.retained_tokens,
+                        plan.budget.raw_turn_limit,
+                    )
+
+    def test_many_small_turns_remain_active_below_token_threshold(self):
+        plan = self.planner().plan([turn(index, 1) for index in range(1, 101)])
+
+        self.assertFalse(plan.requires_compaction)
+        self.assertEqual(100, len(plan.retained_turns))
 
     def test_fixed_input_without_compactable_turn_can_exceed_hard_limit(self):
         plan = self.planner().plan([], fixed_messages=[HumanMessage(content="900")])
@@ -185,7 +199,7 @@ class BlockingManager(FakeManager):
 class ContextCompactionServiceTest(unittest.TestCase):
     def test_concurrent_foreground_compaction_uses_single_flight(self):
         state = AgentContextState(
-            recent_turns=[turn(index, 50) for index in range(1, 5)],
+            recent_turns=[turn(index, 150) for index in range(1, 5)],
             context_window_id="window-1",
         )
         planner = ContextWindowPlanner(
@@ -207,13 +221,13 @@ class ContextCompactionServiceTest(unittest.TestCase):
 
         first = Thread(
             target=lambda: results.append(
-                service.ensure_for_prompt(session, state, user_input="0")
+                service.ensure_for_prompt(session, state, user_input="100")
             )
         )
         second = Thread(
             target=lambda: (
                 second_started.set(),
-                results.append(service.ensure_for_prompt(session, state, user_input="0")),
+                results.append(service.ensure_for_prompt(session, state, user_input="100")),
             )
         )
         first.start()
@@ -231,7 +245,7 @@ class ContextCompactionServiceTest(unittest.TestCase):
 
     def test_success_advances_expected_window_and_keeps_planned_suffix(self):
         state = AgentContextState(
-            recent_turns=[turn(index, 50) for index in range(1, 5)],
+            recent_turns=[turn(index, 150) for index in range(1, 5)],
             context_window_id="window-1",
         )
         planner = ContextWindowPlanner(
@@ -251,7 +265,7 @@ class ContextCompactionServiceTest(unittest.TestCase):
             summary_store,
         )
 
-        result = service.ensure_for_prompt(object(), state, user_input="0")
+        result = service.ensure_for_prompt(object(), state, user_input="100")
 
         self.assertEqual("window-2", result.context_window_id)
         self.assertEqual([2, 3, 4], [item.turn_index for item in result.recent_turns])
@@ -260,7 +274,7 @@ class ContextCompactionServiceTest(unittest.TestCase):
 
     def test_soft_failure_preserves_every_turn_and_does_not_advance_window(self):
         state = AgentContextState(
-            recent_turns=[turn(index, 50) for index in range(1, 5)],
+            recent_turns=[turn(index, 150) for index in range(1, 5)],
             context_window_id="window-1",
         )
         planner = ContextWindowPlanner(
@@ -279,7 +293,7 @@ class ContextCompactionServiceTest(unittest.TestCase):
             summary_store,
         )
 
-        result = service.ensure_for_prompt(object(), state, user_input="0")
+        result = service.ensure_for_prompt(object(), state, user_input="100")
 
         self.assertIs(state, result)
         self.assertEqual([], summary_store.calls)
