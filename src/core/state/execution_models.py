@@ -28,6 +28,9 @@ class PendingExecution:
     tool_calls_used: int
     checkpoint_state: CheckpointState
     goal_mode: bool = False
+    resume_policy: str = "continue"
+    pause_fingerprint: str = ""
+    repeated_pause_count: int = 0
 
     @property
     def recoverable(self) -> bool:
@@ -55,4 +58,17 @@ def pending_execution_from_row(row) -> PendingExecution:
         tool_calls_used=int(row["tool_calls_used"]),
         checkpoint_state=CheckpointState(row["checkpoint_state"]),
         goal_mode=bool(row["goal_mode"]) if "goal_mode" in row.keys() else False,
+        resume_policy=(
+            str(row["resume_policy"])
+            if "resume_policy" in row.keys() and row["resume_policy"]
+            else "continue"
+        ),
+        pause_fingerprint=(
+            str(row["pause_fingerprint"])
+            if "pause_fingerprint" in row.keys() else ""
+        ),
+        repeated_pause_count=(
+            int(row["repeated_pause_count"])
+            if "repeated_pause_count" in row.keys() else 0
+        ),
     )

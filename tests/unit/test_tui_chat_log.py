@@ -819,6 +819,7 @@ class TuiChatLogTest(unittest.TestCase):
         screen._inflight_task = None
         screen._inflight_client = None
         observed_during_request = []
+        request_params = []
 
         def query_one(_self, widget_type):
             return status if getattr(widget_type, "__name__", "") == "StatusBar" else log
@@ -836,8 +837,9 @@ class TuiChatLogTest(unittest.TestCase):
             async def connect(self):
                 return None
 
-            async def request(self, *_args, **_kwargs):
+            async def request(self, _method, params, **_kwargs):
                 observed_during_request.append(screen._paused_execution)
+                request_params.append(params)
                 return {"status": "ok"}
 
             async def close(self):
@@ -850,6 +852,7 @@ class TuiChatLogTest(unittest.TestCase):
         asyncio.run(run())
 
         self.assertEqual([False], observed_during_request)
+        self.assertTrue(request_params[0]["retry_conditions"])
         self.assertFalse(screen._paused_execution)
         self.assertEqual([False], paused_values)
 

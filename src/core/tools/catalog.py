@@ -48,6 +48,24 @@ class NetworkMode(StrEnum):
     ALLOW = "allow"
 
 
+class ToolEffect(StrEnum):
+    """Durable side-effect class used to schedule and recover tool calls."""
+
+    READ_ONLY = "read_only"
+    INTERNAL_MUTATION = "internal_mutation"
+    WORKSPACE_MUTATION = "workspace_mutation"
+    EXTERNAL = "external"
+
+
+class ToolReplayPolicy(StrEnum):
+    """How an interrupted invocation may be handled after a restart."""
+
+    SAFE_RETRY = "safe_retry"
+    RESULT_REPLAY = "result_replay"
+    RECONCILE = "reconcile"
+    MANUAL = "manual"
+
+
 @dataclass(frozen=True)
 class ToolSpec:
     """Immutable tool registration metadata."""
@@ -62,6 +80,9 @@ class ToolSpec:
     sandbox: SandboxMode = SandboxMode.ISOLATED_READ_ONLY
     network: NetworkMode = NetworkMode.DENY
     timeout_seconds: float | None = None
+    effect: ToolEffect = ToolEffect.READ_ONLY
+    replay_policy: ToolReplayPolicy = ToolReplayPolicy.SAFE_RETRY
+    parallel_safe: bool = False
 
     def __post_init__(self) -> None:
         if (self.tool is None) == (self.factory is None):
@@ -72,6 +93,10 @@ class ToolSpec:
             raise ValueError("Network-capable tools must declare a non-deny network mode")
         if self.sandbox == SandboxMode.HOST_FULL_ACCESS and self.approval != ApprovalRequirement.ALWAYS:
             raise ValueError("Host full-access tools must always require approval")
+        if self.parallel_safe and self.effect != ToolEffect.READ_ONLY:
+            raise ValueError("Only read-only tools may be marked parallel_safe")
+        if self.parallel_safe and self.approval != ApprovalRequirement.NONE:
+            raise ValueError("Parallel-safe tools cannot require approval")
 
     def resolve_tool(self) -> object:
         return self._resolved_tool

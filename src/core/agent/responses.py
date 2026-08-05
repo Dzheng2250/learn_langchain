@@ -6,11 +6,24 @@ from src.core.workspace.models import SessionContext
 
 def pending_execution_event(session: SessionContext, run_id: str, pending) -> dict:
     """Build the terminal event for a Session blocked by recoverable work."""
-    message = (
-        "Session has a pending execution. Use 'learn-agent session resume --session "
-        f"{session.session_name}' to continue, or 'learn-agent session discard --session "
-        f"{session.session_name}' to discard it before starting a new chat."
-    )
+    if pending.stop_reason == StopReason.TOOL_APPROVAL.value:
+        message = "Session is waiting for tool approval; use approval.list/resolve."
+    elif pending.stop_reason == StopReason.TOOL_RECOVERY_REQUIRED.value:
+        message = "Session is waiting for uncertain tool recovery; use tool_recovery.list/resolve."
+    elif pending.resume_policy == "condition_required":
+        message = (
+            "Session requires a corrected condition and explicit retry; use "
+            f"'learn-agent session resume --session {session.session_name} "
+            "--retry-conditions'."
+        )
+    elif pending.resume_policy == "terminal":
+        message = "Session execution is terminal and must be discarded before new work."
+    else:
+        message = (
+            "Session has a pending execution. Use 'learn-agent session resume --session "
+            f"{session.session_name}' to continue, or 'learn-agent session discard --session "
+            f"{session.session_name}' to discard it before starting a new chat."
+        )
     return {
         "event": "done",
         "data": {
@@ -22,6 +35,7 @@ def pending_execution_event(session: SessionContext, run_id: str, pending) -> di
             "execution_id": pending.execution_id,
             "stop_reason": pending.stop_reason or pending.status.value,
             "goal_mode": pending.goal_mode,
+            "resume_policy": pending.resume_policy,
             "message": message,
         },
     }

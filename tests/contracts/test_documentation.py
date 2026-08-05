@@ -19,7 +19,7 @@ def _registered_rpc_methods(root: Path) -> set[str]:
 def _documented_rpc_methods(reference: str) -> set[str]:
     return set(
         re.findall(
-            r"^\| `((?:agent|approval|core|session|resource_activity)\.[^`]+)` \|",
+            r"^\| `((?:agent|approval|core|session|resource_activity|tool_recovery)\.[^`]+)` \|",
             reference,
             flags=re.MULTILINE,
         )

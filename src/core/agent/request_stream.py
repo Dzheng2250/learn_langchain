@@ -155,6 +155,7 @@ class AgentRequestStreamService:
         instruction: str = "",
         control: ExecutionControl | None = None,
         resume_value: dict | None = None,
+        retry_conditions: bool = False,
     ) -> Iterator[dict]:
         """Resume the Session's pending execution with a new bounded Grant."""
         workspace = self.session_store.resolve_workspace(workspace_root)
@@ -177,7 +178,11 @@ class AgentRequestStreamService:
             if not self.execution_lifecycle.has_attached_execution(session):
                 yield idle_resume_event(session, run_id)
                 return
-            pending = self.execution_lifecycle.resume(session)
+            pending = self.execution_lifecycle.resume(
+                session,
+                resume_value=resume_value,
+                retry_conditions=retry_conditions,
+            )
             try:
                 graph = self.runtime_graph_resolver.graph_for_resume(
                     workspace,

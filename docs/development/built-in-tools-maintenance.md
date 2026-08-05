@@ -24,9 +24,10 @@ WorkspaceRuntimeFactory
   -> create_workspace_toolset()
   -> ToolRegistry.register(ToolSpec)
   -> 按 Parent/Subagent 过滤并 freeze
-  -> Agent/ObservedToolNode
+  -> Agent/CheckpointedToolNode
   -> ToolExecutionPipeline
-  -> Hook -> Policy/Approval -> CapabilityEnforcer -> Tool
+  -> Hook -> Policy/Approval -> CapabilityEnforcer
+  -> Durable Tool Ledger -> Tool
 ```
 
 核心维护入口：
@@ -36,6 +37,15 @@ WorkspaceRuntimeFactory
 - `src/core/tools/security/`：策略、审批、路径/网络硬限制与执行管线。
 - `src/core/workspace/runtime.py`：把配置和 Workspace 依赖传入 Toolset。
 - `src/cli/render.py`、`src/tui/renderer.py`：调用、结果和审批的安全展示。
+
+每个内置工具还必须正确声明：
+
+- `effect`：只读、内部状态变更、Workspace 变更或外部副作用。
+- `replay_policy`：安全重试、结果重放、状态对账或人工恢复。
+- `parallel_safe`：仅无审批的纯读取工具可以设为 `true`。
+
+这些字段决定 checkpoint 粒度和崩溃恢复行为，不只是展示元数据。声明冲突会在 Registry
+构建时直接失败。
 
 ## 2. 当前工具目录
 

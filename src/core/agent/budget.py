@@ -19,6 +19,17 @@ from src.core.tools.catalog import ToolRisk
 class ToolBudgetExceeded(RuntimeError):
     """Raised before a tool executes when its Grant budget is exhausted."""
 
+    def __init__(
+        self,
+        message: str,
+        *,
+        tool_name: str = "",
+        tool_call_id: str = "",
+    ) -> None:
+        super().__init__(message)
+        self.tool_name = tool_name
+        self.tool_call_id = tool_call_id
+
 
 @dataclass
 class ExecutionBudget:
@@ -66,6 +77,50 @@ class ExecutionBudget:
                 self.controlled_executions += 1
             elif risk == ToolRisk.DELEGATION:
                 self.delegations += 1
+
+    def remaining_for(self, risk: ToolRisk) -> int:
+        """Return deterministic capacity available before another tool starts."""
+        with self._lock:
+            remaining = self.hard_max_tool_calls - self.tool_calls
+            if risk == ToolRisk.CONTROLLED_EXECUTION:
+                remaining = min(
+                    remaining,
+                    self.max_controlled_executions - self.controlled_executions,
+                )
+            elif risk == ToolRisk.DELEGATION:
+                remaining = min(
+                    remaining,
+                    self.max_delegations - self.delegations,
+                )
+            return max(0, remaining)
+
+    def require_capacity(
+        self,
+        tool_name: str,
+        risk: ToolRisk,
+        *,
+        tool_call_id: str = "",
+    ) -> None:
+        """Raise before a graph wave starts when no capacity remains."""
+        if self.remaining_for(risk) > 0:
+            return
+        if risk == ToolRisk.CONTROLLED_EXECUTION:
+            raise ToolBudgetExceeded(
+                f"Controlled execution budget reached ({self.max_controlled_executions}).",
+                tool_name=tool_name,
+                tool_call_id=tool_call_id,
+            )
+        if risk == ToolRisk.DELEGATION:
+            raise ToolBudgetExceeded(
+                f"Delegation budget reached ({self.max_delegations}).",
+                tool_name=tool_name,
+                tool_call_id=tool_call_id,
+            )
+        raise ToolBudgetExceeded(
+            f"Grant tool hard limit reached ({self.hard_max_tool_calls}).",
+            tool_name=tool_name,
+            tool_call_id=tool_call_id,
+        )
 
     @contextmanager
     def tool_slot(self):

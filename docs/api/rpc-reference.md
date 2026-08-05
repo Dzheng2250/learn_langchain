@@ -48,6 +48,9 @@
 | `approval.mode.set` | 设置 Session 审批模式或恢复继承 | 基本幂等 | 谨慎 |
 | `resource_activity.summary` | 查询 Execution 或历史 Turn 的资源活动聚合 | 是 | 是 |
 | `resource_activity.list` | 游标分页查询资源活动明细 | 是 | 是 |
+| `tool_recovery.list` | 查询当前 Session 中状态不确定的工具调用 | 是 | 是 |
+| `tool_recovery.get` | 查询一条工具恢复记录 | 是 | 是 |
+| `tool_recovery.resolve` | 处理状态不确定的工具调用并恢复或丢弃 Execution | 否 | 否 |
 “不可自动重试”表示连接中断时请求可能已经在 Core 内执行。直接重发可能造成重复模型调用、工具调用或消息写入。
 
 ## `core.ping`
@@ -259,6 +262,29 @@ Core 的消息帧限制内，服务端还会按序列化字节预算减少本页
 ```json
 {"status":"discarded","execution_id":"..."}
 ```
+
+## `tool_recovery.list` / `tool_recovery.get`
+
+当 Core 无法证明一个有副作用的工具在进程中断前“尚未执行”或“已经完整执行”时，Execution 会以
+`stop_reason=tool_recovery_required` 暂停。`tool_recovery.list` 使用标准 Workspace/Session 参数列出当前
+Execution 的待处理记录；`tool_recovery.get` 额外接收 `tool_call_id`。响应只包含工具名、effect、
+replay policy、状态、脱敏参数键、尝试次数和时间，不返回文件正文、精确 ToolMessage、绝对路径或 digest
+状态快照。
+
+## `tool_recovery.resolve`
+
+参数除 Workspace/Session 和 `tool_call_id` 外，还包含：
+
+```json
+{"action":"retry_once | return_error | discard_execution"}
+```
+
+- `retry_once`：确认允许重新执行一次未知副作用工具。
+- `return_error`：不重放工具，向模型恢复一条确定的 error `ToolMessage`。
+- `discard_execution`：丢弃整个待恢复 Execution。
+
+普通 `session.resume` 会拒绝 `tool_recovery_required`；必须先通过本方法作出明确决定。结构化 Workspace
+写入若能用 `resource_activities.after_digest` 证明结果已经应用，则 Core 会自动重放恢复结果，不要求人工处理。
 
 ## `session.delete`
 

@@ -23,6 +23,8 @@ from src.ipc.models import (
     SessionResumeParams,
     ResourceActivityScopeParams,
     ResourceActivityListParams,
+    ToolRecoveryGetParams,
+    ToolRecoveryResolveParams,
 )
 
 
@@ -36,12 +38,14 @@ class AgentHandlers:
         approval_service=None,
         resource_activity_service=None,
         session_history_service=None,
+        tool_recovery_service=None,
     ) -> None:
         self.agent_service = agent_service
         self.session_service = session_service or agent_service
         self.approval_service = approval_service
         self.resource_activity_service = resource_activity_service
         self.session_history_service = session_history_service
+        self.tool_recovery_service = tool_recovery_service
 
     def register(self, router: RpcRouter) -> None:
         """Expose chat and explicit Session recovery methods."""
@@ -61,6 +65,59 @@ class AgentHandlers:
             router.register("approval.resolve", ApprovalResolveParams, self.approval_resolve)
             router.register("approval.mode.get", SessionParams, self.approval_mode_get)
             router.register("approval.mode.set", ApprovalModeSetParams, self.approval_mode_set)
+        if self.tool_recovery_service is not None:
+            router.register("tool_recovery.list", SessionParams, self.tool_recovery_list)
+            router.register("tool_recovery.get", ToolRecoveryGetParams, self.tool_recovery_get)
+            router.register("tool_recovery.resolve", ToolRecoveryResolveParams, self.tool_recovery_resolve)
+
+    async def tool_recovery_list(
+        self, params: SessionParams, _context: RequestContext
+    ) -> dict:
+        return await self._session_call(
+            self.tool_recovery_service.list_pending,
+            params.workspace_root,
+            params.session_name,
+        )
+
+    async def tool_recovery_get(
+        self, params: ToolRecoveryGetParams, _context: RequestContext
+    ) -> dict:
+        return await self._session_call(
+            self.tool_recovery_service.get,
+            params.workspace_root,
+            params.session_name,
+            params.tool_call_id,
+        )
+
+    async def tool_recovery_resolve(
+        self, params: ToolRecoveryResolveParams, context: RequestContext
+    ) -> dict:
+        if params.action == "discard_execution":
+            return await self._session_call(
+                self.session_service.discard_pending,
+                params.workspace_root,
+                params.session_name,
+            )
+        resume_value = await self._session_call(
+            self.tool_recovery_service.prepare_response,
+            params.workspace_root,
+            params.session_name,
+            params.tool_call_id,
+            params.action,
+        )
+        run_id = uuid4().hex
+        control = ExecutionControl()
+        on_event = self._notification_callback(context, run_id, control)
+        return await self._async_session_call(
+            self.agent_service.resume_execution,
+            params.workspace_root,
+            params.session_name,
+            "",
+            on_event,
+            run_id=run_id,
+            control=control,
+            resume_value=resume_value,
+        )
 
     async def resource_activity_summary(self, params: ResourceActivityScopeParams, _context: RequestContext) -> dict:
         try:
@@ -229,6 +286,7 @@ class AgentHandlers:
                 on_event,
                 run_id=run_id,
                 control=control,
+                retry_conditions=params.retry_conditions,
             )
         finally:
             reset_trace_context(token)

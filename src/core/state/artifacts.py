@@ -76,6 +76,20 @@ class ArtifactStore:
                 (artifact_id, owner_type, owner_id),
             )
 
+    def get(self, artifact_id: str) -> bytes:
+        """Load one referenced artifact and verify its content digest."""
+        with self.database.connect() as conn:
+            row = conn.execute(
+                "SELECT sha256,relative_path FROM artifacts WHERE artifact_id=?",
+                (artifact_id,),
+            ).fetchone()
+        if row is None:
+            raise FileNotFoundError(f"Artifact was not found: {artifact_id}")
+        raw = zlib.decompress((self.root / row["relative_path"]).read_bytes())
+        if hashlib.sha256(raw).hexdigest() != row["sha256"]:
+            raise OSError(f"Artifact digest mismatch: {artifact_id}")
+        return raw
+
     def collect_garbage(self) -> int:
         """Delete unreferenced artifacts only when maintenance is explicit."""
         with self.database.transaction() as conn:

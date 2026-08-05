@@ -6,10 +6,12 @@ from dataclasses import replace
 from typing import Any
 from types import SimpleNamespace
 
-from langchain_core.messages import ToolMessage
+from langchain_core.messages import AIMessage, ToolMessage
+from langchain_core.runnables.config import get_config_list, get_executor_for_config
 from langchain_core.tools import BaseTool
 from langgraph.errors import GraphBubbleUp
 from langgraph.prebuilt import ToolNode
+from langgraph.prebuilt.tool_node import ToolRuntime
 
 from src.core.common.content import message_content_text
 from src.core.common.debug import debug_print
@@ -20,7 +22,8 @@ from src.core.agent.budget import ToolBudgetExceeded, current_execution_budget
 from src.core.resource_activity import (
     bind_resource_activity, current_resource_context, lookup_resource_evidence,
 )
-from src.core.tools.catalog import ToolRisk
+from src.core.state.tool_ledger import ToolRecoveryRequired
+from src.core.tools.catalog import ToolRisk, ToolSpec
 
 
 def _tool_call_name(request) -> str | None:
@@ -263,7 +266,7 @@ class ObservedToolNode(ToolNode):
             """Keep fallback ToolNode failures model-visible and graph-local."""
             try:
                 return observed_wrapper(request, execute)
-            except (GraphBubbleUp, ToolBudgetExceeded):
+            except (GraphBubbleUp, ToolBudgetExceeded, ToolRecoveryRequired):
                 raise
             except Exception as exc:
                 try:
@@ -278,3 +281,125 @@ class ObservedToolNode(ToolNode):
                 return _tool_error_message(request, exc)
 
         super().__init__(tools, wrap_tool_call=fault_contained_wrapper, **kwargs)
+
+
+class CheckpointedToolNode(ObservedToolNode):
+    """Execute one checkpoint-safe wave from the latest assistant tool batch.
+
+    LangGraph's prebuilt ToolNode executes every tool call in one graph node. A
+    control exception from one call therefore discards the node output even when
+    sibling calls already changed external state. This adapter executes only one
+    side-effecting call per superstep; explicitly safe reads may share a wave.
+    """
+
+    def __init__(self, tools, *, specs: dict[str, ToolSpec], **kwargs) -> None:
+        self.execution_specs = dict(specs)
+        kwargs.setdefault(
+            "risk_by_name",
+            {name: spec.risk for name, spec in self.execution_specs.items()},
+        )
+        super().__init__(tools, **kwargs)
+
+    def _func(self, input, config, runtime):
+        tool_calls, input_type = self._parse_input(input)
+        completed = completed_tool_call_ids(input)
+        pending = [call for call in tool_calls if str(call.get("id") or "") not in completed]
+        if not pending:
+            return self._combine_tool_outputs([], input_type)
+
+        wave = self._select_wave(pending)
+        config_list = get_config_list(config, len(wave))
+        tool_runtimes = []
+        for call, cfg in zip(wave, config_list, strict=False):
+            state = self._extract_state(input, cfg)
+            tool_runtimes.append(
+                ToolRuntime(
+                    state=state,
+                    tool_call_id=call["id"],
+                    config=cfg,
+                    context=runtime.context,
+                    store=runtime.store,
+                    stream_writer=runtime.stream_writer,
+                    tools=list(self.tools_by_name.values()),
+                    execution_info=runtime.execution_info,
+                    server_info=runtime.server_info,
+                )
+            )
+
+        input_types = [input_type] * len(wave)
+        if len(wave) == 1:
+            outputs = [self._run_one(wave[0], input_type, tool_runtimes[0])]
+        else:
+            with get_executor_for_config(config) as executor:
+                outputs = list(
+                    executor.map(self._run_one, wave, input_types, tool_runtimes)
+                )
+        return self._combine_tool_outputs(outputs, input_type)
+
+    def _select_wave(self, pending: list[dict]) -> list[dict]:
+        first = pending[0]
+        first_name = str(first.get("name") or "")
+        first_spec = self.execution_specs.get(first_name)
+        risk = first_spec.risk if first_spec is not None else ToolRisk.READ_ONLY
+        budget = current_execution_budget()
+        if budget is not None:
+            budget.require_capacity(
+                first_name or "unknown",
+                risk,
+                tool_call_id=str(first.get("id") or ""),
+            )
+
+        if first_spec is None or not first_spec.parallel_safe:
+            return [first]
+
+        capacity = budget.remaining_for(risk) if budget is not None else len(pending)
+        wave = []
+        for call in pending:
+            spec = self.execution_specs.get(str(call.get("name") or ""))
+            if spec is None or not spec.parallel_safe or len(wave) >= capacity:
+                break
+            wave.append(call)
+        return wave or [first]
+
+
+def completed_tool_call_ids(input) -> set[str]:
+    """Return tool IDs completed after the latest assistant request."""
+    if isinstance(input, list):
+        messages = input
+    elif isinstance(input, dict):
+        messages = list(input.get("messages") or [])
+    else:
+        messages = list(getattr(input, "messages", []) or [])
+    assistant_index = next(
+        (
+            index
+            for index in range(len(messages) - 1, -1, -1)
+            if isinstance(messages[index], AIMessage)
+            and getattr(messages[index], "tool_calls", None)
+        ),
+        None,
+    )
+    if assistant_index is None:
+        return set()
+    return {
+        str(message.tool_call_id or "")
+        for message in messages[assistant_index + 1 :]
+        if isinstance(message, ToolMessage)
+    }
+
+
+def has_pending_tool_calls(state) -> str:
+    """Route a partial tool batch until every original call has one result."""
+    messages = list(state.get("messages") or [])
+    assistant = next(
+        (
+            message
+            for message in reversed(messages)
+            if isinstance(message, AIMessage) and getattr(message, "tool_calls", None)
+        ),
+        None,
+    )
+    if assistant is None:
+        return "complete"
+    expected = {str(call.get("id") or "") for call in assistant.tool_calls}
+    return "pending" if expected - completed_tool_call_ids(state) else "complete"

@@ -1,6 +1,7 @@
 """Local-first authoritative state storage."""
 
 from .artifacts import ArtifactStore
+from .tool_ledger import ToolLedgerRepository, ToolRecoveryRequired
 from .checkpoints import CheckpointManager
 from .database import LocalStateDatabase
 from .execution_checkpoints import ExecutionCheckpointStore
@@ -18,6 +19,8 @@ from .types import CheckpointState, ExecutionStatus
 
 __all__ = [
     "ArtifactStore",
+    "ToolLedgerRepository",
+    "ToolRecoveryRequired",
     "CheckpointManager",
     "ExecutionCheckpointStore",
     "ExecutionQueryStore",

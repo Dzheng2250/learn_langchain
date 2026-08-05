@@ -1,6 +1,7 @@
 """Durable PendingExecution state and Slice accounting."""
 
 from uuid import uuid4
+import json
 
 from src.core.state.database import LocalStateDatabase
 from src.core.state.execution_checkpoints import ExecutionCheckpointStore
@@ -11,6 +12,7 @@ from src.core.state.execution_queries import ExecutionQueryStore
 from src.core.state.execution_release import ExecutionReleaseStore
 from src.core.state.execution_slices import ExecutionSliceStore
 from src.core.state.types import CheckpointState, ExecutionStatus
+from src.core.agent.models import ResumePolicy, resume_policy_for
 from src.core.workspace.models import SessionContext
 
 
@@ -75,7 +77,13 @@ class ExecutionRepository:
             )
         return self.get_pending(session)
 
-    def resume(self, session: SessionContext) -> PendingExecution:
+    def resume(
+        self,
+        session: SessionContext,
+        *,
+        resume_value: dict | None = None,
+        retry_conditions: bool = False,
+    ) -> PendingExecution:
         """Grant another bounded automatic execution batch."""
         pending = self.get_pending(session)
         if not pending:
@@ -86,6 +94,29 @@ class ExecutionRepository:
                     "Inspect status and discard it before starting a new task."
                 )
             raise RuntimeError("Session has no pending execution to resume.")
+        policy = ResumePolicy(
+            pending.resume_policy
+            if pending.resume_policy
+            else resume_policy_for(pending.stop_reason).value
+        )
+        if policy == ResumePolicy.ACTION_REQUIRED:
+            action_type = str((resume_value or {}).get("type") or "")
+            is_approval = bool((resume_value or {}).get("request_id"))
+            if pending.stop_reason == "tool_approval" and not is_approval:
+                raise ValueError(
+                    "Tool approval must be resolved with approval.resolve, not session.resume."
+                )
+            if pending.stop_reason == "tool_recovery_required" and action_type != "tool_recovery":
+                raise ValueError(
+                    "Uncertain tool execution must be resolved with tool_recovery.resolve."
+                )
+        elif policy == ResumePolicy.CONDITION_REQUIRED and not retry_conditions:
+            raise ValueError(
+                "This execution requires an explicit conditional retry. "
+                "Set retry_conditions=true after correcting the reported condition."
+            )
+        elif policy == ResumePolicy.TERMINAL:
+            raise ValueError("This execution stop reason is terminal and cannot be resumed.")
         with self.database.transaction() as conn:
             conn.execute(
                 """
@@ -132,16 +163,38 @@ class ExecutionRepository:
         *,
         usage: dict | None = None,
         checkpoint_state: CheckpointState | str = CheckpointState.AVAILABLE,
+        resume_policy: str | None = None,
+        pause_fingerprint: str = "",
+        pause_metadata: dict | None = None,
     ) -> None:
         """Persist a recoverable pause and the latest Grant budget counters."""
         usage = usage or {}
         status = ExecutionStatus(status)
         checkpoint_state = CheckpointState(checkpoint_state)
+        policy = resume_policy or resume_policy_for(stop_reason).value
+        fingerprint = pause_fingerprint or f"{stop_reason}:{summary}"
         with self.database.transaction() as conn:
+            previous = conn.execute(
+                "SELECT pause_fingerprint,repeated_pause_count FROM executions "
+                "WHERE execution_id=?",
+                (execution_id,),
+            ).fetchone()
+            repeated = (
+                int(previous["repeated_pause_count"] or 0) + 1
+                if previous is not None
+                and previous["pause_fingerprint"] == fingerprint
+                else 0
+            )
+            if repeated > 0 and policy == ResumePolicy.CONTINUE.value:
+                status = ExecutionStatus.PAUSED_RECOVERY
+                policy = ResumePolicy.CONDITION_REQUIRED.value
             conn.execute(
                 """
                 UPDATE executions SET status=?, stop_reason=?, progress_summary=?, checkpoint_state=?,
                     controlled_executions_used=?, delegations_used=?, tool_calls_used=?,
+                    resume_policy=?,pause_fingerprint=?,
+                    repeated_pause_count=?,
+                    pause_metadata=?,
                     updated_at=CURRENT_TIMESTAMP WHERE execution_id=?
                 """,
                 (
@@ -152,6 +205,10 @@ class ExecutionRepository:
                     int(usage.get("controlled_executions", 0)),
                     int(usage.get("delegations", 0)),
                     int(usage.get("tool_calls", 0)),
+                    policy,
+                    fingerprint,
+                    repeated,
+                    json.dumps(pause_metadata or {}, ensure_ascii=False),
                     execution_id,
                 ),
             )

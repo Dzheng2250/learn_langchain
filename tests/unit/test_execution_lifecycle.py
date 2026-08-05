@@ -35,9 +35,9 @@ class FakeRepository:
         self.begun.append((session, user_input, goal_mode))
         return execution
 
-    def resume(self, session):
+    def resume(self, session, *, resume_value=None, retry_conditions=False):
         execution = FakeExecution("resumed-exec", goal_mode=True)
-        self.resumed.append(session)
+        self.resumed.append((session, resume_value, retry_conditions))
         return execution
 
     def pause(self, execution_id, status, stop_reason, summary):
@@ -78,7 +78,7 @@ class ExecutionLifecycleServiceTest(unittest.TestCase):
         pending = ExecutionLifecycleService(repository).resume("session")
 
         self.assertEqual("resumed-exec", pending.execution_id)
-        self.assertEqual(["session"], repository.resumed)
+        self.assertEqual([("session", None, False)], repository.resumed)
 
     def test_runtime_creation_failure_pauses_when_execution_exists(self):
         repository = FakeRepository()

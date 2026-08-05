@@ -27,9 +27,16 @@ class TurnLoopPauseHandler:
         exhausted_reason: str,
         slice_number: int,
         total_tool_calls: int,
+        pause_data: dict | None = None,
     ) -> dict:
         """Persist a recoverable pause and return the user-visible event."""
         snapshot = budget.snapshot()
+        pause_data = dict(pause_data or {})
+        cursor = str(pause_data.get("tool_call_id") or "")
+        checkpoint = str(pause_data.get("checkpoint_fingerprint") or "")
+        fingerprint = ":".join(
+            part for part in (exhausted_reason, checkpoint, cursor) if part
+        )
         summary = (
             f"Execution paused because {exhausted_reason}. "
             f"Used {slice_number} Slice(s), {snapshot['tool_calls']} tool call(s), "
@@ -39,15 +46,20 @@ class TurnLoopPauseHandler:
         if execution is not None and self.execution_store is not None:
             self.execution_store.pause(
                 execution.execution_id,
-                ExecutionStatus.PAUSED_CONFIRMATION
-                if exhausted_reason in {
-                    StopReason.BUDGET_LIMIT.value,
-                    StopReason.TOOL_APPROVAL.value,
-                }
-                else ExecutionStatus.PAUSED_BUDGET,
+                (
+                    ExecutionStatus.PAUSED_CONFIRMATION
+                    if exhausted_reason == StopReason.TOOL_APPROVAL.value
+                    else (
+                        ExecutionStatus.PAUSED_RECOVERY
+                        if exhausted_reason == StopReason.TOOL_RECOVERY_REQUIRED.value
+                        else ExecutionStatus.PAUSED_BUDGET
+                    )
+                ),
                 exhausted_reason,
                 summary,
                 usage=snapshot,
+                pause_fingerprint=fingerprint,
+                pause_metadata=pause_data,
             )
         self.observer.run_paused(summary, snapshot, slice_number, exhausted_reason)
         return paused_turn_event(

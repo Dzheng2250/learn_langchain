@@ -102,6 +102,7 @@ learn-agent chat --goal --session default "重构这部分代码并补充测试"
 learn-agent session status --session default
 learn-agent session resume --session default
 learn-agent session resume --session default --instruction "继续，但只修改测试"
+learn-agent session resume --session default --retry-conditions
 learn-agent session discard --session default
 learn-agent session reset --session default
 learn-agent session delete --session old-session

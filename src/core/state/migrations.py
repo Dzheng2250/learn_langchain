@@ -1,7 +1,7 @@
 """Idempotent transactional migrations for the authoritative local state database."""
 
 
-LATEST_SCHEMA_VERSION = 12
+LATEST_SCHEMA_VERSION = 13
 
 
 def apply_local_migrations(conn) -> None:
@@ -86,6 +86,80 @@ def apply_local_migrations(conn) -> None:
         _record_migration(conn, 12, "tool_approval_modes")
     else:
         _ensure_tool_approval_modes(conn)
+    if current_version < 13 or 13 not in applied_versions:
+        _upgrade_tool_execution_ledger(conn)
+        _record_migration(conn, 13, "durable_tool_execution_ledger")
+
+
+def _upgrade_tool_execution_ledger(conn) -> None:
+    """Replace the reserved preview table with the durable invocation ledger."""
+    _ensure_column(conn, "executions", "stop_reason", "TEXT NOT NULL DEFAULT ''")
+    _ensure_column(conn, "executions", "resume_policy", "TEXT NOT NULL DEFAULT 'continue'")
+    _ensure_column(conn, "executions", "pause_fingerprint", "TEXT NOT NULL DEFAULT ''")
+    _ensure_column(conn, "executions", "repeated_pause_count", "INTEGER NOT NULL DEFAULT 0")
+    _ensure_column(conn, "executions", "pause_metadata", "TEXT NOT NULL DEFAULT '{}'")
+    conn.execute(
+        """
+        UPDATE executions SET resume_policy=CASE
+            WHEN stop_reason IN ('tool_approval','tool_recovery_required') THEN 'action_required'
+            WHEN stop_reason IN ('model_output_limit','context_compaction_required','graph_error','turn_error')
+                THEN 'condition_required'
+            WHEN stop_reason IN ('llm_not_configured','tool_call_limit') THEN 'terminal'
+            ELSE 'continue'
+        END
+        """
+    )
+    if not _table_exists(conn, "tool_ledger"):
+        conn.execute(_TOOL_LEDGER_V13_SQL)
+        return
+    columns = {row[1] for row in conn.execute("PRAGMA table_info(tool_ledger)")}
+    if "args_hash" in columns and "result_payload" in columns:
+        return
+    conn.execute("ALTER TABLE tool_ledger RENAME TO tool_ledger_v12")
+    conn.execute(_TOOL_LEDGER_V13_SQL)
+    conn.execute(
+        """
+        INSERT INTO tool_ledger(
+            execution_id, tool_call_id, tool_name, risk, status,
+            args_preview, result_preview, artifact_id, started_at, finished_at,
+            effect, replay_policy
+        )
+        SELECT execution_id, tool_call_id, tool_name, risk, 'legacy',
+               args_preview, result_preview, artifact_id, started_at, finished_at,
+               'external', 'manual'
+        FROM tool_ledger_v12
+        """
+    )
+    conn.execute("DROP TABLE tool_ledger_v12")
+
+
+_TOOL_LEDGER_V13_SQL = """
+CREATE TABLE tool_ledger (
+    execution_id TEXT NOT NULL REFERENCES executions(execution_id) ON DELETE CASCADE,
+    tool_call_id TEXT NOT NULL,
+    tool_name TEXT NOT NULL,
+    risk TEXT NOT NULL,
+    args_hash TEXT NOT NULL DEFAULT '',
+    effect TEXT NOT NULL DEFAULT 'read_only'
+        CHECK(effect IN ('read_only','internal_mutation','workspace_mutation','external')),
+    replay_policy TEXT NOT NULL DEFAULT 'safe_retry'
+        CHECK(replay_policy IN ('safe_retry','result_replay','reconcile','manual')),
+    status TEXT NOT NULL DEFAULT 'prepared'
+        CHECK(status IN ('prepared','running','succeeded','failed','uncertain','legacy')),
+    args_preview TEXT NOT NULL DEFAULT '',
+    result_preview TEXT NOT NULL DEFAULT '',
+    result_payload TEXT NOT NULL DEFAULT '',
+    before_state TEXT NOT NULL DEFAULT '{}',
+    after_state TEXT NOT NULL DEFAULT '{}',
+    artifact_id TEXT,
+    attempt_count INTEGER NOT NULL DEFAULT 0,
+    run_id TEXT NOT NULL DEFAULT '',
+    slice_id TEXT,
+    started_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    finished_at TEXT,
+    PRIMARY KEY(execution_id, tool_call_id)
+)
+"""
 
 
 def _ensure_tool_approval_modes(conn) -> None:
@@ -153,7 +227,7 @@ def _ensure_resource_activity_tables(conn) -> None:
     _ensure_column(conn, "resource_activities", "event_key", "TEXT NOT NULL DEFAULT ''")
     conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_resource_activities_event_key ON resource_activities(execution_id, event_key) WHERE event_key <> ''")
 
-SUPPORTED_LOCAL_SCHEMA_DOWNGRADES = frozenset({(12, 11), (11, 10)})
+SUPPORTED_LOCAL_SCHEMA_DOWNGRADES = frozenset({(13, 12), (12, 11), (11, 10)})
 
 
 def validate_local_schema_downgrade(*, from_version: int, to_version: int) -> None:
@@ -173,10 +247,50 @@ def downgrade_local_schema(conn, *, from_version: int, to_version: int) -> None:
     )
     if current != int(from_version):
         raise ValueError(f"Expected local schema v{from_version}, found v{current}.")
-    if (int(from_version), int(to_version)) == (12, 11):
+    if (int(from_version), int(to_version)) == (13, 12):
+        downgrade_v13_to_v12(conn)
+    elif (int(from_version), int(to_version)) == (12, 11):
         downgrade_v12_to_v11(conn)
     else:
         downgrade_v11_to_v10(conn)
+
+
+def downgrade_v13_to_v12(conn) -> None:
+    """Restore the reserved v12 preview ledger and discard recovery metadata."""
+    conn.execute("ALTER TABLE tool_ledger RENAME TO tool_ledger_v13")
+    conn.execute(
+        """
+        CREATE TABLE tool_ledger (
+            tool_call_id TEXT PRIMARY KEY,
+            execution_id TEXT NOT NULL REFERENCES executions(execution_id) ON DELETE CASCADE,
+            tool_name TEXT NOT NULL,
+            risk TEXT NOT NULL,
+            status TEXT NOT NULL,
+            args_preview TEXT NOT NULL DEFAULT '',
+            result_preview TEXT NOT NULL DEFAULT '',
+            artifact_id TEXT,
+            started_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            finished_at TEXT
+        )
+        """
+    )
+    conn.execute(
+        """
+        INSERT OR IGNORE INTO tool_ledger(
+            tool_call_id, execution_id, tool_name, risk, status,
+            args_preview, result_preview, artifact_id, started_at, finished_at
+        )
+        SELECT tool_call_id, execution_id, tool_name, risk, status,
+               args_preview, result_preview, artifact_id, started_at, finished_at
+        FROM tool_ledger_v13
+        """
+    )
+    conn.execute("DROP TABLE tool_ledger_v13")
+    conn.execute("ALTER TABLE executions DROP COLUMN resume_policy")
+    conn.execute("ALTER TABLE executions DROP COLUMN pause_fingerprint")
+    conn.execute("ALTER TABLE executions DROP COLUMN repeated_pause_count")
+    conn.execute("ALTER TABLE executions DROP COLUMN pause_metadata")
+    conn.execute("DELETE FROM local_schema_migrations WHERE version=13")
 
 
 def downgrade_v12_to_v11(conn) -> None:

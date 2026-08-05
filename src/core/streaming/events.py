@@ -1,5 +1,7 @@
 """Adapt LangGraph streams into stable request-level Agent events."""
 
+import hashlib
+
 from langchain_core.messages import AIMessageChunk
 from langchain_core.messages import HumanMessage
 from langgraph.errors import GraphRecursionError
@@ -15,6 +17,7 @@ from src.core.streaming.message_events import step_events_from_message, tool_cal
 from src.core.telemetry import emit_event
 from src.core.agent.budget import ToolBudgetExceeded
 from src.core.context.compaction import ContextCompactionRequired
+from src.core.state.tool_ledger import ToolRecoveryRequired
 from src.core.llm.retry_context import (
     current_attempt_id,
     mark_attempt_output_emitted,
@@ -49,6 +52,24 @@ def stream_graph_events(
     config = {"recursion_limit": limits.max_graph_steps}
     if checkpoint_thread_id:
         config["configurable"] = {"thread_id": checkpoint_thread_id}
+
+    def checkpoint_fingerprint() -> str:
+        if not checkpoint_thread_id or not hasattr(app, "get_state"):
+            return ""
+        try:
+            state = app.get_state(config)
+            state_config = getattr(state, "config", {}) or {}
+            configurable = state_config.get("configurable", {})
+            checkpoint_id = str(configurable.get("checkpoint_id") or "")
+            next_nodes = tuple(getattr(state, "next", ()) or ())
+            messages = list((getattr(state, "values", {}) or {}).get("messages", []))
+            message_ids = tuple(
+                str(getattr(message, "id", "") or "") for message in messages[-4:]
+            )
+            raw = repr((checkpoint_id, next_nodes, message_ids)).encode("utf-8")
+            return hashlib.sha256(raw).hexdigest()[:24]
+        except Exception:
+            return ""
     # Values snapshots contain the whole message state. Track the previous
     # length so each completed message emits a step event exactly once.
     if (inputs is None or resume_command) and checkpoint_thread_id:
@@ -207,11 +228,29 @@ def stream_graph_events(
             interrupts = tuple(getattr(snapshot, "interrupts", ()) or ())
             if interrupts:
                 payload = interrupts[0].value
-                request = payload.get("request", {}) if isinstance(payload, dict) else {}
-                yield {
-                    "event": "tool_approval_required",
-                    "data": request,
-                }
+                payload_type = (
+                    str(payload.get("type") or "")
+                    if isinstance(payload, dict)
+                    else ""
+                )
+                if payload_type != "tool_approval_required":
+                    yield {
+                        "event": "paused",
+                        "data": {
+                            "type": StopReason.GRAPH_ERROR.value,
+                            "stop_reason": StopReason.GRAPH_ERROR.value,
+                            "message": "Graph execution is waiting for an unsupported action.",
+                            "interrupt_type": payload_type or "unknown",
+                            "tool_call_count": tool_call_count,
+                            "graph_steps_used": graph_steps_used,
+                            "resume_policy": "condition_required",
+                            "checkpoint_fingerprint": checkpoint_fingerprint(),
+                        },
+                    }
+                    yield from finish_reasoning()
+                    return
+                request = payload.get("request", {})
+                yield {"event": "tool_approval_required", "data": request}
                 yield {
                     "event": "paused",
                     "data": {
@@ -219,6 +258,8 @@ def stream_graph_events(
                         "stop_reason": StopReason.TOOL_APPROVAL.value,
                         "message": "Tool execution is waiting for approval.",
                         "approval_request": request,
+                        "tool_call_id": str(request.get("tool_call_id") or ""),
+                        "checkpoint_fingerprint": checkpoint_fingerprint(),
                         "tool_call_count": tool_call_count,
                         "graph_steps_used": graph_steps_used,
                     },
@@ -241,6 +282,7 @@ def stream_graph_events(
                 "message": f"Graph exceeded recursion_limit={limits.max_graph_steps}.",
                 "tool_call_count": tool_call_count,
                 "graph_steps_used": graph_steps_used,
+                "checkpoint_fingerprint": checkpoint_fingerprint(),
             },
         }
         yield from finish_reasoning()
@@ -264,8 +306,28 @@ def stream_graph_events(
                 "type": StopReason.BUDGET_LIMIT.value,
                 "stop_reason": StopReason.BUDGET_LIMIT.value,
                 "message": str(exc),
+                "tool_call_id": exc.tool_call_id,
+                "tool": exc.tool_name,
                 "tool_call_count": tool_call_count,
                 "graph_steps_used": graph_steps_used,
+                "checkpoint_fingerprint": checkpoint_fingerprint(),
+            },
+        }
+        yield from finish_reasoning()
+        return
+    except ToolRecoveryRequired as exc:
+        yield {
+            "event": "paused",
+            "data": {
+                "type": StopReason.TOOL_RECOVERY_REQUIRED.value,
+                "stop_reason": StopReason.TOOL_RECOVERY_REQUIRED.value,
+                "message": str(exc),
+                "tool_call_id": exc.tool_call_id,
+                "tool": exc.tool_name,
+                "tool_call_count": tool_call_count,
+                "graph_steps_used": graph_steps_used,
+                "resume_policy": "action_required",
+                "checkpoint_fingerprint": checkpoint_fingerprint(),
             },
         }
         yield from finish_reasoning()

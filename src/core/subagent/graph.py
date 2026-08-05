@@ -15,7 +15,8 @@ from src.core.hooks import HookAction, HookContext, HookPoint, NOOP_HOOK_DISPATC
 from src.core.llm.contracts import LlmPurpose, ModelProvider
 from src.core.prompts import SUBAGENT_SYSTEM_PROMPT, build_subagent_task_prompt
 from src.core.tasks.context import ToolExecutionContext
-from src.core.tools.observed import ObservedToolNode
+from src.core.agent.budget import ToolBudgetExceeded
+from src.core.tools.observed import CheckpointedToolNode, has_pending_tool_calls
 
 
 def create_delegate_tool(
@@ -24,6 +25,7 @@ def create_delegate_tool(
     *,
     max_steps: int = SUBAGENT_MAX_STEPS,
     risk_by_name=None,
+    specs_by_name=None,
     hook_dispatcher=None,
     workspace=None,
     resource_activity_recorder=None,
@@ -52,8 +54,9 @@ def create_delegate_tool(
     builder.add_node("subagent", subagent_node)
     builder.add_node(
         "tools",
-        ObservedToolNode(
+        CheckpointedToolNode(
             base_tools,
+            specs=specs_by_name or {},
             event_source="subagent_tool_node",
             risk_by_name=risk_by_name,
             hook_dispatcher=hooks,
@@ -63,7 +66,11 @@ def create_delegate_tool(
     )
     builder.add_edge(START, "subagent")
     builder.add_conditional_edges("subagent", tools_condition, {"tools": "tools", "__end__": END})
-    builder.add_edge("tools", "subagent")
+    builder.add_conditional_edges(
+        "tools",
+        has_pending_tool_calls,
+        {"pending": "tools", "complete": "subagent"},
+    )
     graph = builder.compile()
 
     @tool
@@ -94,6 +101,8 @@ def create_delegate_tool(
                 {"messages": [HumanMessage(content=prompt)]},
                 config={"recursion_limit": max_steps},
             )
+        except ToolBudgetExceeded as exc:
+            output = f"Sub-agent stopped at its safe tool boundary: {exc}"
         except GraphRecursionError:
             output = f"Sub-agent exceeded its {max_steps}-step limit."
         else:
