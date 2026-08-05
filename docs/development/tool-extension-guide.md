@@ -98,7 +98,7 @@ def register(tool, audiences, risk, description=""):
 - `ToolRisk = {READ_ONLY, INTERNAL_STATE, CONTROLLED_EXECUTION, DELEGATION}`，影响预算类目与限流：
   - `READ_ONLY` 仅计入 `hard_max_tool_calls`（`HARD_MAX_TOOL_CALLS_PER_GRANT`）。
   - `INTERNAL_STATE` 同上，且语义上不应暴露给 SUBAGENT（父级 Execution 私有状态）。
-  - `CONTROLLED_EXECUTION` 受 `MAX_CONTROLLED_EXECUTIONS_PER_GRANT` 子限制。
+  - `CONTROLLED_EXECUTION` 始终计数；仅当 `CONTROLLED_EXECUTION_LIMIT_ENABLED=true` 时受 `MAX_CONTROLLED_EXECUTIONS_PER_GRANT` 子限制。
   - `DELEGATION` 受 `MAX_DELEGATIONS_PER_GRANT` 子限制，且仅用于 [`create_delegate_tool()`](/src/core/subagent/graph.py) 注册的 `delegate_to_subagent`（见 [`registry.py:76`](/src/core/tools/registry.py)），普通工具不应选这个值。
 
 budget 计费逻辑见 [`src/core/agent/budget.py`](/src/core/agent/budget.py) 的 `ExecutionBudget.charge()`，工具体不应自行扣费。
@@ -428,7 +428,7 @@ SANDBOX_EXCLUDES = {
 | 沙箱排除命中 | 模型传 `.env` / `.git` | 返回 `blocked by sandbox policy` | 同上 | 用 `path=".env"` 断言返回值含 `blocked by sandbox` |
 | 同名工具重复注册 | 误把同一工具 register 两次 | `ToolRegistry.register` 抛 `ValueError("Tool already registered: ...")` | 启动期即失败，定位明确 | 直接调 `create_workspace_toolset` 启动路径 |
 | `ToolRegistry` freeze 后再注册 | 测试或并发线程误调 | 抛 `RuntimeError("Tool registry is frozen")` | 启动期失败 | 单测不应触碰；如必要用 mock |
-| 预算耗尽（controlled execution） | 一次 Grant 内 `run_command_in_container` 用完 | `CheckpointedToolNode` 在副作用前拒绝下一调用，已完成 wave 已有 checkpoint，触发 `StopReason.BUDGET_LIMIT` | resume 从首个未完成调用继续 | 以多个副作用调用和较小预算验证不重放 |
+| 预算耗尽（controlled execution） | 部署显式开启安全阀后，一次 Grant 内受控调用达到上限 | `CheckpointedToolNode` 在副作用前拒绝下一调用，已完成 wave 已有 checkpoint，触发 `StopReason.BUDGET_LIMIT` | resume 从首个未完成调用继续 | 显式开启安全阀，以多个副作用调用和较小预算验证不重放 |
 | 预算耗尽（delegation） | 一次 Grant 内 `delegate_to_subagent` 用完 | 同上，`StopReason.BUDGET_LIMIT` | 同上 | 单测同上 |
 | `ToolRuntime` 上下文缺失（测试中） | 测试直接调用工具体绕过 graph | 工具返回字符串 `xxx tool error: ... require graph runtime context.` | 集成测试补 `SimpleNamespace(context=...)` | 单元测试 + 集成测试各一 |
 | `CheckpointedToolNode` 未接管 | 误把工具直接喂给普通 `ToolNode` | 副作用批次不可提交、telemetry/预算/ledger 丢失 | 启动期走 `WorkspaceRuntimeFactory.create` 装配的图 | 集成测试断言 checkpoint 与 ledger |
@@ -448,7 +448,7 @@ SANDBOX_EXCLUDES = {
 ### 8.2 性能边界
 
 - 单工具调用受 [`HARD_MAX_TOOL_CALLS_PER_GRANT`](/src/config/settings.py) 总数限制与 [`MAX_PARALLEL_TOOL_CALLS`](/src/config/settings.py) 并发 slot（`ExecutionBudget.tool_slot`）双重控制。
-- 控制执行类（`CONTROLLED_EXECUTION`）受 [`MAX_CONTROLLED_EXECUTIONS_PER_GRANT`](/src/config/settings.py) 子限制。
+- 控制执行类（`CONTROLLED_EXECUTION`）始终进入使用量统计；仅在 [`CONTROLLED_EXECUTION_LIMIT_ENABLED`](/src/config/settings.py) 开启后受 [`MAX_CONTROLLED_EXECUTIONS_PER_GRANT`](/src/config/settings.py) 子限制。该安全阀默认关闭。
 - 委派类（`DELEGATION`）受 [`MAX_DELEGATIONS_PER_GRANT`](/src/config/settings.py) 子限制，子 agent 自身有 `SUBAGENT_MAX_STEPS` 步数上限。
 - 输出大小受 [`src/config/settings.py`](/src/config/settings.py) 中相应 `*_OUTPUT_LIMIT` 限制（命名约定：`FILE_READ_OUTPUT_LIMIT` / `PARENT_FILE_READ_OUTPUT_LIMIT` / `DOCKER_OUTPUT_LIMIT` / `LARGE_FILE_SUMMARY_LIMIT` / `SKILL_READ_OUTPUT_LIMIT`）。
 - 路径类工具的并发 I/O 已在 [`summarization.py`](/src/core/tools/summarization.py) 演示 `ThreadPoolExecutor(max_workers=LARGE_FILE_MAP_WORKERS)` 模式。

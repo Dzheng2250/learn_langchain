@@ -282,6 +282,7 @@ class ExecutionBudgetTest(unittest.TestCase):
     def test_risk_budgets_are_independent_from_read_only_calls(self):
         budget = ExecutionBudget(
             max_controlled_executions=1,
+            controlled_execution_limit_enabled=True,
             max_delegations=1,
             hard_max_tool_calls=4,
             max_parallel_tool_calls=1,
@@ -293,6 +294,34 @@ class ExecutionBudgetTest(unittest.TestCase):
         with self.assertRaises(ToolBudgetExceeded):
             budget.charge("exec-again", ToolRisk.CONTROLLED_EXECUTION)
         self.assertEqual(3, budget.snapshot()["tool_calls"])
+
+    def test_controlled_execution_limit_can_be_disabled_without_losing_usage(self):
+        budget = ExecutionBudget(
+            max_controlled_executions=1,
+            controlled_execution_limit_enabled=False,
+            hard_max_tool_calls=3,
+            max_parallel_tool_calls=1,
+            max_wall_seconds=10,
+        )
+
+        budget.charge("exec-1", ToolRisk.CONTROLLED_EXECUTION)
+        budget.charge("exec-2", ToolRisk.CONTROLLED_EXECUTION)
+
+        self.assertEqual(1, budget.remaining_for(ToolRisk.CONTROLLED_EXECUTION))
+        self.assertEqual(2, budget.snapshot()["controlled_executions"])
+
+    def test_disabled_controlled_limit_still_obeys_total_tool_limit(self):
+        budget = ExecutionBudget(
+            max_controlled_executions=0,
+            controlled_execution_limit_enabled=False,
+            hard_max_tool_calls=1,
+            max_parallel_tool_calls=1,
+            max_wall_seconds=10,
+        )
+
+        budget.charge("exec-1", ToolRisk.CONTROLLED_EXECUTION)
+        with self.assertRaisesRegex(ToolBudgetExceeded, "hard limit"):
+            budget.require_capacity("exec-2", ToolRisk.CONTROLLED_EXECUTION)
 
     def test_parallel_tool_slot_is_bounded(self):
         budget = ExecutionBudget(max_parallel_tool_calls=1, max_wall_seconds=10)

@@ -7,6 +7,7 @@ from threading import BoundedSemaphore, Lock
 from time import monotonic
 
 from src.config.settings import (
+    CONTROLLED_EXECUTION_LIMIT_ENABLED,
     HARD_MAX_TOOL_CALLS_PER_GRANT,
     MAX_CONTROLLED_EXECUTIONS_PER_GRANT,
     MAX_DELEGATIONS_PER_GRANT,
@@ -36,6 +37,7 @@ class ExecutionBudget:
     """Thread-safe counters for one user-authorized execution Grant."""
 
     max_controlled_executions: int = MAX_CONTROLLED_EXECUTIONS_PER_GRANT
+    controlled_execution_limit_enabled: bool = CONTROLLED_EXECUTION_LIMIT_ENABLED
     max_delegations: int = MAX_DELEGATIONS_PER_GRANT
     hard_max_tool_calls: int = HARD_MAX_TOOL_CALLS_PER_GRANT
     max_parallel_tool_calls: int = MAX_PARALLEL_TOOL_CALLS
@@ -64,8 +66,10 @@ class ExecutionBudget:
                 raise ToolBudgetExceeded(
                     f"Grant tool hard limit reached ({self.hard_max_tool_calls})."
                 )
-            if risk == ToolRisk.CONTROLLED_EXECUTION and (
-                self.controlled_executions >= self.max_controlled_executions
+            if (
+                self.controlled_execution_limit_enabled
+                and risk == ToolRisk.CONTROLLED_EXECUTION
+                and self.controlled_executions >= self.max_controlled_executions
             ):
                 raise ToolBudgetExceeded(
                     f"Controlled execution budget reached ({self.max_controlled_executions})."
@@ -82,7 +86,10 @@ class ExecutionBudget:
         """Return deterministic capacity available before another tool starts."""
         with self._lock:
             remaining = self.hard_max_tool_calls - self.tool_calls
-            if risk == ToolRisk.CONTROLLED_EXECUTION:
+            if (
+                self.controlled_execution_limit_enabled
+                and risk == ToolRisk.CONTROLLED_EXECUTION
+            ):
                 remaining = min(
                     remaining,
                     self.max_controlled_executions - self.controlled_executions,
@@ -104,13 +111,17 @@ class ExecutionBudget:
         """Raise before a graph wave starts when no capacity remains."""
         if self.remaining_for(risk) > 0:
             return
-        if risk == ToolRisk.CONTROLLED_EXECUTION:
+        if (
+            self.controlled_execution_limit_enabled
+            and risk == ToolRisk.CONTROLLED_EXECUTION
+            and self.controlled_executions >= self.max_controlled_executions
+        ):
             raise ToolBudgetExceeded(
                 f"Controlled execution budget reached ({self.max_controlled_executions}).",
                 tool_name=tool_name,
                 tool_call_id=tool_call_id,
             )
-        if risk == ToolRisk.DELEGATION:
+        if risk == ToolRisk.DELEGATION and self.delegations >= self.max_delegations:
             raise ToolBudgetExceeded(
                 f"Delegation budget reached ({self.max_delegations}).",
                 tool_name=tool_name,

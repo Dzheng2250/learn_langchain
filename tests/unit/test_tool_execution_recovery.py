@@ -101,6 +101,7 @@ class ToolExecutionRecoveryTest(unittest.TestCase):
         )
         first_budget = ExecutionBudget(
             max_controlled_executions=12,
+            controlled_execution_limit_enabled=True,
             hard_max_tool_calls=20,
             max_wall_seconds=10,
         )
@@ -114,6 +115,7 @@ class ToolExecutionRecoveryTest(unittest.TestCase):
         self.assertEqual(list(range(12)), completed)
         second_budget = ExecutionBudget(
             max_controlled_executions=12,
+            controlled_execution_limit_enabled=True,
             hard_max_tool_calls=20,
             max_wall_seconds=10,
         )
@@ -208,6 +210,7 @@ class ToolExecutionRecoveryTest(unittest.TestCase):
         )
         budget = ExecutionBudget(
             max_controlled_executions=0,
+            controlled_execution_limit_enabled=True,
             hard_max_tool_calls=10,
             max_wall_seconds=10,
         )
