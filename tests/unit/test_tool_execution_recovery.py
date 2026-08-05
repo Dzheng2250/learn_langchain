@@ -172,6 +172,109 @@ class ToolExecutionRecoveryTest(unittest.TestCase):
             [message.content for message in tool_results],
         )
 
+    def test_parallel_wave_respects_budget_without_leaving_running_claims(self):
+        completed = []
+
+        @tool
+        def inspect(value: int) -> str:
+            """Record one deterministic read."""
+            completed.append(value)
+            return f"read:{value}"
+
+        spec = ToolSpec(
+            name="inspect",
+            tool=inspect,
+            audiences=frozenset({ToolAudience.PARENT}),
+            risk=ToolRisk.READ_ONLY,
+            approval=ApprovalRequirement.NONE,
+            effect=ToolEffect.READ_ONLY,
+            replay_policy=ToolReplayPolicy.SAFE_RETRY,
+            parallel_safe=True,
+        )
+        ledger = ToolLedgerRepository(self.database)
+        pipeline = ToolExecutionPipeline(
+            {"inspect": spec},
+            policy=AllowPolicy(),
+            approvals=None,
+            tool_ledger=ledger,
+        )
+        builder = StateGraph(MessagesState, context_schema=ToolExecutionContext)
+        builder.add_node(
+            "tools",
+            LedgerBackedToolNode(
+                [inspect],
+                specs={"inspect": spec},
+                pipeline=pipeline,
+            ),
+        )
+        builder.add_edge(START, "tools")
+        builder.add_edge("tools", END)
+        graph = builder.compile(checkpointer=MemorySaver())
+        config = {"configurable": {"thread_id": "parallel-budget"}}
+        runtime_context = ToolExecutionContext(
+            workspace_id=str(self.session.workspace.workspace_id),
+            session_id=str(self.session.session_id),
+            execution_id=self.execution.execution_id,
+            run_id="run-1",
+            workspace_root=str(self.root),
+            turn_index=1,
+            slice_id="slice-1",
+        )
+        request = AIMessage(
+            content="",
+            tool_calls=[
+                {"name": "inspect", "args": {"value": value}, "id": f"read-{value}"}
+                for value in range(3)
+            ],
+        )
+        first_budget = ExecutionBudget(
+            hard_max_tool_calls=2,
+            max_parallel_tool_calls=4,
+            max_wall_seconds=10,
+        )
+        token = bind_execution_budget(first_budget)
+        try:
+            with self.assertRaises(ToolBudgetExceeded):
+                graph.invoke(
+                    {"messages": [request]},
+                    config=config,
+                    context=runtime_context,
+                )
+        finally:
+            reset_execution_budget(token)
+
+        self.assertCountEqual([0, 1], completed)
+        with self.database.connect() as conn:
+            rows = conn.execute(
+                "SELECT tool_call_id,status FROM tool_ledger ORDER BY tool_call_id"
+            ).fetchall()
+        self.assertEqual(
+            [("read-0", "succeeded"), ("read-1", "succeeded")],
+            [(row["tool_call_id"], row["status"]) for row in rows],
+        )
+
+        second_budget = ExecutionBudget(
+            hard_max_tool_calls=1,
+            max_parallel_tool_calls=4,
+            max_wall_seconds=10,
+        )
+        token = bind_execution_budget(second_budget)
+        try:
+            result = graph.invoke(None, config=config, context=runtime_context)
+        finally:
+            reset_execution_budget(token)
+
+        self.assertCountEqual([0, 1, 2], completed)
+        self.assertEqual(1, second_budget.tool_calls)
+        self.assertEqual(
+            ["read:0", "read:1", "read:2"],
+            [
+                message.content
+                for message in result["messages"]
+                if isinstance(message, ToolMessage)
+            ],
+        )
+
     def test_completed_result_is_replayed_without_reexecution(self):
         context = self._context(ToolReplayPolicy.MANUAL)
         ledger = ToolLedgerRepository(self.database)

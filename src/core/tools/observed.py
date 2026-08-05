@@ -337,13 +337,27 @@ class LedgerBackedToolNode(ObservedToolNode):
                 index += 1
                 continue
 
+            budget = current_execution_budget()
+            wave_capacity = len(calls_with_runtime) - index
+            if budget is not None:
+                remaining = budget.remaining_for(spec.risk)
+                # A single call must still enter the pipeline at zero capacity:
+                # completed ledger results replay before budget enforcement.
+                wave_capacity = max(
+                    1,
+                    min(budget.max_parallel_tool_calls, remaining),
+                )
             wave = []
-            while index < len(calls_with_runtime):
+            while index < len(calls_with_runtime) and len(wave) < wave_capacity:
                 candidate, candidate_runtime = calls_with_runtime[index]
                 candidate_spec = self.execution_specs.get(
                     str(candidate.get("name") or "")
                 )
-                if candidate_spec is None or not candidate_spec.parallel_safe:
+                if (
+                    candidate_spec is None
+                    or not candidate_spec.parallel_safe
+                    or candidate_spec.risk != spec.risk
+                ):
                     break
                 wave.append((candidate, candidate_runtime))
                 index += 1
